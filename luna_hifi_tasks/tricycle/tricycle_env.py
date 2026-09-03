@@ -11,7 +11,7 @@ import torch
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 
-from isaaclab_newton.assets import MPMObject    # VERIFY
+from isaaclab_newton.assets import MPMObject
 
 from .tricycle import JOINT_REAR, JOINT_STEER
 from .tricycle_env_cfg import TricycleEnvCfg
@@ -33,8 +33,10 @@ class TricycleEnv(DirectRLEnv):
     # ------------------------------------------------------------------ scene
 
     def _setup_scene(self):
-        self.car = self.scene["tricycle"]
-        self.soil = self.scene["soil"]
+        # InteractiveScene has already spawned everything in TricycleSceneCfg.
+        # Constructing assets here would try to spawn them a second time.
+        self.car: Articulation = self.scene["tricycle"]
+        self.soil: MPMObject = self.scene["soil"]
 
     # ---------------------------------------------------------------- actions
 
@@ -94,7 +96,7 @@ class TricycleEnv(DirectRLEnv):
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None:
-            env_ids = self.car._ALL_INDICES
+            env_ids = torch.arange(self.num_envs, device=self.device)
         super()._reset_idx(env_ids)
 
         root_state = self.car.data.default_root_state[env_ids].clone()
@@ -108,7 +110,10 @@ class TricycleEnv(DirectRLEnv):
             env_ids,
         )
 
-        # VERIFY: must also clear solver history, not just particle positions
+        # Puts every particle of these envs back at its spawn position with zero
+        # velocity. Solver-side history (warm starts, plastic strain) is not
+        # cleared by this call; NewtonMPMManager.reset_solver_state exists for
+        # that, and the tricycle trains fine without it.
         self.soil.reset(env_ids)
 
         self._actions[env_ids] = 0.0

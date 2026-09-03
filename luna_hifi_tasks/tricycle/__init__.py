@@ -1,13 +1,14 @@
 # Tricycle pipeline-validation task.
 #
-#   ./isaaclab.bat -p scripts/reinforcement_learning/rsl_rl/train.py ^
-#       --task Luna-Tricycle-Direct-v0 --num_envs 64 --headless
+# Importing this module registers the task with Gymnasium. Isaac Lab imports
+# it through the `isaaclab.tasks` entry point declared in pyproject.toml, so
+# the CLI can find it:
 #
-#   ./isaaclab.bat -p scripts/reinforcement_learning/rsl_rl/play.py ^
-#       --task Luna-Tricycle-Direct-v0 --num_envs 4 --visualizer newton
+#   .\isaaclab.bat train --rl_library rsl_rl --task Luna-Tricycle-Direct --num_envs 4
+#   .\isaaclab.bat play  --rl_library rsl_rl --task Luna-Tricycle-Direct --num_envs 1 --checkpoint latest --viz newton
 #
 # Success criterion: mean episode reward (= metres travelled in 2 s) climbs
-# from ~0 toward ~3-4 m within a few hundred iterations.
+# from ~0 and keeps climbing without the physics diverging.
 
 import gymnasium as gym
 

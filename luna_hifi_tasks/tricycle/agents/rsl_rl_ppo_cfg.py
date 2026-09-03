@@ -1,5 +1,9 @@
 # agents/rsl_rl_ppo_cfg.py -- deliberately tiny. If reward doesn't climb in
-# ~100 iterations on 64 envs, the problem is the env, not the learner.
+# a few hundred iterations, the problem is the env, not the learner.
+#
+# Isaac Lab converts this "policy" style config into rsl_rl's newer actor /
+# critic model configs at start-up (isaaclab_rl.rsl_rl.utils), so it works
+# with the rsl_rl version the develop branch installs.
 
 from isaaclab.utils.configclass import configclass
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
@@ -11,13 +15,14 @@ class TricyclePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 300
     save_interval = 50
     experiment_name = "tricycle"
-    empirical_normalization = False
 
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_hidden_dims=[64, 64],
         critic_hidden_dims=[64, 64],
         activation="elu",
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,

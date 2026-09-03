@@ -1,7 +1,13 @@
 # luna_hifi_tasks
 
 Isaac Lab (develop / 3.0 beta, Newton backend) task package for rover excavation
-on implicit-MPM soil. **Template, not runnable as-is.**
+on implicit-MPM soil.
+
+> **These are the original template notes, written before anything ran.** The
+> install commands, the `-v0` task ids and the six VERIFY items below are
+> superseded by [RUNBOOK.md](RUNBOOK.md), which records the setup that actually
+> trains and plays. Read the runbook first; keep this for the excavation
+> package's STUB/VERIFY map, which is still accurate.
 
 ```
 Luna_HiFi/                  <- pyproject.toml lives here; pip install -e this folder

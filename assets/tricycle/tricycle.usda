@@ -1,0 +1,49 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "MuJoCo USD Converter v0.2.0"
+    }
+    defaultPrim = "tricycle"
+    doc = """Generated from Composed Stage of root layer C:\\Users\\hanse\\AppData\\Local\\Temp\\tmpnix4ro8v\\tricycle.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\hanse\\AppData\\Local\\Temp\\mjcf_import_tricycle_df1lgh4s\\usdex_tricycle\\tricycle.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\hanse\\AppData\\Local\\Temp\\mjcf_import_tricycle_df1lgh4s\\temp_tricycle\\tricycle.usd
+"""
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "tricycle" (
+    prepend references = @./payloads/base.usda@
+    variants = {
+        string Physics = "physics"
+    }
+    append variantSets = "Physics"
+)
+{
+    variantSet "Physics" = {
+        "mujoco" (
+            prepend payload = @./payloads/Physics/mujoco.usda@
+        ) {
+
+        }
+        "none" {
+
+        }
+        "physics" (
+            prepend payload = @./payloads/Physics/physics.usda@
+        ) {
+
+        }
+        "physx" (
+            prepend payload = @./payloads/Physics/physx.usda@
+        ) {
+
+        }
+    }
+}
+

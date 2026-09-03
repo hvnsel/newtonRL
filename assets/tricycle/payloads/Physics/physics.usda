@@ -1,0 +1,171 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "MuJoCo USD Converter v0.2.0"
+    }
+    defaultPrim = "tricycle"
+    doc = """Generated from Composed Stage of root layer C:\\Users\\hanse\\AppData\\Local\\Temp\\tmpnix4ro8v\\tricycle.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\hanse\\AppData\\Local\\Temp\\mjcf_import_tricycle_df1lgh4s\\usdex_tricycle\\tricycle.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\hanse\\AppData\\Local\\Temp\\mjcf_import_tricycle_df1lgh4s\\temp_tricycle\\tricycle.usd
+"""
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+over "tricycle"
+{
+    over "Geometry"
+    {
+        over "chassis" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsArticulationRootAPI", "NewtonArticulationRootAPI"]
+        )
+        {
+            bool newton:selfCollisionEnabled = 0
+
+            over "chassis_geom" (
+                prepend apiSchemas = ["NewtonCollisionAPI", "PhysicsMassAPI"]
+            )
+            {
+                float newton:contactGap = 0
+                float physics:density = 1000
+                float physics:mass = 5
+            }
+
+            over "fork" (
+                prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+            )
+            {
+                over "Capsule" (
+                    prepend apiSchemas = ["NewtonCollisionAPI", "PhysicsMassAPI"]
+                )
+                {
+                    float newton:contactGap = 0
+                    float physics:density = 1000
+                    float physics:mass = 0.1
+                }
+
+                over "front_wheel_body" (
+                    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+                )
+                {
+                    over "Sphere" (
+                        prepend apiSchemas = ["NewtonCollisionAPI", "PhysicsMassAPI"]
+                    )
+                    {
+                        float newton:contactGap = 0
+                        float physics:density = 1000
+                        float physics:mass = 0.5
+                    }
+
+                    def PhysicsRevoluteJoint "front_wheel" (
+                        prepend apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                    )
+                    {
+                        uniform token physics:axis = "Y"
+                        custom rel physics:body0
+                        prepend rel physics:body0 = </tricycle/Geometry/chassis/fork>
+                        custom rel physics:body1
+                        prepend rel physics:body1 = </tricycle/Geometry/chassis/fork/front_wheel_body>
+                        point3f physics:localPos0 = (0, 0, 0)
+                        point3f physics:localPos1 = (0, 0, 0)
+                        quatf physics:localRot0 = (1, 0, 0, 0)
+                        quatf physics:localRot1 = (1, 0, 0, 0)
+                    }
+                }
+
+                def PhysicsRevoluteJoint "steer" (
+                    prepend apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                )
+                {
+                    uniform token physics:axis = "Z"
+                    custom rel physics:body0
+                    prepend rel physics:body0 = </tricycle/Geometry/chassis>
+                    custom rel physics:body1
+                    prepend rel physics:body1 = </tricycle/Geometry/chassis/fork>
+                    point3f physics:localPos0 = (0.22, 0, -0.04)
+                    point3f physics:localPos1 = (0, 0, 0)
+                    quatf physics:localRot0 = (1, 0, 0, 0)
+                    quatf physics:localRot1 = (1, 0, 0, 0)
+                    float physics:lowerLimit = -34.37747
+                    float physics:upperLimit = 34.37747
+                }
+            }
+
+            over "rear_left_body" (
+                prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+            )
+            {
+                over "Sphere" (
+                    prepend apiSchemas = ["NewtonCollisionAPI", "PhysicsMassAPI"]
+                )
+                {
+                    float newton:contactGap = 0
+                    float physics:density = 1000
+                    float physics:mass = 0.5
+                }
+
+                def PhysicsRevoluteJoint "rear_left" (
+                    prepend apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                )
+                {
+                    uniform token physics:axis = "Y"
+                    custom rel physics:body0
+                    prepend rel physics:body0 = </tricycle/Geometry/chassis>
+                    custom rel physics:body1
+                    prepend rel physics:body1 = </tricycle/Geometry/chassis/rear_left_body>
+                    point3f physics:localPos0 = (-0.15, 0.16, -0.04)
+                    point3f physics:localPos1 = (0, 0, 0)
+                    quatf physics:localRot0 = (1, 0, 0, 0)
+                    quatf physics:localRot1 = (1, 0, 0, 0)
+                }
+            }
+
+            over "rear_right_body" (
+                prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+            )
+            {
+                over "Sphere" (
+                    prepend apiSchemas = ["NewtonCollisionAPI", "PhysicsMassAPI"]
+                )
+                {
+                    float newton:contactGap = 0
+                    float physics:density = 1000
+                    float physics:mass = 0.5
+                }
+
+                def PhysicsRevoluteJoint "rear_right" (
+                    prepend apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                )
+                {
+                    uniform token physics:axis = "Y"
+                    custom rel physics:body0
+                    prepend rel physics:body0 = </tricycle/Geometry/chassis>
+                    custom rel physics:body1
+                    prepend rel physics:body1 = </tricycle/Geometry/chassis/rear_right_body>
+                    point3f physics:localPos0 = (-0.15, -0.16, -0.04)
+                    point3f physics:localPos1 = (0, 0, 0)
+                    quatf physics:localRot0 = (1, 0, 0, 0)
+                    quatf physics:localRot1 = (1, 0, 0, 0)
+                }
+            }
+        }
+    }
+
+    over "Physics"
+    {
+        over "PhysicsMaterial" (
+            prepend apiSchemas = ["PhysicsMaterialAPI", "NewtonMaterialAPI"]
+        )
+        {
+            float newton:rollingFriction = 0.0001
+            float newton:torsionalFriction = 0.005
+            float physics:dynamicFriction = 0.8
+        }
+    }
+}
+

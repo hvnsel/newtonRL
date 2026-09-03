@@ -1,0 +1,114 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "MuJoCo USD Converter v0.2.0"
+    }
+    defaultPrim = "tricycle"
+    doc = """Generated from Composed Stage of root layer C:\\Users\\hanse\\AppData\\Local\\Temp\\tmpnix4ro8v\\tricycle.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\hanse\\AppData\\Local\\Temp\\mjcf_import_tricycle_df1lgh4s\\usdex_tricycle\\tricycle.usdc
+
+
+Generated from Composed Stage of root layer C:\\Users\\hanse\\AppData\\Local\\Temp\\mjcf_import_tricycle_df1lgh4s\\temp_tricycle\\tricycle.usd
+"""
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    subLayers = [
+        @./physics.usda@
+    ]
+    upAxis = "Z"
+)
+
+over "tricycle"
+{
+    over "Geometry"
+    {
+        over "chassis"
+        {
+            over "chassis_geom" (
+                prepend apiSchemas = ["MjcCollisionAPI"]
+            )
+            {
+            }
+
+            over "fork"
+            {
+                over "Capsule" (
+                    prepend apiSchemas = ["MjcCollisionAPI"]
+                )
+                {
+                }
+
+                over "front_wheel_body"
+                {
+                    over "Sphere" (
+                        prepend apiSchemas = ["MjcCollisionAPI"]
+                    )
+                    {
+                    }
+
+                    over "front_wheel" (
+                        delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                        prepend apiSchemas = ["MjcJointAPI"]
+                    )
+                    {
+                        uniform double mjc:damping = 0.02
+                    }
+                }
+
+                over "steer" (
+                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                    prepend apiSchemas = ["MjcJointAPI"]
+                )
+                {
+                    uniform double mjc:damping = 0.02
+                }
+            }
+
+            over "rear_left_body"
+            {
+                over "Sphere" (
+                    prepend apiSchemas = ["MjcCollisionAPI"]
+                )
+                {
+                }
+
+                over "rear_left" (
+                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                    prepend apiSchemas = ["MjcJointAPI"]
+                )
+                {
+                    uniform double mjc:damping = 0.02
+                }
+            }
+
+            over "rear_right_body"
+            {
+                over "Sphere" (
+                    prepend apiSchemas = ["MjcCollisionAPI"]
+                )
+                {
+                }
+
+                over "rear_right" (
+                    delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+                    prepend apiSchemas = ["MjcJointAPI"]
+                )
+                {
+                    uniform double mjc:damping = 0.02
+                }
+            }
+        }
+    }
+
+    over "Physics"
+    {
+        over "PhysicsMaterial" (
+            prepend apiSchemas = ["MjcMaterialAPI"]
+        )
+        {
+        }
+    }
+}
+

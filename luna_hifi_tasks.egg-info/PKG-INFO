@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: luna_hifi_tasks
+Version: 0.1.0
+Summary: Isaac Lab tasks for rover excavation on Newton MPM soil
+Requires-Python: >=3.11

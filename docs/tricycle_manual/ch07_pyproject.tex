@@ -45,16 +45,29 @@ that the package contains tasks. It is read once, at install time
 \li{17} Only take folders whose name starts with \code{luna_hifi_tasks}. This
   excludes \code{assets}, \code{docs} and anything else at the root. A
   folder only counts as a package if it contains \code{__init__.py}; a
-  sub-folder without one is silently skipped, which is the failure mode
-  described in the runbook (``editable install + missing \code{__init__.py}'').
+  sub-folder without one is silently skipped, which is the
+  missing-\code{__init__.py} failure mode in the runbook. Adding the file is
+  the whole fix; see the box below on why no reinstall is needed for it.
 \end{explain}
 
-\begin{isaacbox}{editable installs}
-\code{pip install -e <folder>} does not copy the code. It writes a small
-\code{.pth} or finder hook into the venv's \code{site-packages} that points
-back at the folder, plus the metadata (\code{.dist-info}, including the
-entry points). Edits to \code{.py} files are picked up on the next run without
-reinstalling; edits to \code{pyproject.toml} (entry points) or the arrival of
-a new \code{__init__.py} require \code{pip install -e} again because the
-metadata is only written at install time.
+\begin{isaacbox}{editable installs, and when a reinstall is needed}
+\code{pip install -e <folder>} does not copy the code. With a modern
+setuptools (PEP~660) it writes two things into the venv's
+\code{site-packages}: a \code{.pth} file that installs an import finder, and
+the distribution metadata in \srcpath{luna_hifi_tasks-0.1.0.dist-info}. The
+finder holds a single mapping, the top-level name \code{luna_hifi_tasks}
+pointing at your source folder; every module below it is resolved off the
+filesystem at import time.
+
+So the source tree is read live, and \emph{one} kind of change needs a
+reinstall: editing \code{pyproject.toml}. Entry points and the package list
+are frozen into \code{dist-info} when you install, so a new or renamed entry
+point stays invisible until \code{pip install -e} runs again. Everything else
+takes effect on the next run: editing any \code{.py} file, adding a new
+subpackage, and adding an \code{__init__.py} to a folder that lacked one.
+
+The \srcpath{luna_hifi_tasks.egg-info/} folder that appears in the repository
+root is a leftover of the build, not the metadata anything reads; deleting it
+does not affect task discovery. All four behaviours were checked directly on
+this package in a clean virtual environment.
 \end{isaacbox}

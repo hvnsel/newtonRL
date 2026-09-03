@@ -7,8 +7,9 @@
 Python package so that \code{from . import agents} in
 \srcpath{tricycle/__init__.py} works and setuptools includes the folder in the
 editable install. 0 lines. Without it, \code{packages.find} skips the folder,
-the import fails, and the task silently never registers (runbook, ``editable
-install + missing \code{__init__.py}'').
+\code{from . import agents} raises, and the task never registers. Creating
+the file is the entire fix; no reinstall is needed for it
+(Chapter~\ref{ch:pyproject}).
 
 \section{\texttt{agents/rsl\_rl\_ppo\_cfg.py}}
 

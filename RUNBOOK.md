@@ -134,10 +134,25 @@ No `--headless` flag; headless is the default. `--viz`, not
 them, reinstall with `-e`. The generated `TricycleDemo` scaffold is not
 needed; entry points make it redundant.
 
-**Editable install + missing `__init__.py`.** setuptools' `packages.find`
-skips directories without `__init__.py`, so the package installs as an
-empty namespace and imports silently register nothing. If a directory
-gains an `__init__.py` after install, reinstall.
+**Editable install: when a reinstall is actually needed.** Only after
+editing `pyproject.toml`. Verified on setuptools 79 with a clean venv:
+`pip install -e` writes a `.pth` + import finder into `site-packages` whose
+only mapping is the top-level `luna_hifi_tasks` -> this folder; everything
+below it resolves off the filesystem at import time. So editing any `.py`,
+adding a new subpackage, or adding an `__init__.py` to an existing folder all
+take effect on the next run with no reinstall. Entry points and package
+discovery, by contrast, are baked into `site-packages/*.dist-info` at install
+time, so a `pyproject.toml` change is invisible until you reinstall.
+
+**Missing `__init__.py`.** setuptools' `packages.find` only treats folders
+with an `__init__.py` as packages, and `from . import agents` fails without
+one, so imports silently register nothing. Adding the file is the whole fix;
+no reinstall is required.
+
+**`luna_hifi_tasks.egg-info/` is a build leftover, not live metadata.** The
+metadata the CLI reads is `site-packages/luna_hifi_tasks-0.1.0.dist-info`.
+Deleting the source-tree `egg-info` does not break task discovery (tested).
+It is now gitignored.
 
 **MJCF cannot be imported at runtime.** `spawn_from_mjcf` calls
 `isaacsim.asset.importer.mjcf`, a Kit extension that only exists after
@@ -205,8 +220,8 @@ port old Drucker-Prager alpha or log-strain cohesion numbers directly.
 | imgui-bundle builds from source and fails | Python 3.10 |
 | `isaaclab.bat not recognized` | need `.\` prefix, and `cd` to IsaacLab |
 | `No module named 'isaaclab_rl'` | venv not activated in this window |
-| `NameNotFound: Environment ... doesn't exist` | entry point missing, or reinstall needed |
-| gym registry empty after import | missing `__init__.py`, then reinstall |
+| `NameNotFound: Environment ... doesn't exist` | package not installed, or `pyproject.toml` entry point edited without reinstalling |
+| gym registry empty after import | missing `__init__.py` (just add it; no reinstall) |
 | `A prim already exists at path` | `_setup_scene` constructing assets |
 | capacity exceeded for upper/lower/leaf | raise that cap, keep ordering |
 | `Failed to create volume` + CUDA 700 spam | OOM; caps too high. One failure, not hundreds |

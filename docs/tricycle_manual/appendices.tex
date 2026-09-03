@@ -129,8 +129,18 @@ task's observation, action, reward or termination definitions.
 If \code{git checkout} or \code{git pull} complains that local changes to
 \code{.pyc} or \code{egg-info} files would be overwritten, those are the
 formerly tracked generated files; discard them with \code{git checkout -- .}
-(or \code{git stash}) and retry. Then reinstall once so pip rewrites its
-metadata for the cleaned tree:
+(or \code{git stash}) and retry.
+
+No reinstall is needed: \code{pyproject.toml} is unchanged by this revision,
+and the \srcpath{egg-info} the pull removes is a build leftover rather than
+the metadata the CLI reads (Chapter~\ref{ch:pyproject}). \code{tricycle.py}
+did change, so reconvert the asset:
+\begin{lstlisting}[style=shell]
+.\isaaclab.bat -p -c "from luna_hifi_tasks.tricycle.tricycle import write_mjcf; print(write_mjcf())"
+.\isaaclab.bat -p scripts\tools\convert_mjcf.py C:\Users\hanse\AppData\Local\Temp\luna_hifi_assets\tricycle.xml C:\Users\hanse\Documents\Luna_HiFi\assets\tricycle.usd
+\end{lstlisting}
+If the registry check ever comes back empty, reinstall once and it will be
+populated again:
 \begin{lstlisting}[style=shell]
 .\isaaclab.bat -p -m pip install -e C:\Users\hanse\Documents\Luna_HiFi
 \end{lstlisting}

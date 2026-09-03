@@ -113,8 +113,8 @@ particles are drawn because of our \code{play_mode()}.
 Symptom & Where in this manual \\
 \midrule
 \code{TypeError: Union[arg, ...]} on newton import & Python 3.10; Section~1 above. \\
-\code{NameNotFound: Environment ... doesn't exist} & Entry point not installed or stale: Chapter~\ref{ch:pyproject}, Section~\ref{sec:step_cli}. \\
-gym registry empty after import & Missing \code{__init__.py} then reinstall: Chapters~\ref{ch:pyproject}, \ref{ch:agents}. \\
+\srcpath{NameNotFound} on the task id & Package not installed, or \code{pyproject.toml} edited without reinstalling: Chapter~\ref{ch:pyproject}, Section~\ref{sec:step_cli}. \\
+gym registry empty after import & Missing \code{__init__.py}; add it, no reinstall: Chapters~\ref{ch:pyproject}, \ref{ch:agents}. \\
 \code{A prim already exists at path} & Assets constructed in \code{_setup_scene}: Chapter~\ref{ch:env}. \\
 capacity exceeded for upper/lower/leaf & Raise that cap, keep the ordering: cfg lines 257--260, Section~\ref{sec:mpm}. \\
 \code{Failed to create volume} + CUDA 700 & Caps too high for memory; one failure, then the context is poisoned: Section~\ref{sec:mpm}. \\

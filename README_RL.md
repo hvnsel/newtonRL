@@ -7,7 +7,9 @@ on implicit-MPM soil.
 > install commands, the `-v0` task ids and the six VERIFY items below are
 > superseded by [RUNBOOK.md](RUNBOOK.md), which records the setup that actually
 > trains and plays. Read the runbook first; keep this for the excavation
-> package's STUB/VERIFY map, which is still accurate.
+> package's STUB/VERIFY map, which is still accurate. For a line-by-line
+> explanation of the tricycle task and how it plugs into Isaac Lab, Newton
+> and rsl_rl, see `docs/tricycle_manual/main.pdf`.
 
 ```
 Luna_HiFi/                  <- pyproject.toml lives here; pip install -e this folder

@@ -1,0 +1,352 @@
+\chapter{From \texttt{isaaclab train} to a checkpoint}
+\label{ch:pipeline}
+
+This chapter follows one training run from the command line to the saved
+policy, naming the Isaac Lab function that performs each step. Nothing here is
+specific to the tricycle except the names of our classes; every Isaac Lab
+task on the develop branch goes through the same path.
+
+\section{The command}
+
+\begin{lstlisting}[style=shell]
+.\isaaclab.bat train --rl_library rsl_rl --task Luna-Tricycle-Direct --num_envs 4
+\end{lstlisting}
+
+\begin{itemize}[leftmargin=1.6em]
+  \item \code{isaaclab.bat} activates the venv's Python and runs the
+        \code{isaaclab} console script, i.e.\ the function \code{cli()} in
+        \srcpath{source/isaaclab/isaaclab/cli/__init__.py}.
+  \item \code{train} is the sub-command. Others are \code{play},
+        \code{zero_agent}, \code{random_agent}, \code{benchmark}.
+  \item \code{--rl_library rsl_rl} picks the learning library backend.
+  \item \code{--task Luna-Tricycle-Direct} is the Gymnasium id registered by
+        \srcpath{tricycle/__init__.py}. There is no \code{-v0} suffix.
+  \item \code{--num_envs 4} overrides \code{scene.num_envs} from the config.
+  \item Optional: \code{--viz newton} opens the Newton OpenGL window,
+        \code{--max_iterations N} overrides the runner config,
+        \srcpath{physics=newton_mjwarp} is a Hydra ``typed selector'' that swaps
+        the physics section for a preset (not needed here because our
+        \code{__post_init__} builds its own \code{NewtonCfg}).
+\end{itemize}
+
+\section{The whole path at a glance}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=5mm and 8mm,
+  box/.style={draw,rounded corners=2pt,align=left,font=\small,inner sep=5pt,minimum width=5.4cm,fill=white},
+  ours/.style={box,draw=isaacblue,thick,fill=isaacblue!5},
+  lab/.style={box,draw=black!60},
+  arr/.style={-{Stealth[length=2mm]},thick,black!70},
+  lbl/.style={font=\scriptsize\itshape,text=black!60,align=left}
+]
+\node[lab] (cli) {\textbf{isaaclab cli()}\\ \srcpath{isaaclab/cli/__init__.py}};
+\node[lab,below=of cli] (ep) {\textbf{load entry points} \code{isaaclab.tasks}\\ imports \code{luna_hifi_tasks}};
+\node[ours,below=of ep] (reg) {\textbf{gym.register} in \srcpath{tricycle/__init__.py}\\ id $\to$ env class, cfg class, agent cfg class};
+\node[lab,below=of reg] (train) {\textbf{run\_train\_cli} $\to$ \srcpath{backends/train_rsl_rl.py}};
+\node[lab,below=of train] (hydra) {\textbf{resolve configs} \srcpath{isaaclab_tasks/utils/hydra.py}\\ instantiate cfgs, \code{__post_init__}, presets, overrides};
+\node[ours,below=of hydra] (cfgs) {\textbf{TricycleEnvCfg} + \textbf{TricyclePPORunnerCfg}\\ \code{--num_envs} applied here, after \code{__post_init__}};
+\node[lab,below=of cfgs] (make) {\textbf{gym.make} $\to$ \srcpath{DirectRLEnv.__init__}\\ SimulationContext, InteractiveScene, sim.reset()};
+\node[ours,below=of make] (env) {\textbf{TricycleEnv} \code{tricycle_env.py}\\ \code{_setup_scene}, joint ids, buffers};
+\node[lab,below=of env] (wrap) {\textbf{RslRlVecEnvWrapper}\\ obs dict $\to$ TensorDict, \code{time_outs} in extras};
+\node[lab,below=of wrap] (runner) {\textbf{OnPolicyRunner.learn()} (rsl\_rl)\\ rollout $\to$ GAE $\to$ PPO update, 300 iterations};
+\node[lab,below=of runner] (ckpt) {\textbf{checkpoints} \srcpath{logs/rsl_rl/tricycle/<time>/model_*.pt}};
+\foreach \a/\b in {cli/ep,ep/reg,reg/train,train/hydra,hydra/cfgs,cfgs/make,make/env,env/wrap,wrap/runner,runner/ckpt}
+  \draw[arr] (\a) -- (\b);
+\node[lbl,right=6mm of ep] {start-up time};
+\node[lbl,right=6mm of hydra] {configuration time};
+\node[lbl,right=6mm of make] {run time};
+\end{tikzpicture}
+\caption{The training path. Blue boxes are code in this repository; grey boxes are Isaac Lab or \code{rsl_rl}.}
+\label{fig:path}
+\end{figure}
+
+\section{Step 1: the CLI finds our package}
+\label{sec:step_cli}
+
+\code{cli()} checks whether the first argument is one of its sub-commands. If
+it is, it first calls \srcpath{_load_external_tasks()}:
+
+\begin{lstlisting}[numbers=none]
+_TASK_ENTRY_POINT_GROUP = "isaaclab.tasks"
+
+def _load_external_tasks() -> None:
+    for entry_point in importlib.metadata.entry_points(group=_TASK_ENTRY_POINT_GROUP):
+        entry_point.load()
+\end{lstlisting}
+
+\begin{isaacbox}{entry points}
+An \emph{entry point} is a line of metadata that a package writes into the
+Python environment when it is installed. Isaac Lab defines the group name
+\code{isaaclab.tasks}; any installed package that lists something under that
+group gets imported by the CLI before the task name is looked up. Our
+\code{pyproject.toml} lists \code{luna_hifi_tasks = "luna_hifi_tasks"}, so
+\code{entry_point.load()} performs \code{import luna_hifi_tasks}.
+Entry points are read from the installed metadata, not from the source file,
+which is why editing \code{pyproject.toml} requires re-running
+\code{pip install -e}.
+\end{isaacbox}
+
+Importing \code{luna_hifi_tasks} runs the chain described in
+Section~\ref{sec:when}: the package \code{__init__} imports \code{tricycle},
+whose \code{__init__} calls \code{gym.register}. After this, Gymnasium's global
+registry maps the string \code{Luna-Tricycle-Direct} to three dotted paths:
+the environment class, the environment config class and the \code{rsl_rl}
+agent config class (Chapter~\ref{ch:task_init}).
+
+\code{cli()} then calls \code{train()}, which imports
+\srcpath{isaaclab_rl.entrypoints.run_train_cli}. That function reads
+\code{--rl_library} and dispatches to
+\srcpath{isaaclab_rl/entrypoints/backends/train_rsl_rl.py}.
+
+\section{Step 2: configs are built and overridden}
+\label{sec:step_cfg}
+
+The backend uses the \code{hydra_task_config} decorator from
+\srcpath{source/isaaclab_tasks/isaaclab_tasks/utils/hydra.py}. Its
+\code{register_task} function does the following, in order:
+
+\begin{enumerate}[leftmargin=1.8em]
+  \item \code{load_cfg_from_registry(task, "env_cfg_entry_point")} looks up
+        the registered string \srcpath{"...tricycle_env_cfg:TricycleEnvCfg"},
+        imports that module and \emph{instantiates the class}. Instantiating a
+        \code{configclass} runs its \code{__post_init__}, so at this moment
+        our \srcpath{TricycleEnvCfg.__post_init__} builds the whole
+        \code{NewtonCfg} (Chapter~\ref{ch:env_cfg}). The same is done for the
+        agent config.
+  \item Presets are collected and any \code{physics=NAME} or
+        \code{presets=...} selectors on the command line are applied with
+        \emph{replace} semantics: the whole config section is swapped, not
+        merged.
+  \item If this is a \code{play} run, \code{env_cfg.play_mode()} is called
+        (Section~\ref{sec:play}).
+  \item Remaining \code{env.xxx=value} / \code{agent.xxx=value} scalar
+        overrides are set with \code{setattr}, and anything else is handed to
+        Hydra proper.
+\end{enumerate}
+
+Separately, the backend's argument parser handles the classic flags. In
+\srcpath{isaaclab_rl/entrypoints/common.py}, \code{apply_env_overrides} does
+
+\begin{lstlisting}[numbers=none]
+if getattr(args_cli, "num_envs", None) is not None:
+    env_cfg.scene.num_envs = args_cli.num_envs
+\end{lstlisting}
+
+\begin{warnbox}{\code{--num_envs} arrives after \code{__post_init__}}
+The config object is fully built, \code{__post_init__} included, before the
+command-line \code{--num_envs} is written into it. Anything you computed
+inside \code{__post_init__} from \code{self.scene.num_envs} used the
+\emph{class default} (8), not the number you typed. This is why the MPM
+sparse-grid capacities in \code{tricycle_env_cfg.py} are fixed numbers that
+must be raised by hand when you train with more envs
+(Chapter~\ref{ch:physics}).
+\end{warnbox}
+
+\section{Step 3: the environment is built}
+\label{sec:step_env}
+
+\code{gym.make("Luna-Tricycle-Direct", cfg=env_cfg, ...)} instantiates
+\code{TricycleEnv}, whose \code{__init__} immediately calls
+\srcpath{DirectRLEnv.__init__} (\srcpath{source/isaaclab/isaaclab/envs/direct_rl_env.py}).
+That constructor does a great deal, in this order:
+
+\begin{enumerate}[leftmargin=1.8em]
+  \item \code{cfg.validate()}: every \code{MISSING} field must have been
+        filled in (\code{decimation}, \code{episode_length_s}, \code{scene},
+        \code{observation_space}, \code{action_space} are all required).
+  \item Seeds torch/numpy if \code{cfg.seed} is set (the runner sets it).
+  \item Creates the \code{SimulationContext} from \code{cfg.sim}. This is the
+        object that owns the physics backend; because our
+        \code{cfg.sim.physics} is a \code{NewtonCfg}, the Newton manager is
+        chosen (Chapter~\ref{ch:physics}).
+  \item \code{self.scene = InteractiveScene(self.cfg.scene)}: walks every
+        field of \code{TricycleSceneCfg}, spawns the prims on the USD stage
+        (ground plane, light, the car USD, the hidden slab, the soil particle
+        spawner), and creates the Python asset objects (\code{Articulation},
+        \code{RigidObject}, \code{MPMObject}) that will wrap them.
+  \item \code{self._setup_scene()}: our hook. In this repository it only
+        fetches the already-created assets by name.
+  \item \code{self.sim.reset()}: starts physics. For Newton this is where the
+        USD stage is read into a Newton \code{ModelBuilder}, replicated once
+        per env, finalised into a \code{Model}, and where the coupled solver
+        (rigid + MPM) is constructed. After this call, tensors like
+        \code{car.data.root_pos_w} are live.
+  \item \srcpath{self.scene.update(dt)} fills the data buffers once.
+  \item Allocates the per-env bookkeeping tensors:
+        \code{episode_length_buf}, \code{reset_terminated},
+        \code{reset_time_outs}, \code{reset_buf}, and builds the Gymnasium
+        spaces from \srcpath{observation_space} and \srcpath{action_space}
+        (an \code{int} becomes a \code{Box(-inf, inf, (n,))}).
+\end{enumerate}
+
+Only when \code{super().__init__} returns does the rest of
+\srcpath{TricycleEnv.__init__} run: looking up joint indices and allocating the
+action and previous-position buffers (Chapter~\ref{ch:env}).
+
+\begin{isaacbox}{InteractiveScene and asset objects}
+\code{InteractiveScene} (\srcpath{source/isaaclab/isaaclab/scene/interactive_scene.py})
+turns a scene \emph{config} into scene \emph{objects}. Each attribute of the
+scene cfg whose type is an asset cfg (\code{ArticulationCfg},
+\code{RigidObjectCfg}, \code{MPMObjectCfg}, \code{AssetBaseCfg}) becomes an
+entry in the scene, retrievable with \code{scene["name"]}. The scene also owns
+\code{env_origins}, an $(N,3)$ tensor with the world position of each env's
+origin, spaced \code{env_spacing} metres apart on a grid.
+\end{isaacbox}
+
+\section{Step 4: the wrapper}
+
+\code{rsl_rl} expects a specific interface (a \code{VecEnv}) rather than the
+Gymnasium one. \code{RslRlVecEnvWrapper}
+(\srcpath{source/isaaclab_rl/isaaclab_rl/rsl_rl/vecenv_wrapper.py}) adapts it:
+
+\begin{itemize}[leftmargin=1.6em]
+  \item \code{get_observations()} calls our \code{_get_observations()} and
+        returns the dictionary as a \code{TensorDict}. Our env returns a
+        dict with a single group, \code{"policy"}; \code{rsl_rl} maps that
+        group to both the actor and the critic when no \code{obs_groups} are
+        configured.
+  \item \code{step(actions)} optionally clips actions to
+        \code{clip_actions}, calls \code{DirectRLEnv.step}, merges
+        \code{terminated | truncated} into a single \code{dones} tensor, and
+        stores \code{truncated} as \code{extras["time_outs"]} so PPO can
+        bootstrap (Section~\ref{sec:term_vs_timeout}).
+  \item Exposes \code{num_envs}, \code{num_actions}, \code{episode_length_buf}
+        and \code{device}.
+\end{itemize}
+
+\section{Step 5: the runner}
+
+\code{train_rsl_rl.py} builds the log directory
+\srcpath{logs/rsl_rl/<experiment_name>/<YYYY-MM-DD_HH-MM-SS>}, dumps both configs
+into it as YAML (\srcpath{params/env.yaml}, \srcpath{params/agent.yaml}), then
+creates the runner and starts learning:
+
+\begin{lstlisting}[numbers=none]
+runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+runner.learn(num_learning_iterations=agent_cfg.max_iterations)
+\end{lstlisting}
+
+Inside \code{learn} (\srcpath{rsl_rl/runners/on_policy_runner.py}) every
+iteration is:
+
+\begin{lstlisting}[numbers=none]
+for _ in range(num_steps_per_env):          # 50 in our config
+    actions = self.alg.act(obs)               # sample from the Gaussian policy
+    obs, rewards, dones, extras = self.env.step(actions)
+    self.alg.process_env_step(obs, rewards, dones, extras)   # store + handle time_outs
+self.alg.compute_returns(obs)                 # GAE
+loss_dict = self.alg.update()                 # PPO epochs / mini-batches
+# log, and every save_interval iterations: torch.save(..., f"model_{it}.pt")
+\end{lstlisting}
+
+\code{TensorBoard} event files are written next to the checkpoints, so
+\code{tensorboard --logdir logs/rsl_rl/tricycle} shows the curves.
+
+\section{One environment step, in detail}
+\label{sec:step_detail}
+
+\srcpath{DirectRLEnv.step(action)} is the heart of the whole system and the order
+of operations inside it decides what your overridden methods may assume.
+Figure~\ref{fig:step} shows it for our \code{decimation = 2}.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=3mm,
+  st/.style={draw,rounded corners=2pt,font=\small\ttfamily,inner sep=4pt,minimum width=6.0cm,align=left,fill=white},
+  ours/.style={st,draw=isaacblue,thick,fill=isaacblue!6},
+  lab/.style={st,draw=black!60},
+  note/.style={font=\scriptsize,text=black!65,align=left},
+  arr/.style={-{Stealth[length=1.8mm]},black!70}
+]
+\node[ours] (pre) {\_pre\_physics\_step(action)};
+\node[note,right=4mm of pre] {store clamped actions};
+\node[lab,below=of pre] (loop) {for \_ in range(decimation):   \# 2 times};
+\node[ours,below=of loop,xshift=6mm] (apply) {\_apply\_action()};
+\node[note,right=4mm of apply] {write wheel / steer targets};
+\node[lab,below=of apply] (wds) {scene.write\_data\_to\_sim()};
+\node[lab,below=of wds] (simstep) {sim.step()   \# 10 ms of physics};
+\node[note,right=4mm of simstep] {coupled rigid + MPM solve};
+\node[lab,below=of simstep] (upd) {scene.update(dt)};
+\node[note,right=4mm of upd] {refresh car.data.* tensors};
+\node[lab,below=of upd,xshift=-6mm] (cnt) {episode\_length\_buf += 1};
+\node[ours,below=of cnt] (dones) {terminated, time\_out = \_get\_dones()};
+\node[ours,below=of dones] (rew) {reward = \_get\_rewards()};
+\node[note,right=4mm of rew] {uses state \emph{before} any reset};
+\node[lab,below=of rew] (ids) {reset\_env\_ids = nonzero(terminated | time\_out)};
+\node[ours,below=of ids] (reset) {\_reset\_idx(reset\_env\_ids)};
+\node[note,right=4mm of reset] {only for envs that ended};
+\node[ours,below=of reset] (obs) {obs = \_get\_observations()};
+\node[note,right=4mm of obs] {already sees the fresh state of reset envs};
+\node[lab,below=of obs] (ret) {return obs, reward, terminated, time\_out, extras};
+\draw[arr] (pre) -- (loop);
+\draw[arr] (loop) -- (apply);
+\draw[arr] (apply) -- (wds);
+\draw[arr] (wds) -- (simstep);
+\draw[arr] (simstep) -- (upd);
+\draw[arr] (upd) -- (cnt);
+\draw[arr] (cnt) -- (dones);
+\draw[arr] (dones) -- (rew);
+\draw[arr] (rew) -- (ids);
+\draw[arr] (ids) -- (reset);
+\draw[arr] (reset) -- (obs);
+\draw[arr] (obs) -- (ret);
+\begin{scope}[on background layer]
+\node[draw=black!25,dashed,rounded corners,fit=(apply)(wds)(simstep)(upd),inner sep=3pt] {};
+\end{scope}
+\end{tikzpicture}
+\caption{Order of operations in \code{DirectRLEnv.step}. Blue: methods implemented in \code{tricycle_env.py}. The dashed group runs \code{decimation} times per call.}
+\label{fig:step}
+\end{figure}
+
+Three consequences that the tricycle code relies on:
+
+\begin{itemize}[leftmargin=1.6em]
+  \item \textbf{Rewards are computed before resets.} \code{_get_rewards} may
+        compare the current car position with the position stored last step
+        (\code{_prev_x}); at that moment no env has been teleported yet.
+  \item \textbf{Observations are computed after resets.} The observation
+        returned for an env that just ended already describes the
+        \emph{new} episode. \code{rsl_rl} knows the episode boundary from
+        \code{dones}, so this is the expected behaviour.
+  \item \textbf{\code{_apply_action} runs every physics sub-step,}
+        \code{_pre_physics_step} once per control step. Cheap work (writing
+        targets) belongs in the former, decoding the action in the latter.
+\end{itemize}
+
+\begin{isaacbox}{the Newton fast path for decimation}
+After \code{sim.reset()}, \code{DirectRLEnv} asks the physics manager whether
+it can run the whole decimation loop itself
+(\srcpath{physics_manager.set_decimation(...)} /
+\srcpath{handles_decimation()}). When it can, the loop in
+Figure~\ref{fig:step} collapses into a single \code{sim.step} that internally
+performs \code{decimation} physics steps under one CUDA graph, and
+\code{_apply_action()} is called once. The observable behaviour for our task
+is identical because \code{_apply_action} writes the same targets each time.
+\end{isaacbox}
+
+\section{Play}
+\label{sec:play}
+
+\begin{lstlisting}[style=shell]
+.\isaaclab.bat play --rl_library rsl_rl --task Luna-Tricycle-Direct --num_envs 1 --checkpoint latest --viz newton
+\end{lstlisting}
+
+\code{play} follows the same path with two differences. First,
+\code{hydra_task_config(..., play_mode=True)} calls
+\code{env_cfg.play_mode()} after the presets are resolved and before scalar
+overrides, so our override in \code{TricycleEnvCfg} caps the env count and
+switches on particle rendering (Chapter~\ref{ch:env_cfg}); \code{--num_envs 1}
+then still wins because it is applied afterwards. Second, instead of learning,
+\code{play_rsl_rl.py} resolves the checkpoint (\code{latest} means the newest
+run directory under \srcpath{logs/rsl_rl/tricycle} and its highest-numbered
+\code{model_*.pt}), loads it into the runner, takes
+\srcpath{runner.get_inference_policy()} (the deterministic mean action), exports
+the network to \srcpath{exported/policy.pt} and \code{policy.onnx}, and loops
+\code{obs, _, dones, _ = env.step(policy(obs))} until the window closes.
+
+\code{--viz newton} attaches the Newton OpenGL visualiser. It draws rigid
+shapes by default; soil particles are drawn only because our
+\code{play_mode()} sets \code{show_particles=True}.

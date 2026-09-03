@@ -1,0 +1,29 @@
+\chapter{\texttt{luna\_hifi\_tasks/\_\_init\_\_.py}}
+\label{ch:package_init}
+
+\textbf{Role:} the package root. Importing it is what the Isaac Lab entry point
+does at start-up; its only job is to import the sub-packages that register
+tasks. 1 line.
+
+\codefile{\srcroot/luna_hifi_tasks/__init__.py}
+
+\begin{explain}
+\li{1} A relative import of the \code{tricycle} sub-package. Python executes
+  \srcpath{luna_hifi_tasks/tricycle/__init__.py} as a side effect, and that file
+  registers \code{Luna-Tricycle-Direct} with Gymnasium
+  (Chapter~\ref{ch:task_init}). The trailing \texttt{\# noqa: F401} tells linters
+  that the ``unused import'' is intentional: nothing here uses the name
+  \code{tricycle}, the import exists for its side effect.
+  The \code{excavation} sub-package is \emph{not} imported, which is the
+  concrete reason the two tasks are independent (Section~\ref{sec:independent}).
+  When the excavation task is ready, a second line
+  \texttt{from . import excavation  \# noqa: F401} registers it.
+\end{explain}
+
+\begin{warnbox}{a stray file that used to live at the repository root}
+Until this revision the repository also contained a file literally named
+\code{__init__ .py} (with a space) at the root, holding two import lines
+including \code{excavation}. A file with a space in its name cannot be
+imported, so it was dead; it has been deleted. The real package init is the
+one-liner above.
+\end{warnbox}

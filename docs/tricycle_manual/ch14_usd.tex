@@ -1,0 +1,258 @@
+\chapter{The USD asset files}
+\label{ch:usd}
+
+\textbf{Role:} the car as Isaac Lab actually loads it. These files are
+generated (Chapter~\ref{ch:asset}), so they are explained block by block
+rather than line by line; every block is covered. Listings are the committed
+files. The paths are relative to \srcpath{assets/}.
+
+\newcommand{\usdpart}[3]{\lstinputlisting[style=plain,basicstyle=\ttfamily\footnotesize,firstline=#2,lastline=#3,firstnumber=#2]{#1}}
+\newcommand{\usdfile}[1]{\lstinputlisting[style=plain,basicstyle=\ttfamily\footnotesize]{#1}}
+
+\section{\texttt{tricycle/tricycle.usda}: the entry point}
+
+\usdfile{\srcroot/assets/tricycle/tricycle.usda}
+
+\begin{explain}
+\lis{1}{18} Layer metadata. \code{creator} records the converter version;
+  \code{doc} keeps the temp paths the converter went through (three
+  stages: MuJoCo USD Converter, the \code{usdex} rewrite, the Isaac asset
+  transformer); \code{kilogramsPerUnit}/\code{metersPerUnit} say the file is
+  in SI units; \code{upAxis = "Z"} matches Isaac Lab and MuJoCo.
+  \code{defaultPrim = "tricycle"} tells a referencing stage which prim to
+  graft in, which is how \code{UsdFileCfg} places \srcpath{/tricycle} at
+  \code{{ENV_REGEX_NS}/Tricycle}.
+\lis{20}{27} The root prim, an \code{Xform}, pulls in \srcpath{payloads/base.usda}
+  by reference and declares a variant set named \code{Physics} whose
+  selected variant is \code{"physics"}.
+\lis{28}{48} The four variants. \code{mujoco}, \code{physics} and
+  \code{physx} each add a payload file; \code{none} adds nothing (a
+  visual-only car). Only the selected variant's payload is composed, so with
+  \code{"physics"} selected, \srcpath{Physics/physics.usda} is loaded and the
+  MuJoCo/PhysX-specific files are not.
+\end{explain}
+
+\section{\texttt{payloads/base.usda}: geometry}
+
+\usdpart{\srcroot/assets/tricycle/payloads/base.usda}{1}{46}
+
+\begin{explain}
+\lis{1}{22} Metadata as above, plus \code{subLayers = [@./robot.usda@]}:
+  the robot-schema layer is stacked under this one, so its \code{over}
+  blocks apply to the prims defined here.
+\lis{23}{30} The root prim gets \code{GeomModelAPI} and
+  \code{IsaacRobotAPI}; \code{kind = "component"} marks it as one model.
+\li{31} \code{extentsHint}: the bounding box of the whole car, from the back
+  of the rear wheels ($x=-0.25$) to the front of the front wheel
+  ($x=0.32$), $\pm0.26$ in $y$, and $0$ to $0.2$ in $z$ (wheel bottoms to
+  wheel tops). Unchanged by the new body because the frame lies inside this
+  box.
+\lis{32}{34} Empty robot-joint/robot-link relationships and the robot type,
+  filled in by Isaac's asset transformer.
+\li{36} All geometry lives under a \code{Geometry} scope.
+\lis{38}{45} The chassis body: an \code{Xform} with \code{IsaacLinkAPI},
+  translated to $z=0.14$ (the MJCF body \code{pos}), identity orientation,
+  unit scale. \code{xformOpOrder} fixes the order translate $\to$ orient
+  $\to$ scale.
+\end{explain}
+
+\usdpart{\srcroot/assets/tricycle/payloads/base.usda}{47}{130}
+
+\begin{explain}
+\lis{47}{66} The left rail as a \code{Cube} prim. USD's \code{Cube} is a
+  unit cube of edge \code{size = 2} (so it spans $-1..1$), and the box's
+  half-sizes are applied as \code{xformOp:scale = (0.1961, 0.02, 0.015)}.
+  \code{xformOp:translate} is the rail centre and \code{xformOp:orient} is
+  the yaw as a quaternion in $(w, x, y, z)$ order: $(0.98576, 0, 0,
+  -0.16814)$ is a rotation of $-19.4^\circ$ about $z$. The prim carries
+  \code{PhysicsCollisionAPI} (it is a collider) and
+  \code{MaterialBindingAPI} with the binding to the shared physics material.
+  \code{displayColor}/\code{displayOpacity} come from the MJCF
+  \code{rgba}. \code{extent} is the unit cube's own bound; the scale is
+  applied on top.
+\lis{68}{87} The right rail, identical except for the mirrored translate and
+  the opposite quaternion sign.
+\lis{89}{108} The crossbar: no rotation, half-sizes $(0.02, 0.15, 0.015)$
+  at $x=-0.15$.
+\lis{110}{129} The deck: half-sizes $(0.06, 0.065, 0.01)$ at $x=-0.08$, in
+  the lighter colour.
+\end{explain}
+
+\usdpart{\srcroot/assets/tricycle/payloads/base.usda}{131}{194}
+
+\begin{explain}
+\lis{131}{138} The fork body under the chassis, translated to $(0.22, 0,
+  -0.04)$: the MJCF body \code{pos}.
+\lis{140}{161} The fork's capsule. USD capsules are along an axis
+  (\code{axis = "Z"}) with \code{height} being the cylinder part (0.04) and
+  \code{radius} 0.012. The odd \code{orient = (6.1e-17, 1, 0, 0)} is a
+  $180^\circ$ flip about $x$: the MJCF \code{fromto} pointed downwards and
+  the converter preserved that direction exactly.
+\lis{163}{193} The front wheel body nested inside the fork (at the fork
+  origin), containing a \code{Sphere} of radius 0.1, coloured dark grey,
+  with the same collision and material tags.
+\end{explain}
+
+\usdpart{\srcroot/assets/tricycle/payloads/base.usda}{195}{266}
+
+\begin{explain}
+\lis{195}{225} The left rear wheel body at $(-0.15, 0.16, -0.04)$ with its
+  sphere.
+\lis{226}{255} The right rear wheel body at $(-0.15, -0.16, -0.04)$ with its
+  sphere.
+\lis{259}{266} A \code{Physics} scope holding the one shared
+  \code{PhysicsMaterial} that all colliders bind to. Its attributes are
+  added by \code{physics.usda}.
+\end{explain}
+
+\begin{isaacbox}{what Newton builds from this}
+Reading the composed stage, Isaac Lab's Newton backend creates one Newton
+body per prim with \code{PhysicsRigidBodyAPI} (chassis, fork, three wheels),
+one Newton shape per prim with \code{PhysicsCollisionAPI} (four cubes, one
+capsule, three spheres), and one joint per \code{PhysicsRevoluteJoint}
+prim. Body mass and inertia are accumulated from the shapes'
+\code{physics:mass} and geometry, exactly as MuJoCo did when it compiled the
+MJCF.
+\end{isaacbox}
+
+\section{\texttt{payloads/robot.usda}: robot schema tags}
+
+\usdfile{\srcroot/assets/tricycle/payloads/robot.usda}
+
+\begin{explain}
+\lis{1}{19} Metadata.
+\lis{20}{25} \code{over "tricycle"}: adds \code{IsaacRobotAPI} and the two
+  relationship attributes that list the robot's joints and links.
+\lis{27}{78} A mirror of the body tree in which every body gets
+  \code{IsaacLinkAPI} and every joint gets \code{IsaacJointAPI}. These tags
+  are how Isaac Lab tools recognise ``this prim is a robot link/joint''
+  independent of the physics variant. Note the joint prims (\code{steer},
+  \code{front_wheel}, \code{rear_left}, \code{rear_right}) live under the
+  \emph{child} body of the joint, which is also where \code{physics.usda}
+  defines them.
+\end{explain}
+
+\section{\texttt{payloads/Physics/physics.usda}: bodies, joints, masses}
+
+\usdpart{\srcroot/assets/tricycle/payloads/Physics/physics.usda}{1}{65}
+
+\begin{explain}
+\lis{1}{18} Metadata.
+\lis{20}{22} Overrides on the existing prims.
+\lis{24}{28} The chassis becomes a rigid body (\code{PhysicsRigidBodyAPI}),
+  the articulation root (\code{PhysicsArticulationRootAPI},
+  \code{NewtonArticulationRootAPI}), and
+  \code{newton:selfCollisionEnabled = 0}: bodies of the car do not collide
+  with each other. This is why the rails can end inside the wheel spheres
+  and the fork capsule can sit inside the front wheel without generating
+  contacts.
+\lis{30}{37} The left rail gets \code{NewtonCollisionAPI} (Newton-specific
+  collision settings; \code{newton:contactGap = 0}) and \code{PhysicsMassAPI}
+  with \code{physics:mass = 0.8}. \code{physics:density = 1000} is written
+  by the converter but mass takes precedence.
+\lis{39}{64} The same for the right rail (0.8), crossbar (0.8) and deck
+  (2.6). The four masses sum to 5.0~kg.
+\end{explain}
+
+\usdpart{\srcroot/assets/tricycle/payloads/Physics/physics.usda}{66}{125}
+
+\begin{explain}
+\lis{66}{68} The fork becomes a rigid body.
+\lis{70}{76} Its capsule: collision tags and 0.1~kg.
+\lis{78}{80} The front wheel body becomes a rigid body.
+\lis{82}{89} Its sphere: collision tags and 0.5~kg.
+\lis{92}{105} The \code{front_wheel} joint: a \code{PhysicsRevoluteJoint}
+  about axis \code{Y}, between \code{body0} (the fork) and \code{body1} (the
+  wheel body), located at the origin of both (\code{localPos0/1 = 0},
+  identity rotations). It carries \code{PhysicsDriveAPI:angular} and
+  \code{PhysicsJointStateAPI:angular}, the schemas through which Isaac Lab
+  sets drive targets/gains and reads joint state. No limits: it spins
+  freely.
+\lis{108}{124} The \code{steer} joint: revolute about \code{Z}, between the
+  chassis (\code{body0}) and the fork (\code{body1}), anchored at
+  \code{localPos0 = (0.22, 0, -0.04)} in the chassis and at the fork's
+  origin. Limits $\pm34.377^\circ$ are the MJCF's $\pm0.6$~rad converted to
+  degrees, which is USD's unit for joint limits.
+\end{explain}
+
+\usdpart{\srcroot/assets/tricycle/payloads/Physics/physics.usda}{126}{198}
+
+\begin{explain}
+\lis{126}{153} The left rear wheel: rigid body, 0.5~kg sphere, and the
+  \code{rear_left} revolute joint about \code{Y} between chassis and wheel,
+  anchored at $(-0.15, 0.16, -0.04)$ in the chassis frame. No limits.
+\lis{155}{183} The right rear wheel and \code{rear_right} joint, mirrored.
+\lis{186}{197} The shared physics material gets \code{PhysicsMaterialAPI} and
+  \code{NewtonMaterialAPI} with the friction values from the MJCF default
+  geom: dynamic 0.8, torsional 0.005, rolling 0.0001.
+\end{explain}
+
+\begin{isaacbox}{how the env cfg's actuators meet these joints}
+\code{ImplicitActuatorCfg} entries in \code{tricycle_env_cfg.py} are matched
+to these joint prims by name (\code{joint_names_expr}). At start-up Isaac Lab
+writes the configured stiffness, damping and limits into the joints' drive
+attributes (or, with \srcpath{use_newton_actuators}, into native Newton
+actuators). The USD carries no gains of its own, which is why the cfg must
+supply them.
+\end{isaacbox}
+
+\section{\texttt{payloads/Physics/mujoco.usda}: MuJoCo variant}
+
+\usdfile{\srcroot/assets/tricycle/payloads/Physics/mujoco.usda}
+
+\begin{explain}
+\lis{1}{21} Metadata; this layer sublayers \code{physics.usda}, so it is
+  ``physics plus MuJoCo extras''.
+\lis{23}{121} For every collider, \code{MjcCollisionAPI}; for every joint,
+  \code{MjcJointAPI} with \code{mjc:damping = 0.02} (the MJCF default joint
+  damping), and the generic drive/state schemas deleted because MuJoCo would
+  read its own. This variant would be used to round-trip the asset back into
+  a MuJoCo-native pipeline; Isaac Lab's Newton backend uses the
+  \code{physics} variant instead, so \emph{the 0.02 joint damping from the
+  MJCF is not active during training}. The wheels' damping in training comes
+  from the actuator configs (and the free front wheel has none beyond
+  solver defaults).
+\lis{123}{131} \code{MjcMaterialAPI} on the shared material.
+\end{explain}
+
+\section{\texttt{payloads/Physics/physx.usda}: PhysX variant}
+
+\usdfile{\srcroot/assets/tricycle/payloads/Physics/physx.usda}
+
+\begin{explain}
+\lis{1}{21} Metadata; also sublayers \code{physics.usda}.
+\lis{23}{66} Adds \code{PhysxJointAPI} to the four joints. Not loaded with
+  Newton.
+\end{explain}
+
+\section{\texttt{config.yaml} and \texttt{.asset\_hash}}
+
+\usdfile{\srcroot/assets/config.yaml}
+
+\begin{explain}
+\lis{1}{3} The converter's inputs: source MJCF (the temp file
+  \code{write_mjcf} produced), the output directory and the output file name
+  (with the subfolder the converter chose).
+\li{4} \code{force_usd_conversion: true}: reconvert even if the hash
+  matches.
+\li{5} \code{make_instanceable: true}: mark the asset so that many copies
+  share geometry.
+\li{6} Which physics variant to select: \code{physics}.
+\lis{7}{9} Mesh handling: keep separate meshes, no collision-from-visuals,
+  convex-hull collision for meshes (irrelevant for primitives).
+\li{10} \code{self_collision: false}: the source of
+  \code{newton:selfCollisionEnabled = 0}.
+\li{11} Do not import a MuJoCo physics scene (Isaac Lab creates its own).
+\li{12} The car is not fixed to the world (it has a free joint).
+\li{13} No default density override.
+\lis{14}{18} Robot type and optional actuator gain/bias overrides, all
+  defaults.
+\lis{19}{20} The two post-processing passes (Chapter~\ref{ch:asset}).
+\li{21} Debug off.
+\lis{22}{24} A trailer with the conversion date.
+\end{explain}
+
+\code{.asset_hash} holds one MD5 string computed from the converter config
+and the MJCF contents. Isaac Lab compares it with a fresh hash on the next
+conversion and skips the work when they match (unless
+\srcpath{force_usd_conversion} is set). It is not consulted at training time.

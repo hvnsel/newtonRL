@@ -1,0 +1,60 @@
+\chapter{\texttt{pyproject.toml}}
+\label{ch:pyproject}
+
+\textbf{Role:} tells \code{pip} how to install the package and tells Isaac Lab
+that the package contains tasks. It is read once, at install time
+(Section~\ref{sec:when}). 17 lines.
+
+\plainfile{\srcroot/pyproject.toml}
+
+\begin{explain}
+\li{1} Opens the \code{[project]} table, the standard place (PEP~621) for a
+  package's metadata.
+\li{2} The distribution name. This is what \code{pip list} shows and what the
+  installed metadata folder is called (\srcpath{luna_hifi_tasks-0.1.0.dist-info}).
+  It happens to equal the import name, but the two are independent.
+\li{3} Version string; not used by anything in Isaac Lab, but required by pip.
+\li{4} Free-text description shown by \code{pip show}.
+\li{5} Refuses to install on Python older than 3.11. Newton~1.5 uses the
+  \code{X | None} union syntax in type annotations at run time, which Python
+  3.10 rejects (RUNBOOK section 1). The runbook goes further and uses 3.12.
+\li{6} No dependencies are declared, deliberately. Isaac Lab, Newton, torch,
+  warp and gymnasium all come from the Isaac Lab venv; declaring them here
+  would make pip try to resolve versions it must not touch.
+\li{7} Blank separator.
+\li{8} Opens the entry-point table for the group \code{isaaclab.tasks}. The
+  quotes are needed because the group name contains a dot. This is the single
+  line that makes the package discoverable by the \code{isaaclab} command
+  (Section~\ref{sec:step_cli}).
+\li{9} One entry point: name \code{luna_hifi_tasks}, target the module
+  \code{luna_hifi_tasks}. When Isaac Lab calls \code{entry_point.load()} on it,
+  Python imports that module, which triggers the task registration. The
+  target could have been a sub-module or an object; the whole package is used
+  so that adding \code{from . import excavation} later registers the second
+  task without touching this file.
+\li{10} Blank.
+\li{11} Opens the build-system table: which tool turns this folder into an
+  installable package.
+\li{12} Requires \code{setuptools} 64 or newer, the first version with
+  PEP~660 editable installs. That is what makes \code{pip install -e} work
+  without a \code{setup.py}.
+\li{13} The build backend entry point inside setuptools.
+\li{14} Blank.
+\li{15} Configures setuptools' automatic package discovery.
+\li{16} Search for packages starting in the repository root.
+\li{17} Only take folders whose name starts with \code{luna_hifi_tasks}. This
+  excludes \code{assets}, \code{docs} and anything else at the root. A
+  folder only counts as a package if it contains \code{__init__.py}; a
+  sub-folder without one is silently skipped, which is the failure mode
+  described in the runbook (``editable install + missing \code{__init__.py}'').
+\end{explain}
+
+\begin{isaacbox}{editable installs}
+\code{pip install -e <folder>} does not copy the code. It writes a small
+\code{.pth} or finder hook into the venv's \code{site-packages} that points
+back at the folder, plus the metadata (\code{.dist-info}, including the
+entry points). Edits to \code{.py} files are picked up on the next run without
+reinstalling; edits to \code{pyproject.toml} (entry points) or the arrival of
+a new \code{__init__.py} require \code{pip install -e} again because the
+metadata is only written at install time.
+\end{isaacbox}

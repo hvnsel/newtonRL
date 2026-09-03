@@ -1,0 +1,64 @@
+\chapter{\texttt{tricycle/\_\_init\_\_.py}: registering the task}
+\label{ch:task_init}
+
+\textbf{Role:} gives the task its public name and tells Gymnasium and Isaac
+Lab which three classes implement it. Runs once at start-up. 25 lines.
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/__init__.py}{1}{11}
+
+\begin{explain}
+\lis{1}{11} Header comment. Lines 3--5 state the mechanism (entry point
+  $\to$ import $\to$ registration); lines 7--8 are the two commands from the
+  runbook, so anyone opening the file sees how to run it; lines 10--11 give
+  the success criterion in the unit the reward is measured in (metres in
+  2~s).
+\end{explain}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/__init__.py}{12}{25}
+
+\begin{explain}
+\li{13} Gymnasium is the maintained fork of OpenAI Gym. Isaac Lab uses its
+  registry as the phone book of tasks; nothing else from it is needed here.
+\li{15} Imports the \code{agents} sub-package so that \code{agents.__name__}
+  can be used on line 23 to spell the dotted path of the PPO config
+  without hard-coding it. This also executes \srcpath{agents/__init__.py}, which
+  is empty.
+\li{17} \code{gym.register} adds one entry to the global registry. Everything
+  inside the call is stored as data; no class is imported yet.
+\li{18} The task id. Isaac Lab develop's own tasks drop the \code{-v0} suffix
+  the old scripts used, and so do we. \code{--task Luna-Tricycle-Direct}
+  on the command line must match this string exactly.
+\li{19} The environment class as a dotted path string,
+  \code{module:ClassName}. \code{__name__} is \srcpath{luna_hifi_tasks.tricycle},
+  so this reads \srcpath{luna_hifi_tasks.tricycle.tricycle_env:TricycleEnv}.
+  Gymnasium imports it lazily when \code{gym.make} is called
+  (Section~\ref{sec:step_env}).
+\li{20} Gymnasium normally wraps every environment in a checker that
+  validates observation shapes against the declared space on each step. Isaac
+  Lab environments return dictionaries of batched tensors, which the checker
+  does not understand, so every Isaac Lab task disables it.
+\li{21} Extra keyword arguments. Gymnasium passes them to the environment
+  constructor, but Isaac Lab reads them earlier, from the registry, to find
+  the config classes.
+\li{22} \code{env_cfg_entry_point}: the environment config class. Isaac Lab's
+  \code{load_cfg_from_registry(task, "env_cfg_entry_point")} imports
+  \srcpath{luna_hifi_tasks.tricycle.tricycle_env_cfg} and instantiates
+  \code{TricycleEnvCfg} (Section~\ref{sec:step_cfg}).
+\li{23} \srcpath{rsl_rl_cfg_entry_point}: the agent config for the
+  \code{rsl_rl} library, built from \code{agents.__name__}
+  (\srcpath{luna_hifi_tasks.tricycle.agents}) plus the module and class. The key
+  name is a convention: \code{--rl_library rsl_rl} makes Isaac Lab look up
+  \srcpath{rsl_rl_cfg_entry_point}; a \code{skrl} backend would look for
+  \srcpath{skrl_cfg_entry_point}, and so on.
+\li{24} Closes the \code{kwargs} dictionary.
+\li{25} Closes the \code{gym.register} call.
+\end{explain}
+
+\begin{isaacbox}{the three classes behind one task id}
+Every Isaac Lab task is a triple: an \emph{env class} (behaviour), an
+\emph{env cfg class} (data: scene, physics, spaces), and one \emph{agent cfg
+class per learning library}. The registry stores their import paths as
+strings so that listing tasks does not import heavy modules. The
+\code{gym.make} call and the two \srcpath{load_cfg_from_registry} calls are where
+the strings are turned into classes.
+\end{isaacbox}

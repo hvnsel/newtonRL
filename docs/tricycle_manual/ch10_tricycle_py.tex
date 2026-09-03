@@ -1,0 +1,205 @@
+\chapter{\texttt{tricycle.py}: the car model}
+\label{ch:tricycle_py}
+
+\textbf{Role:} defines the car as an MJCF string and offers a helper to write
+it to disk for conversion. At run time only three constants are imported from
+it (\code{CHASSIS_Z}, \code{JOINT_STEER}, \code{JOINT_REAR}); the MJCF itself
+is used offline (Chapter~\ref{ch:asset}). 156 lines.
+
+\section{Header}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle.py}{1}{29}
+
+\begin{explain}
+\lis{1}{4} What the file is.
+\lis{6}{9} The most important operational fact about this file: it is
+  \emph{not} read during training. The USD under \srcpath{assets/} is, and it
+  must be regenerated when this file changes.
+\lis{11}{18} An ASCII plan view of the body so that the numbers below have a
+  picture: the two rails meet at the apex over the front wheel; the crossbar
+  closes the rear; the deck sits inside.
+\lis{20}{23} Why the wheels are spheres. The implicit MPM solver treats
+  colliders as signed-distance fields; a sphere's distance function is one
+  subtraction and one square root, the cheapest and most robust collider it
+  has. For ``does the pipeline train'' the shape of the contact patch does
+  not matter. Line 22--23 records that wheel positions and radii were kept
+  from the first working version so the soil coupling did not move.
+\lis{25}{26} A body whose geoms have zero total mass has a zero inertia
+  tensor, and the solver divides by it. Every body here carries a geom with an
+  explicit \code{mass}.
+\lis{28}{29} The coordinate convention: $+x$ forward, $+z$ up, wheel bottoms
+  at $z=0$ when the chassis origin is at $z=0.14$.
+\end{explain}
+
+\section{Imports and dimensions}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle.py}{31}{66}
+
+\begin{explain}
+\li{31} Lets the annotations on line 73 (\code{str | None},
+  \code{tuple[float, float]}) be written in the modern form on any Python
+  3.7+.
+\lis{33}{35} \code{math} for the rail geometry, \code{os} and
+  \code{tempfile} for \code{write_mjcf}.
+\li{41} Sphere radius of all three wheels, 10~cm.
+\li{42} Height of the chassis body origin above the ground when the wheels
+  rest on $z=0$. \code{tricycle_env_cfg.py} imports this to compute the spawn
+  height.
+\li{43} Wheel centres relative to the chassis origin: $0.10 - 0.14 = -0.04$.
+  Defined once so the three wheel bodies cannot drift apart.
+\li{45} $x$ of the steering axis and the front wheel centre, 22~cm ahead of
+  the chassis origin.
+\li{46} $x$ of the rear axle, 15~cm behind. Wheelbase $= 0.37$~m.
+\li{47} Half the rear track: rear wheel centres at $y=\pm0.16$.
+\li{50} The apex of the triangle, directly over the steering axis.
+\li{51} The rear corners of the triangle sit at $y=\pm0.13$, 3~cm inside the
+  wheel centres, so the rails end inside the wheel spheres and the corners
+  are visually capped by the wheels (Section~\ref{sec:new_body}).
+\lis{52}{53} Rail cross-section: half-width 2~cm, half-height 1.5~cm, i.e.\
+  4~cm wide and 3~cm tall. MuJoCo box sizes are always half-extents.
+\lis{56}{58} Geom masses. $0.8 + 0.8 + 0.8 + 2.6 = 5.0$~kg, the same as the
+  old single box, so the car's weight, wheel loads and drive torques are
+  unchanged. Compiled with MuJoCo, the chassis centre of mass lands at
+  $x=-0.054$~m (slightly behind the origin, towards the driven wheels) and
+  the principal inertia is about $(0.062, 0.044, 0.019)$~kg\,m$^2$.
+\lis{60}{62} Joint names. These strings appear in the MJCF, survive the USD
+  conversion as prim names, and are what \code{tricycle_env.py} passes to
+  \code{find_joints}. \code{JOINT_REAR} is a list because the two rear wheels
+  are always addressed together.
+\lis{64}{66} Colours as MJCF \code{rgba} strings. The converter copies them
+  into \code{primvars:displayColor}, so they are what the Newton viewer
+  shows.
+\end{explain}
+
+\section{Building the frame}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle.py}{68}{99}
+
+\begin{explain}
+\li{73} A helper that returns one \code{<geom>} element for a box whose local
+  $x$ axis runs from \code{start} to \code{end} in the chassis $xy$-plane.
+  Writing the rails this way means the numbers are derived from the corner
+  coordinates rather than typed by hand.
+\li{74} Docstring.
+\li{75} The vector from start to end.
+\li{76} Half the rail length; MuJoCo wants half-extents. For the rails,
+  $\tfrac12\sqrt{0.37^2+0.13^2} = 0.1961$~m.
+\li{77} The yaw angle of that vector. For the left rail (from $(-0.15,
+  0.13)$ to $(0.22, 0)$) it is $\operatorname{atan2}(-0.13, 0.37) =
+  -0.338$~rad $\approx -19.4^\circ$; the right rail gets $+0.338$.
+\li{78} The rail's centre: the midpoint, $(0.035, \pm0.065)$.
+\lis{79}{82} Emit the element. \code{pos} is the centre, \code{euler="0 0
+  yaw"} rotates about $z$ (the compiler is told on line 107 that angles are
+  radians), \code{size} is (half-length, half-width, half-height),
+  \code{mass} fixes the mass (MuJoCo derives the density and the inertia),
+  \code{rgba} the colour. The \code{name} lets the geom be found in the USD.
+\li{85} The left rail: from the left rear corner to the apex.
+\li{86} The right rail: mirror image.
+\lis{89}{93} The crossbar, a box centred on the rear axle line
+  ($x=-0.15$), half-length in $y$ of $0.13+0.02 = 0.15$ so that it covers
+  the rails' ends, and the same cross-section as the rails.
+\lis{96}{99} The deck: a $12\times13\times2$~cm plate centred at
+  $x=-0.08$, i.e.\ filling the rear half of the triangle where it is wide
+  enough, 5~mm lower than the rails' top surface so it reads as a floor pan.
+  It carries 2.6 of the 5~kg.
+\end{explain}
+
+\begin{whybox}{why boxes and not a triangular mesh}
+MJCF has no triangle primitive. A mesh with inline vertices would survive
+MuJoCo's compiler, but boxes are the safest shape for every stage of the
+pipeline: the USD converter writes them as \code{Cube} prims with a scale,
+Newton's rigid collision pipeline handles boxes analytically, and the Isaac
+Lab visualiser draws them without any mesh import. Three rails plus a deck
+give an unmistakable triangle at zero risk.
+\end{whybox}
+
+\section{The MJCF string}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle.py}{101}{143}
+
+\begin{explain}
+\li{105} An f-string: every \code{{...}} is filled in by Python at import
+  time, so the constants above and the rail strings are pasted into the XML.
+\li{106} Root element; \code{model} is just a label.
+\li{107} Compiler options. \code{angle="radian"} makes \code{euler} and joint
+  \code{range} values radians (the steering range on line 123 is
+  $\pm0.6$~rad). \code{autolimits="true"} tells MuJoCo that a joint with a
+  \code{range} is limited without needing a separate \code{limited="true"}.
+\lis{108}{111} Defaults inherited by every geom and joint. \code{condim="3"}
+  gives contacts normal force plus two friction directions (sliding friction,
+  no torsional/rolling terms). \code{friction="0.8 0.005 0.0001"} sets
+  sliding, torsional and rolling friction coefficients; the converter copied
+  these into the USD physics material (\code{physics:dynamicFriction = 0.8},
+  \code{newton:torsionalFriction = 0.005}, \code{newton:rollingFriction =
+  0.0001}). \code{joint damping="0.02"} adds a small viscous torque to every
+  hinge so free wheels do not spin forever.
+\li{113} Everything with a physical pose lives under \code{<worldbody>}.
+\li{114} The chassis body, placed at $z=0.14$ in the world when the model is
+  loaded on its own.
+\li{115} A free joint: six degrees of freedom, so the chassis floats and can
+  translate and rotate freely. Isaac Lab treats a body with a free joint as
+  a \emph{floating-base} articulation, and its pose is the ``root state''
+  that \code{tricycle_env.py} reads and writes.
+\lis{116}{119} The four frame geoms, pasted in from lines 85--99.
+\li{121} Comment.
+\li{122} The fork body, a child of the chassis, at the front wheel centre.
+  Its origin is the steering axis.
+\li{123} The steering joint: a hinge about the fork's $z$ axis with range
+  $\pm0.6$~rad ($\pm34.4^\circ$). The USD converter writes this as
+  \code{physics:lowerLimit = -34.377} degrees. \code{tricycle_env_cfg.py}
+  commands it with a position target of at most $\pm0.5$~rad, inside the
+  limit.
+\li{124} A thin vertical capsule (radius 1.2~cm, from $z=+0.02$ to
+  $z=-0.02$ in the fork frame) so the fork body has mass (0.1~kg) and hence
+  inertia. It sits entirely inside the front wheel sphere.
+\li{125} The front wheel body, a child of the fork, at the fork origin.
+\li{126} The wheel's spin axis: a hinge about $y$. No range, no actuator:
+  the front wheel free-rolls on its default joint damping.
+\li{127} The wheel sphere, 0.5~kg.
+\lis{128}{129} Close the wheel and fork bodies.
+\li{131} Comment.
+\lis{132}{135} The left rear wheel: a body at $(-0.15, 0.16, -0.04)$ with a
+  hinge about $y$ named \code{rear_left} and a 0.5~kg sphere. This joint is
+  velocity-driven from the env.
+\lis{136}{139} The right rear wheel, mirrored in $y$.
+\lis{140}{143} Close chassis, worldbody, mujoco, and the f-string.
+\end{explain}
+
+\begin{isaacbox}{what Isaac Lab needs from this model}
+Isaac Lab's \code{Articulation} class needs: exactly one root body (the
+chassis, with its free joint), joints with stable names (for
+\code{find_joints}), and every body with mass. It gets the joint
+\emph{order} from the USD; \code{find_joints} returns indices in that order,
+which is why the env never assumes a fixed index.
+\end{isaacbox}
+
+\section{Writing the file}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle.py}{146}{156}
+
+\begin{explain}
+\li{146} \code{write_mjcf} takes an optional directory and returns the path
+  written.
+\lis{147}{150} Docstring: idempotent, offline use only. The runbook's
+  conversion step calls this function through
+  \code{python -c "from luna_hifi_tasks.tricycle.tricycle import write_mjcf; print(write_mjcf())"}.
+\li{151} Default location: the system temp directory plus
+  \srcpath{luna_hifi_assets}. On Windows that is the folder the runbook's
+  converter command reads from:
+\begin{lstlisting}[style=shell]
+C:\Users\<you>\AppData\Local\Temp\luna_hifi_assets\tricycle.xml
+\end{lstlisting}
+\li{152} Create the folder if needed.
+\li{153} The file is always called \code{tricycle.xml}.
+\lis{154}{155} Write the XML with the surrounding blank lines stripped and a
+  final newline.
+\li{156} Return the path so the caller can print it.
+\end{explain}
+
+\begin{whybox}{no more write-at-import}
+The previous version of this file ended with
+\code{TRICYCLE_MJCF_PATH = write_mjcf()}, so every \code{import} of the
+package wrote a file into the temp directory, including on every training
+start, and the constant was never used. The line has been removed; the
+function is called explicitly when converting.
+\end{whybox}

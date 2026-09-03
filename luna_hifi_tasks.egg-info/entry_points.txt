@@ -1,2 +1,0 @@
-[isaaclab.tasks]
-luna_hifi_tasks = luna_hifi_tasks

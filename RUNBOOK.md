@@ -237,6 +237,14 @@ for throughput and keep MPM for validation.
 > ran on the 6 GB card; `--num_envs 4` overrides the first from the CLI, the
 > second has to be edited in the cfg.
 
+**Body shape (2026-09-03).** The chassis is now a triangular frame (two side
+rails, a rear crossbar and a flat deck, all boxes) instead of the single box.
+Wheel positions, radii, masses, joint names and body names are unchanged, so
+nothing in the env cfg or the coupler mapping moved. The committed USD in
+`assets\tricycle\` was regenerated to match. If the car ever looks wrong after
+a pull, re-run the "Convert the tricycle asset" step above; the converter
+output is the source of truth and takes under a minute.
+
 ---
 
 ## 6. Next steps

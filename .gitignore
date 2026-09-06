@@ -19,3 +19,7 @@ docs/**/*.lot
 # Isaac Lab run output if launched from here
 logs/
 outputs/
+
+# MjcfConverter bookkeeping (regenerated on every conversion)
+assets/config.yaml
+assets/.asset_hash

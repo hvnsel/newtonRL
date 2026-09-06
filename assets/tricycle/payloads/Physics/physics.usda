@@ -4,13 +4,13 @@
         string creator = "MuJoCo USD Converter v0.2.0"
     }
     defaultPrim = "tricycle"
-    doc = """Generated from Composed Stage of root layer C:\\Users\\hanse\\AppData\\Local\\Temp\\tmpnix4ro8v\\tricycle.usdc
+    doc = """Generated from Composed Stage of root layer <TEMP>\\tmpnix4ro8v\\tricycle.usdc
 
 
-Generated from Composed Stage of root layer C:\\Users\\hanse\\AppData\\Local\\Temp\\mjcf_import_tricycle_df1lgh4s\\usdex_tricycle\\tricycle.usdc
+Generated from Composed Stage of root layer <TEMP>\\mjcf_import_tricycle_df1lgh4s\\usdex_tricycle\\tricycle.usdc
 
 
-Generated from Composed Stage of root layer C:\\Users\\hanse\\AppData\\Local\\Temp\\mjcf_import_tricycle_df1lgh4s\\temp_tricycle\\tricycle.usd
+Generated from Composed Stage of root layer <TEMP>\\mjcf_import_tricycle_df1lgh4s\\temp_tricycle\\tricycle.usd
 """
     kilogramsPerUnit = 1
     metersPerUnit = 1

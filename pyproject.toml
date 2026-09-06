@@ -1,7 +1,7 @@
 [project]
 name = "luna_hifi_tasks"
 version = "0.1.0"
-description = "Isaac Lab tasks for rover excavation on Newton MPM soil"
+description = "Isaac Lab tricycle task: articulated vehicle on Newton implicit-MPM soil"
 requires-python = ">=3.11"
 dependencies = []
 

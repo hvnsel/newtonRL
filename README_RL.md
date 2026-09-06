@@ -1,5 +1,8 @@
 # luna_hifi_tasks
 
+We use isaaclab3.0.0, the released branch
+https://isaac-sim.github.io/IsaacLab/release/3.0.0/source/api/index.html
+
 Isaac Lab (develop / 3.0 beta, Newton backend) task package for rover excavation
 on implicit-MPM soil.
 

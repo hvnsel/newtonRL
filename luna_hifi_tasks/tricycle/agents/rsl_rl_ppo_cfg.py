@@ -1,5 +1,4 @@
-# agents/rsl_rl_ppo_cfg.py -- deliberately tiny. If reward doesn't climb in
-# a few hundred iterations, the problem is the env, not the learner.
+# agents/rsl_rl_ppo_cfg.py
 #
 # Isaac Lab converts this "policy" style config into rsl_rl's newer actor /
 # critic model configs at start-up (isaaclab_rl.rsl_rl.utils), so it works

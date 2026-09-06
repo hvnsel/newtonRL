@@ -1,4 +1,5 @@
 # tricycle.py
+# vibecoded tricycle asset for training
 #
 # The car, as an MJCF string. One steerable front wheel, two driven rear
 # wheels, and a triangular frame connecting the three.

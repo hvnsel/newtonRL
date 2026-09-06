@@ -44,7 +44,49 @@ def Xform "tricycle" (
             double3 xformOp:translate = (0, 0, 0.14)
             uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
 
-            def Cube "chassis_geom" (
+            def Cube "left_rail" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+            )
+            {
+                float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                rel material:binding:physics = </tricycle/Physics/PhysicsMaterial>
+                color3f[] primvars:displayColor = [(0.2, 0.4, 0.8)] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayColor:indices = None
+                float[] primvars:displayOpacity = [1] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayOpacity:indices = None
+                double size = 2
+                quatf xformOp:orient = (0.9857637, 0, 0, -0.16813646)
+                float3 xformOp:scale = (0.1961, 0.02, 0.015)
+                double3 xformOp:translate = (0.035, 0.065, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Cube "right_rail" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+            )
+            {
+                float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                rel material:binding:physics = </tricycle/Physics/PhysicsMaterial>
+                color3f[] primvars:displayColor = [(0.2, 0.4, 0.8)] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayColor:indices = None
+                float[] primvars:displayOpacity = [1] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayOpacity:indices = None
+                double size = 2
+                quatf xformOp:orient = (0.9857637, 0, 0, 0.16813646)
+                float3 xformOp:scale = (0.1961, 0.02, 0.015)
+                double3 xformOp:translate = (0.035, -0.065, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Cube "crossbar" (
                 prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
             )
             {
@@ -60,8 +102,29 @@ def Xform "tricycle" (
                 int[] primvars:displayOpacity:indices = None
                 double size = 2
                 quatf xformOp:orient = (1, 0, 0, 0)
-                float3 xformOp:scale = (0.2, 0.12, 0.04)
-                double3 xformOp:translate = (0, 0, 0)
+                float3 xformOp:scale = (0.02, 0.15, 0.015)
+                double3 xformOp:translate = (-0.15, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Cube "deck" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+            )
+            {
+                float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                rel material:binding:physics = </tricycle/Physics/PhysicsMaterial>
+                color3f[] primvars:displayColor = [(0.55, 0.6, 0.7)] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayColor:indices = None
+                float[] primvars:displayOpacity = [1] (
+                    interpolation = "constant"
+                )
+                int[] primvars:displayOpacity:indices = None
+                double size = 2
+                quatf xformOp:orient = (1, 0, 0, 0)
+                float3 xformOp:scale = (0.06, 0.065, 0.01)
+                double3 xformOp:translate = (-0.08, 0, 0)
                 uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
             }
 

@@ -1,0 +1,442 @@
+\chapter{\texttt{tricycle\_env\_cfg.py}: the environment configuration}
+\label{ch:env_cfg}
+
+\textbf{Role:} pure data. It describes the scene (ground, light, car, hidden
+slab, soil), the physics (Newton with a coupled rigid + MPM solver), the
+spaces, the time steps and the termination thresholds. It contains no
+behaviour except two methods on the cfg class: \code{__post_init__}, which
+assembles the physics config, and \code{play_mode}, which adjusts things for
+playback. 300 lines. It is the file where almost every hard-won fact from the
+runbook lives, so it gets the longest chapter.
+
+\begin{isaacbox}{\code{configclass}}
+\code{@configclass} (\srcpath{source/isaaclab/isaaclab/utils/configclass.py}) is
+Isaac Lab's wrapper around Python's \code{dataclass}. It lets you write
+fields without type annotations, makes mutable defaults safe by deep-copying
+them per instance, adds \code{to_dict}, \code{from_dict}, \code{replace}, \code{copy} and \code{validate},
+and calls \code{__post_init__} after the instance is built. A field set to
+\code{MISSING} must be filled in by a subclass or \code{validate()} raises.
+Everything in this file is a configclass instance; nothing is executed by
+the physics engine until \srcpath{DirectRLEnv.__init__} reads it.
+\end{isaacbox}
+
+\section{Header}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env_cfg.py}{1}{21}
+
+\begin{explain}
+\lis{1}{4} What the task is.
+\lis{6}{16} The design is copied from Isaac Lab's own coupled task,
+  \srcpath{source/isaaclab_tasks/isaaclab_tasks/contrib/ur10_particle_push/ur10_particle_push_env_cfg.py},
+  which pushes particles with a robot paddle. The six bullets are the rules
+  that task obeys and that this file obeys too; each reappears below next to
+  the line that implements it.
+\lis{18}{21} Where the car comes from and why the MJCF cannot be loaded
+  directly at run time (Chapter~\ref{ch:asset}).
+\end{explain}
+
+\section{Imports}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env_cfg.py}{23}{49}
+
+\begin{explain}
+\li{23} Postponed evaluation of annotations, so type hints can name classes
+  freely.
+\li{25} \code{pathlib.Path} for locating the asset relative to this file
+  (line 83).
+\li{27} \code{isaaclab.sim} is imported as \code{sim_utils} by Isaac Lab
+  convention; it holds the spawner configs (\code{UsdFileCfg},
+  \code{CuboidCfg}, \code{GroundPlaneCfg}, \code{DomeLightCfg}).
+\li{28} \code{ImplicitActuatorCfg}: a PD drive executed inside the physics
+  solver (Chapter~\ref{ch:physics}).
+\li{29} The three asset config types used in the scene: an articulated robot,
+  a plain rigid body, and a static scene element with no physics state of its
+  own.
+\li{30} The base class for direct-workflow environment configs.
+\li{31} The base class for scene configs.
+\li{32} The simulation config (time step, physics backend, visualisers).
+\li{33} \code{UsdPhysicsRigidBodyCfg}: the schema config that marks a prim as
+  a rigid body and can make it kinematic.
+\li{34} \code{RigidBodyMaterialBaseCfg}: friction values for a rigid body.
+\li{35} The \code{configclass} decorator. The runbook notes that this exact
+  import path matters: an older \code{from isaaclab.utils import configclass}
+  form, combined with stale \code{__pycache__}, once produced a confusing
+  ``\code{'module' object is not callable}''.
+\li{37} \code{MPMObjectCfg}: the asset config for a particle body.
+\lis{38}{43} The Newton physics configs: the MuJoCo-Warp rigid solver, the
+  MPM solver, the top-level \code{NewtonCfg}, and the collision-pipeline
+  config.
+\li{44} \code{NewtonCollisionPropertiesCfg}: per-prim Newton collision
+  settings (margin, gap), used on the hidden slab.
+\li{45} The particle spawner (\code{MPMGridCfg}) and its material
+  (\code{MPMParticleMaterialCfg}).
+\li{47} The coupler configs from the \code{isaaclab_contrib} package: an
+  entry, the proxy coupler, and a proxy mapping
+  (Section~\ref{sec:coupling}).
+\li{49} From our own model file: the chassis height and the joint names.
+  Nothing else from \code{tricycle.py} is needed at run time.
+\end{explain}
+
+\section{Constants}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env_cfg.py}{50}{74}
+
+\begin{explain}
+\lis{54}{55} The names of the two coupler entries. They are only used to
+  link the proxy mapping to its source and destination (lines 272--273), but
+  naming them once avoids typos.
+\li{57} The MPM grid spacing, 5~cm. It sets soil resolution, the number of
+  particles (line 62--63) and the collider margin below.
+\li{58} Half a voxel. Used both as the collider margin on the slab (line 152)
+  and as the vertical offset of the soil box (lines 67--68), so the lowest
+  particle layer starts half a cell above the slab surface, where the
+  implicit solver can see the collider before the particles touch it.
+\li{59} One particle per grid cell along each axis. Higher values multiply
+  the particle count by the cube of the factor.
+\li{60} Soil colour (RGB, 0--1), used for the spawner and for the particle
+  colour in the viewer.
+\lis{62}{65} The strip: 1.5~m long, 0.6~m wide, 6~cm deep, starting 40~cm
+  behind the car so that the car spawns on it with room behind. With the
+  resolution rule from Chapter~\ref{ch:physics},
+  $\lceil 1.5/0.05\rceil \times \lceil 0.6/0.05\rceil \times \lceil 0.06/0.05\rceil = 30\times12\times2 = 720$
+  particles per env.
+\li{67} The lower corner of the particle box: rear end of the strip, left
+  edge, half a voxel above $z=0$.
+\li{68} The upper corner: front end, right edge, strip depth above the lower
+  $z$. Because \code{MPMGridCfg} coordinates are local to the asset prim and
+  the asset's \code{init_state} is left at the origin (line 120), these are
+  also env-local coordinates.
+\lis{70}{72} The rationale for the slab (also a green box in
+  Chapter~\ref{ch:physics}).
+\li{73} Slab size: the strip plus a 1~m margin in $x$ and $y$, 10~cm thick.
+\li{74} Slab centre: under the middle of the strip, 5~cm below $z=0$, so its
+  top face lies exactly at $z=0$.
+\end{explain}
+
+\section{The car}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env_cfg.py}{76}{112}
+
+\begin{explain}
+\lis{80}{82} Comment: where the asset is and when to regenerate it.
+\li{83} The repository root, found by walking up from this file:
+  \code{parents[0]} is \srcpath{tricycle/}, \code{parents[1]} is
+  \srcpath{luna_hifi_tasks/}, \code{parents[2]} is the repository. This
+  replaced a hard-coded \texttt{C:\textbackslash ...} path, so the repository can be cloned
+  anywhere.
+\li{84} The USD entry file.
+\li{86} An \code{ArticulationCfg} describes a robot: where to put it, what to
+  spawn, its initial state, and its actuators.
+\li{87} The prim path uses the \code{{ENV_REGEX_NS}} macro, which
+  \code{InteractiveScene} expands to \srcpath{/World/envs/env_.*}. One car is
+  spawned under each env prim (Section~\ref{sec:prim_paths}).
+\li{88} \code{UsdFileCfg} spawns a USD file by reference. \code{usd_path}
+  must be a string, hence \code{str(...)}.
+\li{89} Initial (and reset) state.
+\li{90} Spawn position relative to the env origin: $x=y=0$, and $z$ equal to
+  the chassis height that puts the wheel bottoms at $z=0$, plus the soil
+  offset, plus the soil depth, plus 1~cm clearance. The car therefore starts
+  just above the soil surface and settles onto it in the first few steps.
+\li{91} Orientation as a quaternion in Isaac Lab's $(w, x, y, z)$ order;
+  identity.
+\lis{92}{93} All joints start at zero position and zero velocity. The keys
+  are regexes over joint names; \code{".*"} matches all.
+\li{95} The actuator groups. Each key is a label; each value binds one
+  actuator model to a set of joints selected by name.
+\li{96} The steering group.
+\li{97} Bind it to the joint named \code{steer}.
+\li{98} Maximum torque the solver may apply, 5~N\,m.
+\li{99} Maximum joint speed, 5~rad/s.
+\li{100} PD stiffness 20~N\,m/rad: the drive pulls the fork towards the
+  commanded angle.
+\li{101} PD damping 1~N\,m\,s/rad.
+\li{102} End of the steering group.
+\li{103} The rear-wheel group, bound to both \code{rear_left} and
+  \code{rear_right} (line 104).
+\li{105} Torque limit 2~N\,m per wheel. With a 10~cm radius that is 20~N of
+  tractive force per wheel, about 60\% of the 6.6~kg car's weight in total, a
+  plausible traction limit for soil.
+\li{106} Speed limit 30~rad/s, above the 20~rad/s the policy can ask for.
+\li{107} Stiffness zero: there is no position target, so the drive is a pure
+  \emph{velocity} controller.
+\li{108} Damping 0.5~N\,m\,s/rad: the torque is $0.5\times(\text{target speed}
+  - \text{actual speed})$, saturating at the 2~N\,m limit.
+\li{110} Comment: the front wheel has no actuator; it rolls freely with the
+  MJCF's small joint damping.
+\lis{111}{112} Close the dictionary and the cfg.
+\end{explain}
+
+\begin{isaacbox}{how a PD implicit actuator becomes a velocity drive}
+An implicit drive computes torque $=$
+\code{stiffness}$\times$(pos target $-$ pos) $+$ \code{damping}$\times$(vel
+target $-$ vel). With \code{stiffness=0} only the second term is left, so
+\srcpath{set_joint_velocity_target} is all the env needs to call
+(Chapter~\ref{ch:env}). For the steering joint both gains are set and the
+env calls \srcpath{set_joint_position_target}; its velocity target stays at the
+default of zero, so the damping term acts as a brake on fast steering.
+\end{isaacbox}
+
+\section{The soil}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env_cfg.py}{114}{136}
+
+\begin{explain}
+\li{118} An \code{MPMObjectCfg} describes one particle body per env.
+\li{119} Its prim under each env. Newton needs a prim to attach the particle
+  cloud to.
+\li{120} Default initial state: the particle box is not moved or rotated, so
+  its local coordinates (lines 67--68) are env-local.
+\li{121} The spawner: a regular lattice in a box.
+\lis{122}{123} The box corners.
+\li{124} The target voxel size; together with line 125 it fixes the lattice
+  resolution.
+\li{125} One particle per cell along each axis.
+\li{126} Put particles at cell centres, so each particle's mass equals the
+  cell volume times density and the total equals the box mass. The
+  alternative, \code{"boundary"}, also places particles on the box faces.
+\li{127} No random jitter: a perfectly regular lattice.
+\li{128} Comment: the intent is firm ground, not loose sand.
+\li{129} The material.
+\li{130} Density 1800~kg/m$^3$, a dense regolith or packed soil. Each of the
+  720 particles weighs $0.05^3 \times 1800 = 0.225$~kg; a strip is 162~kg.
+\li{131} Friction coefficient $0.84 = \tan 40^\circ$: a steep internal
+  friction angle. With zero \code{yield_stress} (cohesion) the material is
+  a pure frictional granular medium.
+\li{132} Yield pressure $10^{12}$~Pa: the soil never yields in compression,
+  so wheels cannot compact it away. The defaults of the other fields
+  (\code{young_modulus} $10^{15}$~Pa, \code{poisson_ratio} 0.3, no
+  viscosity, damping, hardening or dilatancy) are inherited.
+\li{133} End of material.
+\li{134} Colour handed to the particle visualiser.
+\lis{135}{136} Close spawner and cfg.
+\end{explain}
+
+\begin{warnbox}{parameter semantics changed from the old custom MPM}
+In Newton's implicit MPM, \code{friction} is $\tan\phi$ and
+\code{yield_stress} is cohesion in pascals; the yield surface is
+$\tau_{\max}(p) = \texttt{yield\_stress} + \texttt{friction}\cdot(p-p_{\min})$.
+Numbers from a Drucker--Prager $\alpha$ or a log-strain cohesion model do not
+carry over; the runbook says ``recalibrate, don't port''. There are also no
+\code{hardening_rate}/\code{softening_rate} fields.
+\end{warnbox}
+
+\section{The hidden slab}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env_cfg.py}{139}{161}
+
+\begin{explain}
+\li{139} A small factory function returning the slab config. A function
+  rather than a constant keeps the long expression readable and mirrors the
+  reference task.
+\li{140} Docstring: the whole reason for the slab.
+\li{141} A \code{RigidObjectCfg}: a single rigid body per env with no joints.
+\li{142} Its prim, \code{MPMGround} under each env. This exact name is what
+  the MPM coupler entry lists as its body (line 262).
+\li{143} Placed at the slab centre from line 74.
+\li{144} Spawn a box primitive.
+\li{145} With the size from line 73.
+\lis{146}{149} Rigid-body schema: enabled, and \emph{kinematic}. A kinematic
+  body has a pose but no dynamics: it does not fall, and nothing can push it.
+  It exists only to be a collider.
+\lis{150}{154} Newton collision schema: collisions on; a
+  \code{contact_margin} of half a voxel inflates the slab's collision
+  surface outward by 2.5~cm so the MPM grid sees it early; \code{contact_gap}
+  zero adds no extra detection distance.
+\lis{155}{158} Friction of the slab against particles: static 0.8, dynamic
+  0.7.
+\li{159} Invisible: it is a physics-only helper and would otherwise hide the
+  soil in the viewer.
+\lis{160}{161} Close.
+\end{explain}
+
+\section{The scene}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env_cfg.py}{164}{183}
+
+\begin{explain}
+\li{169} A configclass \ldots
+\li{170} \ldots\ inheriting \code{InteractiveSceneCfg}, which contributes
+  \code{num_envs}, \code{env_spacing}, \code{replicate_physics} and friends.
+  Every attribute added here becomes an entry of the scene.
+\lis{171}{175} The ground plane. \code{AssetBaseCfg} is for things that
+  have a prim but no per-env state; its path is absolute (one plane for all
+  envs), spawned by \code{GroundPlaneCfg} (a 100$\times$100~m plane with a
+  default material). \code{collision_group=-1} puts it in the global
+  collision group so it collides with every env's bodies instead of only
+  with one env. It belongs to the rigid coupler entry via
+  \srcpath{include_static_shapes=True} (line 236); the soil never sees it.
+\lis{176}{179} A dome light, so the OpenGL viewer is not dark. Colour and
+  intensity are cosmetic.
+\li{181} The car: the scene entry named \code{tricycle}, which is what
+  \code{scene["tricycle"]} returns in the env.
+\li{182} The slab, entry name \code{mpm_ground}.
+\li{183} The soil, entry name \code{soil}.
+\end{explain}
+
+\begin{isaacbox}{scene entries and their order}
+\code{InteractiveScene} iterates the cfg's fields in declaration order and
+spawns each. Order barely matters here, but it decides the order in which
+Newton is handed bodies, and the entry \emph{names} are the keys used by
+\code{scene[...]} and by the reset (\srcpath{scene.reset(env_ids)} calls
+\code{reset} on every asset).
+\end{isaacbox}
+
+\section{The environment config}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env_cfg.py}{186}{221}
+
+\begin{explain}
+\li{191} A configclass \ldots
+\li{192} \ldots\ inheriting \code{DirectRLEnvCfg}, which declares the
+  required fields (\code{decimation}, \code{episode_length_s}, \code{scene},
+  \code{observation_space}, \code{action_space}) and defaults for the rest
+  (\code{sim}, \code{seed}, noise models, \code{events}, \ldots).
+\li{193} Two physics steps per policy step. With \code{dt = 1/100} the
+  policy acts at 50~Hz.
+\li{194} Episodes last 2~s. \code{DirectRLEnv} converts this to
+  \code{max_episode_length} $= \lceil 2.0 / (0.01\times2) \rceil = 100$
+  control steps.
+\li{196} The simulation config: 10~ms physics step and a render every
+  \code{decimation} physics steps, i.e.\ once per control step (rendering
+  more often than the policy acts would be wasted work; rendering less often
+  triggers a warning). The \code{physics} field is filled in later by
+  \code{__post_init__}.
+\lis{198}{202} The scene from above with its replication settings: 8 envs by
+  default (the runbook trains with \code{--num_envs 4}), 2~m apart on the
+  env grid, and \srcpath{replicate_physics=True} (spawn env 0 and clone it
+  rather than spawning every env from scratch, which is much faster and is
+  what Newton's per-world builder expects).
+\li{204} Comment.
+\li{205} Two actions. An \code{int} becomes \code{Box(-inf, inf, (2,))};
+  the env clamps to $[-1,1]$ itself.
+\li{206} Action scale for throttle: at $+1$ the rear wheels are asked to
+  spin at 20~rad/s, about 2~m/s at 10~cm radius. (The runbook's
+  ``known-good'' table lists 8.0 for this knob; the committed value is 20.0.
+  Both have been run; lower values make the car slower and gentler on the
+  coupling.)
+\li{207} Action scale for steering: $\pm0.5$~rad, inside the joint's
+  $\pm0.6$~rad limit.
+\lis{209}{210} Comment listing the observation vector; the sum is 15.
+\li{211} The observation size. Becomes \code{Box(-inf, inf, (15,))} under
+  the \code{"policy"} key.
+\li{212} No separate critic state; \code{0} means ``no state space''
+  (Isaac Lab treats a falsy value as absent). The critic sees the same 15
+  numbers.
+\li{214} Comment.
+\li{215} If the car drifts more than 0.5~m sideways it has left the 0.6~m
+  wide strip (with a little slack because the wheels are 32~cm apart).
+\li{216} Flip threshold on the $z$ component of gravity expressed in the
+  car's body frame; see the orange box below.
+\lis{218}{220} A named knob for the proxy mass scale so that it can be
+  swept from the command line
+  (\srcpath{env.proxy_mass_scale=5}) without editing the file. Line 276 reads
+  it.
+\end{explain}
+
+\begin{warnbox}{projected gravity reads $+1$ upright for this asset}
+\code{projected_gravity_b} is the world gravity direction rotated into the
+body frame. For most Isaac Lab robots ``upright'' gives $(0,0,-1)$. For this
+converted asset it gives $(0,0,+1)$, so the flip test in
+\code{tricycle_env.py} is \code{projected_gravity_b[:, 2] < 0.3}: below
+$0.3$ means the car has rolled more than about $73^\circ$ from upright. If
+you ever swap the asset, print this quantity once before trusting the
+termination.
+\end{warnbox}
+
+\section{\texttt{\_\_post\_init\_\_}: the physics}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env_cfg.py}{223}{286}
+
+\begin{explain}
+\li{223} \code{configclass} calls this after the instance is built. Setting
+  the physics here rather than as a class attribute is deliberate: it can
+  read \srcpath{self.proxy_mass_scale}, and it guarantees a fresh
+  \code{NewtonCfg} per instance.
+\li{224} Assign a Newton backend to \code{sim.physics}. This single
+  assignment is what makes the whole run use Newton instead of PhysX.
+\li{225} The solver is a \emph{coupler} holding two entries and one proxy
+  mapping (Figure~\ref{fig:coupler}).
+\li{226} The list of entries.
+\lis{227}{228} Entry one, named \code{rover}.
+\lis{229}{234} Its solver: MuJoCo-Warp with Newton-side contacts, the
+  \code{implicitfast} integrator, and 128 constraint rows and 128 contacts
+  per env (Chapter~\ref{ch:physics} explains each).
+\li{235} The bodies this entry owns: every body under each env's
+  \code{Tricycle} prim (descendants are included by the regex semantics),
+  i.e.\ the whole car.
+\li{236} Also own every shape that has no body: the ground plane. Without
+  this the car would fall through the world floor.
+\li{237} Two rigid sub-steps of 5~ms inside each 10~ms coupled step, for
+  accuracy of the stiff wheel drives.
+\li{238} End of entry one.
+\lis{239}{240} Entry two, named \code{soil}.
+\li{241} An implicit MPM solver.
+\lis{242}{254} Grid and numerics, all explained in
+  Section~\ref{sec:mpm}: 5~cm sparse grid without padding, P0 strain, APIC
+  transfer, at most 24 iterations to $10^{-4}$, automatic warm start and
+  solver choice, Q1 velocities, 27-point collider sampling with forward
+  velocities, and one independent grid per env.
+\lis{255}{256} Rule from the header: no particle push-out on a coupled
+  entry.
+\lis{257}{260} Sparse-grid capacities shared by all envs, in the required
+  order active $\geq$ leaf $\geq$ lower $\geq$ upper:
+  $16384 / 8192 / 4096 / 1024$. These are the 4-env, 6~GB numbers. For more
+  envs raise all four roughly in proportion; \code{--num_envs} does not do it
+  for you (Section~\ref{sec:step_cfg}).
+\li{261} End of the MPM solver config.
+\li{262} The only body the soil solver knows: the slab. Everything the soil
+  should collide with must either be here or arrive as a proxy.
+\li{263} This entry owns all particles in the model.
+\li{264} It does not own the body-less shapes (the ground plane); those went
+  to the rigid entry.
+\li{265} It owns no joints (the slab has none).
+\li{266} One MPM sub-step per coupled step.
+\li{267} Step in place, mandatory for MPM.
+\lis{268}{269} Close entry two and the list.
+\li{270} The proxy mappings.
+\li{271} One mapping.
+\lis{272}{273} From the rigid entry into the soil entry.
+\li{274} Which bodies to mirror: the three wheel bodies. The regex matches
+  \code{rear_left_body}, \code{rear_right_body} and
+  \srcpath{fork/front_wheel_body} because \code{.*} also matches the slash; it
+  does not match \code{chassis} or \code{fork}, which never touch soil.
+\li{275} Lagged mode: poses go over at the start of the step, impulses come
+  back one step late (Section~\ref{sec:coupling}).
+\li{276} The proxies weigh ten wheels each (0.5~kg $\times$ 10), from the
+  knob on line 220.
+\li{277} \code{None} means the soil entry reuses the shared outer contacts
+  instead of running its own collision pipeline for the proxies.
+\lis{278}{279} Close the mapping and the list.
+\li{280} One relaxation pass per coupled step.
+\li{281} End of the coupler.
+\li{282} Newton's rigid collision pipeline, with the particle-vs-shape
+  (``soft'') contact buffer disabled because the MPM solver handles particle
+  contacts itself.
+\li{283} One coupled solve per physics step.
+\li{284} Capture the step as a CUDA graph.
+\li{285} End of \code{NewtonCfg}.
+\li{286} Let Newton execute the actuator drives natively.
+\end{explain}
+
+\section{\texttt{play\_mode}: settings for playback}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env_cfg.py}{288}{300}
+
+\begin{explain}
+\li{288} Isaac Lab calls this method on the env cfg when running
+  \code{play} (Section~\ref{sec:play}). It never runs during training.
+\li{289} The visualiser config is imported inside the method so that a
+  headless training machine without the visualiser package can still import
+  this file.
+\li{291} The base implementation caps \code{num_envs} at 50 and switches
+  off observation noise.
+\li{292} Cap further to 4 envs: the soil grid capacities were sized for 4.
+\li{293} Attach one visualiser to the simulation.
+\li{294} Newton's OpenGL viewer.
+\li{295} Draw the MPM particles. The default is \code{False}, which is why
+  ``soil invisible'' is a runbook troubleshooting entry.
+\li{296} Draw them in the soil colour.
+\lis{297}{298} Camera position and target, in metres, looking at the middle
+  of the strip from front-left and above.
+\lis{299}{300} Close.
+\end{explain}

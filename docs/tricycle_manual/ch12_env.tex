@@ -1,0 +1,250 @@
+\chapter{\texttt{tricycle\_env.py}: the environment}
+\label{ch:env}
+
+\textbf{Role:} the behaviour. It fills in the six hooks that
+\code{DirectRLEnv} leaves abstract (\code{_setup_scene},
+\code{_pre_physics_step}, \code{_apply_action}, \code{_get_observations},
+\code{_get_rewards}, \code{_get_dones}) plus the reset hook
+\code{_reset_idx}. Every method operates on tensors with a leading env
+dimension. 120 lines. Read Section~\ref{sec:step_detail} first: the order in
+which \code{DirectRLEnv.step} calls these methods is what makes them correct.
+
+\section{Header, imports, constructor}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env.py}{1}{31}
+
+\begin{explain}
+\lis{1}{5} What the file exercises. ``Reward is per-step forward
+  displacement, which sums to total distance'' is the key design fact: the
+  episode return equals metres driven.
+\li{7} Modern annotation syntax.
+\li{9} PyTorch; every quantity is a torch tensor on the GPU.
+\li{11} \code{Articulation}, used only as a type annotation on line 38.
+\li{12} The base class.
+\li{14} \code{MPMObject}, used as a type annotation on line 39.
+\li{16} Joint names from the model file.
+\li{17} The cfg class, for the \code{cfg:} annotation and for the
+  constructor signature.
+\li{20} The env class. \code{DirectRLEnv} is also a \code{gym.Env}, so
+  \code{gym.make} can build it.
+\li{21} A class-level annotation telling type checkers (and readers) that
+  \code{self.cfg} is a \code{TricycleEnvCfg}, so \code{self.cfg.max_steer}
+  is known to exist.
+\li{23} The constructor signature Isaac Lab expects: the cfg, an optional
+  render mode, and pass-through keyword arguments.
+\li{24} Runs everything in Section~\ref{sec:step_env}: simulation context,
+  scene, our \code{_setup_scene}, physics start, buffers. When it returns,
+  \code{self.car} exists and its data is live.
+\li{26} Look up the steering joint's index by name.
+  \code{find_joints} returns \code{(indices, names)}; we keep the indices.
+  The result is a list with one element.
+\li{27} Likewise the two rear-wheel indices, in the order given
+  (\code{rear_left}, \code{rear_right}).
+\li{28} Fail loudly at start-up if the asset does not contain exactly those
+  joints, rather than producing wrong tensors later. This assertion is what
+  would fire if the USD were regenerated with renamed joints.
+\li{30} A buffer for the last action, shape $(N, 2)$, on the simulation
+  device. It is reused every step to avoid allocations and is also part of
+  the observation.
+\li{31} A buffer for each car's $x$ position at the previous control step,
+  shape $(N,)$, used by the reward.
+\end{explain}
+
+\begin{isaacbox}{\code{self.num_envs} and \code{self.device}}
+Both come from \code{DirectRLEnv}: \code{num_envs} is
+\code{cfg.scene.num_envs} after command-line overrides, and \code{device}
+is \code{cfg.sim.device} (\code{cuda:0}). All buffers you create must live
+on \code{self.device} or every step pays a host--device copy.
+\end{isaacbox}
+
+\section{Scene hook}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env.py}{33}{39}
+
+\begin{explain}
+\li{35} Called by \srcpath{DirectRLEnv.__init__} \emph{after}
+  \srcpath{InteractiveScene(self.cfg.scene)} has spawned everything and
+  \emph{before} the simulation starts.
+\lis{36}{37} The trap this file used to fall into: constructing an
+  \code{Articulation(cfg)} here would try to spawn the prim a second time and
+  fail with ``A prim already exists at path''. Isaac Lab's tutorial tasks
+  create assets here because their scene cfgs do not list them; ours does.
+\li{38} Fetch the car by its scene entry name (line 181 of the cfg). The
+  annotation makes later attribute access readable in an editor.
+\li{39} Fetch the soil. It is only needed for \code{reset}.
+\end{explain}
+
+\section{Actions}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env.py}{41}{50}
+
+\begin{explain}
+\li{43} Called once per control step with the raw policy output, shape
+  $(N, 2)$, before any physics.
+\li{44} Clamp to $[-1,1]$ and store \emph{in place} into the buffer
+  (\code{[:]}). The policy is a Gaussian and can emit values outside the
+  range; clamping keeps the scales on the next lines meaningful. In-place
+  assignment keeps the same tensor object that
+  \code{_get_observations} concatenates.
+\li{46} Called once per \emph{physics} sub-step (twice per control step with
+  \code{decimation=2}), or once per control step when Newton folds the
+  decimation loop into one call. Either way it writes the same targets.
+\li{47} Throttle in rad/s: column 0 (kept as an $(N,1)$ slice with
+  \code{0:1}) times \code{max_wheel_speed}.
+\li{48} Steering in rad: column 1 times \code{max_steer}.
+\li{49} Write the same speed to both rear wheels.
+  \code{expand(-1, 2)} turns $(N,1)$ into a view of shape $(N,2)$ without
+  copying; \code{joint_ids} selects the two rear joints found in the
+  constructor. Because the rear actuators have zero stiffness, this target
+  alone defines the drive torque.
+\li{50} Write the steering angle as a position target to the steering
+  joint. Targets are buffered by the \code{Articulation} and flushed to the
+  solver by \srcpath{scene.write_data_to_sim()} right after this method
+  (Figure~\ref{fig:step}).
+\end{explain}
+
+\begin{whybox}{no differential steering}
+Both rear wheels get the same speed target and only the front wheel steers.
+The car therefore cannot ``skid-steer'' by spinning the rear wheels at
+different speeds; every turn comes from the fork. It keeps the action space
+at two numbers and makes the steering observation meaningful.
+\end{whybox}
+
+\section{Observations}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env.py}{52}{68}
+
+\begin{explain}
+\li{54} Called at the end of every step, after resets. Must return a dict
+  with at least a \code{"policy"} entry whose tensor matches
+  \code{observation_space}.
+\li{55} A short alias for the car's data container. Its fields are
+  recomputed by \code{scene.update} each sub-step.
+\li{56} Concatenate along the last dimension \ldots
+\li{58} \ldots\ the root linear velocity in the body frame, $(N,3)$: forward
+  speed, sideways speed, vertical speed as the car feels them;
+\li{59} the root angular velocity in the body frame, $(N,3)$: roll, pitch,
+  yaw rates;
+\li{60} gravity projected into the body frame, $(N,3)$: a compact encoding
+  of roll and pitch that does not need a heading (yaw is deliberately not
+  observed, so the policy is heading-independent);
+\li{61} the steering angle, $(N,1)$;
+\li{62} the steering rate, $(N,1)$;
+\li{63} the two rear-wheel speeds, $(N,2)$, which together with forward
+  speed let the policy infer slip;
+\li{64} the previous action, $(N,2)$, which helps the policy produce smooth
+  commands;
+\lis{65}{67} \ldots\ for a total of $3+3+3+1+1+2+2 = 15$, matching the cfg.
+\li{68} Return under the \code{"policy"} key. The \code{rsl_rl} wrapper
+  feeds the same group to actor and critic because no \code{obs_groups} are
+  configured.
+\end{explain}
+
+\begin{whybox}{no position in the observation}
+The car's $x$ position is not observed. The reward is displacement, not
+position, so the optimal action does not depend on where along the strip the
+car is; leaving position out removes a feature the policy could only misuse
+and keeps the observation translation-invariant.
+\end{whybox}
+
+\section{Reward}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env.py}{70}{76}
+
+\begin{explain}
+\li{72} Called once per step, after \code{_get_dones} and before resets.
+  Returns $(N,)$.
+\li{73} Each car's world $x$ minus its env origin's $x$: the env-local
+  forward position, so cars in different envs are comparable.
+\li{74} The displacement since last step, with any NaN or infinity replaced
+  by zero. If the physics diverged this step, the reward is zero rather than
+  garbage, and \code{_get_dones} will terminate the env.
+\li{75} Remember the position for next step (in place).
+\li{76} Clamp to $\pm0.1$~m per 20~ms step, i.e.\ $\pm5$~m/s. A car
+  driving at its top speed of about 2~m/s earns 0.04 per step; the clamp
+  only bites on non-physical jumps, so a diverging simulation cannot pay
+  out a giant reward before it is terminated. Summed over an episode this
+  is metres travelled forward.
+\end{explain}
+
+\section{Terminations}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env.py}{78}{93}
+
+\begin{explain}
+\li{80} Returns two boolean $(N,)$ tensors: \code{terminated} and
+  \code{time_out} (Section~\ref{sec:term_vs_timeout}).
+\li{81} Time-out when the per-env step counter reaches
+  \code{max_episode_length - 1}, i.e.\ after 100 control steps. This is the
+  idiom every Isaac Lab direct task uses (the counter was already
+  incremented for this step).
+\li{83} Env-local position of each car, $(N,3)$.
+\li{84} Body-frame linear velocity, $(N,3)$.
+\li{86} ``Invalid'' if any component of position or velocity is NaN or
+  infinite: the physics has blown up.
+\li{87} \ldots\ or the car is more than 50~m from its origin;
+\li{88} \ldots\ or moving faster than 50~m/s. Both are impossible for a real
+  car and catch a diverging solver a step or two before it produces NaNs.
+\li{90} Off the strip sideways: $|y|$ beyond \code{max_lateral_drift}.
+\li{91} Flipped: body-frame gravity $z$ below the threshold (orange box in
+  Chapter~\ref{ch:env_cfg}).
+\li{93} Terminate on any of the three; time out separately. An env can be
+  both terminated and timed out in the same step; \code{rsl_rl} treats
+  \code{terminated} as taking priority.
+\end{explain}
+
+\begin{whybox}{why the invalid-state termination exists}
+The runbook records a run where the reward exploded to $10^8$: a coupled
+step had diverged, the car was flung away at absurd speed, and the
+displacement reward faithfully paid for it. Terminating on non-finite or
+absurd state, together with the reward clamp, turns a diverging env into a
+short, low-reward episode instead of a poisoned training batch.
+\end{whybox}
+
+\section{Reset}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/tricycle_env.py}{95}{120}
+
+\begin{explain}
+\li{97} Called with the indices of the envs that ended this step, and once
+  with all indices at start-up (from \code{DirectRLEnv.reset}).
+\lis{98}{99} Defensive: if ever called with \code{None}, reset everything.
+  \code{DirectRLEnv} never passes \code{None}, so this is a safety net (the
+  previous version referenced an attribute that does not exist on
+  \code{Articulation}; it has been replaced with \code{torch.arange}).
+\li{100} The base implementation: \srcpath{scene.reset(env_ids)} (which calls
+  \code{reset} on every asset and clears their internal buffers), applies
+  any reset-mode events, and zeroes \srcpath{episode_length_buf[env_ids]}.
+\li{102} Start from the default root state of the selected envs (position,
+  quaternion, linear and angular velocity: 13 numbers per env, from the
+  cfg's \code{init_state}). \code{clone()} because the next line modifies
+  it.
+\li{103} Add each env's origin to the position, turning env-local spawn
+  coordinates into world coordinates.
+\li{104} Write pose (7 numbers: position and quaternion) to the simulator
+  for those envs.
+\li{105} Write velocity (6 numbers) for those envs: all zero.
+\lis{106}{111} Write joint positions and velocities back to their defaults
+  (all zero) for all joints (\code{None}) of those envs.
+\lis{113}{116} What \code{soil.reset} does and does not do: it rewrites the
+  default positions and zero velocities of every particle belonging to those
+  envs (Isaac Lab's \code{MPMObject.reset} calls
+  \srcpath{write_nodal_state_to_sim_index} with the default nodal state). It
+  does not clear the solver's internal history; Isaac Lab offers
+  \srcpath{NewtonMPMManager.reset_solver_state} for an exact reset, and the
+  tricycle has not needed it.
+\li{117} Reset the soil of those envs.
+\li{119} Zero the stored actions for those envs, so the observation's
+  ``previous action'' is zero at episode start.
+\li{120} Initialise the reward's memory to the env-local spawn $x$ (which is
+  0), so the first step's displacement is measured from the spawn point and
+  not from wherever the previous episode ended.
+\end{explain}
+
+\begin{isaacbox}{index-based versus mask-based writes}
+Isaac Lab develop offers two flavours of every asset write:
+\code{write_root_pose_to_sim(data, env_ids)} (index-based, used here) and
+\code{write_root_pose_to_sim_mask(data, env_mask)} (mask-based, avoids a
+GPU--CPU sync when many envs reset). For a handful of envs the index form is
+simplest and its cost is negligible.
+\end{isaacbox}

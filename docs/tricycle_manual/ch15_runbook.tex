@@ -1,0 +1,131 @@
+\chapter{The runbook commands, flag by flag}
+\label{ch:runbook}
+
+\code{RUNBOOK.md} lists the commands that work. This chapter says what each
+one does, so that when one fails you know which layer failed.
+
+\section{One-time setup}
+
+\begin{lstlisting}[style=shell]
+winget install --id Python.Python.3.12 -e
+py -0
+\end{lstlisting}
+Installs CPython 3.12 from the Windows package manager and lists the
+installed interpreters (\code{-V:3.12} must appear). 3.10 fails twice over:
+Newton's type annotations use \code{X | None} at run time, and the only
+\code{imgui-bundle} wheel for 3.10 on Windows is too old, so pip tries to
+compile it from source and fails.
+
+\begin{lstlisting}[style=shell]
+git clone -b develop https://github.com/isaac-sim/IsaacLab.git
+py -3.12 -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+.\isaaclab.bat -i
+.\isaaclab.bat -i isaacsim
+\end{lstlisting}
+\begin{itemize}[leftmargin=1.6em]
+  \item \code{-b develop}: the branch with the Newton backend and the
+        \code{isaaclab train} CLI. \code{main} does not have them.
+  \item \code{py -3.12 -m venv .venv}: a virtual environment inside the Isaac
+        Lab folder; \code{isaaclab.bat} looks for it there.
+  \item \code{Set-ExecutionPolicy ... Bypass}: lets PowerShell run the
+        activation script in this window only.
+  \item \texttt{.\textbackslash isaaclab.bat -i}: installs Isaac Lab's source packages
+        (\code{isaaclab}, \code{isaaclab_newton}, \code{isaaclab_rl},
+        \code{isaaclab_tasks}, \code{isaaclab_contrib}, \ldots) in editable
+        mode plus Newton, Warp, torch and \code{rsl_rl}. This is the
+        ``kit-less'' install: no Isaac Sim application.
+  \item \code{-i isaacsim}: adds the Isaac Sim pip package, needed
+        \emph{only} by the MJCF converter (Chapter~\ref{ch:asset}). Training
+        never starts it.
+\end{itemize}
+
+\begin{lstlisting}[style=shell]
+.\isaaclab.bat train --rl_library rsl_rl --task Isaac-Cartpole-Direct --num_envs 16 --max_iterations 10 physics=newton_mjwarp --viz newton
+\end{lstlisting}
+A smoke test with a built-in task before any of our code is involved.
+\srcpath{physics=newton_mjwarp} is a Hydra typed selector that replaces the
+task's physics section with the Newton preset (Cartpole defaults to PhysX);
+our task does not need it because \code{__post_init__} builds its own
+\code{NewtonCfg}. The pyglet \code{AssertionError} printed after
+``Training time'' is the viewer window being torn down while a redraw is
+pending; it is harmless.
+
+\begin{lstlisting}[style=shell]
+.\isaaclab.bat -p -m pip install -e C:\Users\hanse\Documents\Luna_HiFi
+.\isaaclab.bat -p -c "import luna_hifi_tasks, gymnasium as gym; print([k for k in gym.registry if 'Luna-' in k])"
+\end{lstlisting}
+\code{-p} runs the venv's Python with the arguments that follow. The first
+line installs our package in editable mode (Chapter~\ref{ch:pyproject}); the
+second imports it and prints every registry key containing \code{Luna-}. The
+expected output is \code{['Luna-Tricycle-Direct']}. An empty list means the
+import ran but registered nothing, which is the missing-\code{__init__.py}
+symptom; an \code{ImportError} means the editable install did not take.
+
+\begin{lstlisting}[style=shell]
+mkdir C:\Users\hanse\Documents\Luna_HiFi\assets
+.\isaaclab.bat -p -c "from luna_hifi_tasks.tricycle.tricycle import write_mjcf; print(write_mjcf())"
+.\isaaclab.bat -p scripts\tools\convert_mjcf.py C:\Users\hanse\AppData\Local\Temp\luna_hifi_assets\tricycle.xml C:\Users\hanse\Documents\Luna_HiFi\assets\tricycle.usd
+\end{lstlisting}
+The conversion. Line two calls the function from Chapter~\ref{ch:tricycle_py}
+and prints the temp path it wrote. Line three runs Isaac Lab's converter
+script on that file: positional arguments are the MJCF input and the USD
+output. The converter ignores the exact output filename and writes
+\texttt{assets\textbackslash tricycle\textbackslash tricycle.usda} plus the payload files
+(Chapter~\ref{ch:usd}); the env cfg points at that real location. Run these
+two lines again whenever \code{tricycle.py} changes.
+
+\section{Every session}
+
+\begin{lstlisting}[style=shell]
+cd C:\Users\hanse\Documents\IsaacLab
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+\end{lstlisting}
+\code{isaaclab.bat} must be run from the Isaac Lab folder (hence the
+\texttt{.\textbackslash } prefix and the \code{cd}), and the venv must be active in each new
+window; ``\code{No module named 'isaaclab_rl'}'' means it is not.
+
+\begin{lstlisting}[style=shell]
+.\isaaclab.bat train --rl_library rsl_rl --task Luna-Tricycle-Direct --num_envs 4
+\end{lstlisting}
+Chapter~\ref{ch:pipeline} end to end. Headless is the default; there is no
+\code{--headless} flag on develop. Add \code{--viz newton} to watch, and
+\code{--max_iterations N} to override the 300 in the agent cfg. Checkpoints
+and TensorBoard logs go to \texttt{logs\textbackslash rsl\_rl\textbackslash tricycle\textbackslash <timestamp>\textbackslash }.
+
+\begin{lstlisting}[style=shell]
+.\isaaclab.bat play --rl_library rsl_rl --task Luna-Tricycle-Direct --num_envs 1 --checkpoint latest --viz newton
+\end{lstlisting}
+Section~\ref{sec:play}. \code{--checkpoint latest} picks the newest run's
+last saved model; a path to a \code{model_N.pt} also works. \code{--num_envs
+1} keeps the soil grid small; \code{--viz newton} opens the window in which
+particles are drawn because of our \code{play_mode()}.
+
+\section{Troubleshooting table, mapped to the code}
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{5.2cm}p{9.6cm}@{}}
+\toprule
+Symptom & Where in this manual \\
+\midrule
+\code{TypeError: Union[arg, ...]} on newton import & Python 3.10; Section~1 above. \\
+\srcpath{NameNotFound} on the task id & Package not installed, or \code{pyproject.toml} edited without reinstalling: Chapter~\ref{ch:pyproject}, Section~\ref{sec:step_cli}. \\
+gym registry empty after import & Missing \code{__init__.py}; add it, no reinstall: Chapters~\ref{ch:pyproject}, \ref{ch:agents}. \\
+\code{A prim already exists at path} & Assets constructed in \code{_setup_scene}: Chapter~\ref{ch:env}. \\
+capacity exceeded for upper/lower/leaf & Raise that cap, keep the ordering: cfg lines 257--260, Section~\ref{sec:mpm}. \\
+\code{Failed to create volume} + CUDA 700 & Caps too high for memory; one failure, then the context is poisoned: Section~\ref{sec:mpm}. \\
+\code{Mean episode length: 1.00} & A termination fires on step 1: check the flip sign and drift threshold, Chapter~\ref{ch:env}. \\
+reward explodes to $10^8$ & Physics diverged; the invalid-state termination and reward clamp exist for this: Chapter~\ref{ch:env}. \\
+soil invisible & \code{show_particles} defaults to \code{False}: cfg line 295. \\
+car looks like the old box & Stale USD; reconvert: Chapter~\ref{ch:asset}. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+After any CUDA error 700, check \code{nvidia-smi} and kill leftover
+\code{python.exe} processes before retrying: the CUDA context is unusable and
+the VRAM may still be held.

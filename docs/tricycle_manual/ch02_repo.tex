@@ -1,0 +1,119 @@
+\chapter{The repository}
+\label{ch:repo}
+
+\section{What is in it}
+
+The repository is one Python package plus the files needed to install it,
+one converted robot asset, and documentation. After the clean-up made in this
+revision the tree looks like this:
+
+\begin{lstlisting}[style=plain,numbers=none]
+Luna_HiFi/                          <- git root, pyproject.toml lives here
+  pyproject.toml                    how pip installs the package + the isaaclab.tasks entry point
+  .gitignore                        keeps __pycache__, *.egg-info and LaTeX build files out of git
+  README_RL.md                      the original template notes (superseded, kept for the excavation map)
+  RUNBOOK.md                        the validated setup and daily commands
+  luna_hifi_tasks/                  THE PYTHON PACKAGE
+    __init__.py                     imports .tricycle -> registers the task
+    tricycle/                       the pipeline-validation task (this manual)
+      __init__.py                   gym.register("Luna-Tricycle-Direct", ...)
+      tricycle.py                   the car as an MJCF string (source of the USD asset)
+      tricycle_env_cfg.py           scene, physics, spaces, termination knobs
+      tricycle_env.py               the environment class: actions, obs, reward, dones, reset
+      agents/
+        __init__.py                 empty; makes "agents" importable
+        rsl_rl_ppo_cfg.py           PPO hyper-parameters for rsl_rl
+    excavation/                     the future rover task (template, not covered here)
+  assets/
+    config.yaml                     converter settings that produced the USD (generated)
+    .asset_hash                     converter cache key (generated)
+    tricycle/
+      tricycle.usda                 the file the env cfg points at
+      payloads/base.usda            geometry (visible shapes) of the car
+      payloads/robot.usda           Isaac robot/link/joint schema tags
+      payloads/Physics/physics.usda rigid bodies, joints, masses, Newton collision tags
+      payloads/Physics/mujoco.usda  MuJoCo-specific overrides (joint damping)
+      payloads/Physics/physx.usda   PhysX-specific overrides (unused with Newton)
+  docs/tricycle_manual/             this document (LaTeX source + PDF)
+\end{lstlisting}
+
+Three kinds of file live here and it helps to keep them apart:
+
+\begin{itemize}[leftmargin=1.6em]
+  \item \textbf{Code you write.} Everything in \srcpath{luna_hifi_tasks/} and
+        \code{pyproject.toml}.
+  \item \textbf{Generated files you keep.} Everything in \srcpath{assets/}. They
+        are produced by Isaac Lab's MJCF-to-USD converter from
+        \code{tricycle.py} and are committed because the converter needs the
+        Isaac Sim pip package, which not every machine has. When
+        \code{tricycle.py} changes, these must be regenerated
+        (Chapter~\ref{ch:runbook}).
+  \item \textbf{Generated files you do not keep.} \srcpath{__pycache__/} folders
+        and \srcpath{luna_hifi_tasks.egg-info/}. They are rebuilt by Python and
+        pip every time and are now ignored by git.
+\end{itemize}
+
+\section{When does each file run?}
+\label{sec:when}
+
+A useful way to understand the package is to ask \emph{when} each file is
+executed. There are four moments.
+
+\begin{description}[leftmargin=1.6em,font=\bfseries]
+  \item[Install time] \code{pip install -e .} reads \code{pyproject.toml}. It
+    records two things in the Python environment: that the folder
+    \code{luna_hifi_tasks} is importable, and that the string
+    \code{"luna_hifi_tasks"} is registered under the entry-point group
+    \code{isaaclab.tasks}. Nothing in the package is executed yet.
+  \item[Start-up time] When you run \code{isaaclab train ...}, Isaac Lab's
+    command-line tool asks Python for every entry point in the
+    \code{isaaclab.tasks} group and imports each one. Importing
+    \code{luna_hifi_tasks} runs \srcpath{luna_hifi_tasks/__init__.py}, which
+    imports \srcpath{tricycle/__init__.py}, which calls \code{gym.register}.
+    From now on Gymnasium knows the name \code{Luna-Tricycle-Direct} and
+    which classes it maps to. \srcpath{tricycle/__init__.py} also imports
+    \code{agents}, so \srcpath{agents/__init__.py} runs (it is empty).
+  \item[Configuration time] Isaac Lab looks up the registered task, imports
+    \code{tricycle_env_cfg.py} and \srcpath{agents/rsl_rl_ppo_cfg.py}, creates
+    one \code{TricycleEnvCfg} and one \code{TricyclePPORunnerCfg}, and applies
+    command-line overrides such as \code{--num_envs 4} to them. Importing
+    \code{tricycle_env_cfg.py} imports \code{tricycle.py} for the constants
+    it needs (\code{CHASSIS_Z}, joint names).
+  \item[Run time] Isaac Lab imports \code{tricycle_env.py}, builds a
+    \code{TricycleEnv} from the config, and hands it to \code{rsl_rl}. From
+    then on the only code of yours that runs is the handful of methods in
+    \code{TricycleEnv}, called thousands of times per second.
+\end{description}
+
+Chapter~\ref{ch:pipeline} follows this sequence in detail.
+
+\section{Tricycle and excavation are independent}
+\label{sec:independent}
+
+The two task folders share nothing at import time. The evidence:
+
+\begin{itemize}[leftmargin=1.6em]
+  \item \srcpath{luna_hifi_tasks/__init__.py} contains a single line:
+        \code{from . import tricycle}. The \code{excavation} package is never
+        imported, so none of its code runs and none of its \code{VERIFY}
+        markers can affect a tricycle run.
+  \item No file in \srcpath{tricycle/} mentions \code{excavation}, and no file in
+        \srcpath{excavation/} mentions \code{tricycle}. Each has its own
+        \code{__init__.py}, its own env, its own cfg and its own
+        \srcpath{agents/}.
+  \item Until this revision, \srcpath{tricycle/soil.py} was a byte-for-byte copy
+        of \srcpath{excavation/soil.py} that nothing in \srcpath{tricycle/}
+        imported. The tricycle copy has been removed; the excavation copy is
+        untouched (Appendix~\ref{app:changes}).
+\end{itemize}
+
+The only thing they share is the Isaac Lab machinery they both sit on. When
+the excavation task is finished, adding \code{from . import excavation} to
+\srcpath{luna_hifi_tasks/__init__.py} will register it next to the tricycle.
+
+\section{The runbook and this manual}
+
+\code{RUNBOOK.md} is the operational document: what to type, in which
+window, and what the error messages mean. This manual is the explanatory
+document: why the code is the way it is. Chapter~\ref{ch:runbook} goes through
+the runbook's commands flag by flag so the two stay connected.

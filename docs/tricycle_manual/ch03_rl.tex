@@ -1,0 +1,156 @@
+\chapter{Reinforcement learning in ten minutes}
+\label{ch:rl}
+
+This chapter gives just enough reinforcement learning (RL) to make every
+number in the tricycle configuration meaningful. If you know PPO already, skim
+Section~\ref{sec:rl_numbers} for how the general ideas map onto this task.
+
+\section{The loop}
+
+An \textbf{environment} is a simulation that has a state, accepts an
+\textbf{action}, advances one \textbf{step}, and returns three things: an
+\textbf{observation} (what the agent is allowed to see), a \textbf{reward} (one
+number saying how good that step was) and a \textbf{done} flag (whether the
+episode is over). An \textbf{agent} is a function, the \textbf{policy}, that
+maps observations to actions. Training means adjusting the policy so that the
+sum of rewards over an \textbf{episode} (a sequence of steps that ends when
+done is true) becomes as large as possible.
+
+For the tricycle: the state is the pose and velocity of the car, the joint
+angles and speeds, and the position of every soil particle. The observation is
+a 15-number vector (Chapter~\ref{ch:env}). The action is two numbers in
+$[-1,1]$: throttle and steering. The reward is how far forward the car moved
+during this step, in metres. An episode lasts 2~seconds or until the car
+flips, drives off the strip, or the physics blows up.
+
+\section{Vectorised environments}
+
+One simulation step of one car teaches the agent very little. Isaac Lab
+therefore simulates $N$ identical copies of the scene at once, called
+\textbf{environments} or \textbf{envs}, laid out on a grid in the same physics
+world, and returns observations as a tensor of shape $(N, 15)$, rewards as
+$(N,)$, and so on. Every method you write in \code{TricycleEnv} operates on
+whole tensors; there is never a Python loop over envs. Each env has its own
+\textbf{origin} (\code{scene.env_origins}), and positions are usually measured
+relative to it so that env 7 does not look different from env 0 just because it
+sits further along the grid.
+
+The number of envs is a memory decision. On the 6~GB laptop card the soil
+solver limits it to a handful (Chapter~\ref{ch:physics}); on a large GPU the
+same code runs thousands.
+
+\section{Policy and value networks}
+\label{sec:networks}
+
+The policy is a small neural network. In this task it has two hidden layers of
+64 units with the ELU activation. Given the 15 observations it outputs the
+\emph{mean} of a Gaussian distribution over the two actions; a second learned
+parameter, the standard deviation (initially $1.0$, see
+\code{init_noise_std}), controls how much the agent explores around that mean.
+During training actions are \emph{sampled} from this Gaussian, which is where
+exploration comes from. During play the mean is used.
+
+A second network of the same shape, the \textbf{critic} or \textbf{value
+function}, predicts the expected sum of future rewards from a given
+observation. It is not used to act; it is used to judge whether an action
+turned out better or worse than expected. That difference is the
+\textbf{advantage}. Both networks are trained together, which is why the
+architecture is called \emph{actor-critic}.
+
+\section{Discounting and GAE}
+
+Rewards far in the future are worth less than rewards now. The \textbf{discount
+factor} $\gamma$ (\code{gamma = 0.99}) multiplies each future reward by
+$\gamma^k$ after $k$ steps. With $\gamma=0.99$ the effective horizon is about
+$1/(1-\gamma) = 100$ steps, which at 50~Hz is exactly one 2-second episode.
+
+The advantage estimate mixes the critic's predictions with actual rewards.
+\textbf{Generalised Advantage Estimation} (GAE) blends one-step and many-step
+estimates with a second parameter $\lambda$ (\code{lam = 0.95}): higher
+$\lambda$ trusts observed rewards more (less bias, more noise), lower trusts
+the critic more.
+
+\section{PPO in plain words}
+
+\textbf{Proximal Policy Optimisation} (PPO) is the learning rule used here.
+Each \textbf{iteration}:
+
+\begin{enumerate}[leftmargin=1.8em]
+  \item \textbf{Roll out.} Run the current policy for
+        \code{num_steps_per_env} steps in every env, storing observations,
+        actions, rewards, dones and the critic's values. With 4 envs and 50
+        steps that is 200 samples per iteration.
+  \item \textbf{Compute advantages} with GAE over the stored rollout.
+  \item \textbf{Update.} Split the rollout into \code{num_mini_batches}
+        mini-batches and pass over them \code{num_learning_epochs} times.
+        For each mini-batch, compute the ratio between the probability the
+        \emph{new} policy assigns to the stored action and the probability the
+        \emph{old} policy assigned. Multiply by the advantage, but
+        \emph{clip} the ratio to $[1-\epsilon, 1+\epsilon]$ with
+        $\epsilon=$ \code{clip_param} $=0.2$. The clipping is what makes PPO
+        ``proximal'': the policy is not allowed to move far from the one that
+        collected the data, which keeps learning stable.
+  \item Add the critic's loss (mean squared error to the returns, weighted by
+        \code{value_loss_coef}) and subtract an \textbf{entropy bonus}
+        (\code{entropy_coef}) that rewards keeping the action distribution
+        wide, i.e.\ keeps exploring.
+  \item Take a gradient step with Adam at \code{learning_rate}, after clipping
+        the gradient norm to \code{max_grad_norm}.
+\end{enumerate}
+
+With \code{schedule = "adaptive"}, \code{rsl_rl} also measures the KL
+divergence between the old and new policies after each mini-batch. If it
+exceeds $2\times$\code{desired_kl} the learning rate is divided by 1.5; if it is
+below half of \code{desired_kl} the rate is multiplied by 1.5 (bounded to
+$[10^{-5}, 10^{-2}]$). This automatic tuning is why the initial
+\code{learning_rate = 1e-3} does not need to be exactly right.
+
+\section{Terminated versus timed out}
+\label{sec:term_vs_timeout}
+
+An episode can end for two very different reasons and RL algorithms must know
+which one happened:
+
+\begin{itemize}[leftmargin=1.6em]
+  \item \textbf{Terminated}: the task itself ended (the car flipped over). The
+        value of the final state is genuinely zero; nothing good can follow.
+  \item \textbf{Timed out} (also called truncated): the clock ran out while the
+        car was still driving happily. Its state still has value; the
+        episode was merely cut for bookkeeping.
+\end{itemize}
+
+Isaac Lab's \code{_get_dones} therefore returns \emph{two} boolean tensors,
+\code{terminated} and \code{time_out}, and the \code{rsl_rl} wrapper passes the
+time-outs to the learner separately so that it can \emph{bootstrap}: add the
+critic's estimate of the remaining value back into the return for timed-out
+episodes. Getting this wrong makes the agent believe that surviving to 2
+seconds is bad, which is the opposite of what we want.
+
+\section{How the numbers map onto the tricycle}
+\label{sec:rl_numbers}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Quantity & Value & Where it is set \\
+\midrule
+observation size & 15 & \code{observation_space} in \code{TricycleEnvCfg} \\
+action size & 2 (throttle, steer) & \code{action_space} \\
+physics step & 10 ms (\code{dt = 1/100}) & \code{SimulationCfg} \\
+control step & 20 ms (\code{decimation = 2}) & \code{TricycleEnvCfg} \\
+episode length & 2 s $=$ 100 control steps & \code{episode_length_s} \\
+reward per step & forward displacement, clipped to $\pm 0.1$ m & \code{_get_rewards} \\
+episode return & metres driven forward in 2 s & sum of the above \\
+rollout length & 50 steps per env per iteration & \code{num_steps_per_env} \\
+iterations & 300 & \code{max_iterations} \\
+checkpoint every & 50 iterations & \code{save_interval} \\
+networks & $15 \to 64 \to 64 \to 2$ and $15 \to 64 \to 64 \to 1$ & \code{policy} cfg \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Because the reward is displacement, the ``mean episode reward'' printed by
+\code{rsl_rl} is directly readable: a value of 1.4 means the average car drove
+1.4~m forward in its 2~s episode. The runbook's success criterion (reward
+climbs past $\sim$2~m without diverging) is expressed in the same unit.

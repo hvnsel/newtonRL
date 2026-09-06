@@ -27,13 +27,40 @@ over "tricycle"
         {
             bool newton:selfCollisionEnabled = 0
 
-            over "chassis_geom" (
+            over "left_rail" (
                 prepend apiSchemas = ["NewtonCollisionAPI", "PhysicsMassAPI"]
             )
             {
                 float newton:contactGap = 0
                 float physics:density = 1000
-                float physics:mass = 5
+                float physics:mass = 0.8
+            }
+
+            over "right_rail" (
+                prepend apiSchemas = ["NewtonCollisionAPI", "PhysicsMassAPI"]
+            )
+            {
+                float newton:contactGap = 0
+                float physics:density = 1000
+                float physics:mass = 0.8
+            }
+
+            over "crossbar" (
+                prepend apiSchemas = ["NewtonCollisionAPI", "PhysicsMassAPI"]
+            )
+            {
+                float newton:contactGap = 0
+                float physics:density = 1000
+                float physics:mass = 0.8
+            }
+
+            over "deck" (
+                prepend apiSchemas = ["NewtonCollisionAPI", "PhysicsMassAPI"]
+            )
+            {
+                float newton:contactGap = 0
+                float physics:density = 1000
+                float physics:mass = 2.6
             }
 
             over "fork" (

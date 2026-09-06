@@ -1,0 +1,102 @@
+\chapter{\texttt{agents/}: the PPO configuration}
+\label{ch:agents}
+
+\section{\texttt{agents/\_\_init\_\_.py}}
+
+\textbf{Role:} an empty file. Its presence makes \code{agents} a regular
+Python package so that \code{from . import agents} in
+\srcpath{tricycle/__init__.py} works and setuptools includes the folder in the
+editable install. 0 lines. Without it, \code{packages.find} skips the folder,
+\code{from . import agents} raises, and the task never registers. Creating
+the file is the entire fix; no reinstall is needed for it
+(Chapter~\ref{ch:pyproject}).
+
+\section{\texttt{agents/rsl\_rl\_ppo\_cfg.py}}
+
+\textbf{Role:} the hyper-parameters of the learner. Instantiated at
+configuration time (Section~\ref{sec:step_cfg}), converted to a plain dict
+and handed to \code{rsl_rl}'s \code{OnPolicyRunner}. 40 lines. The meaning
+of each number is in Chapter~\ref{ch:rl}.
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/agents/rsl_rl_ppo_cfg.py}{1}{9}
+
+\begin{explain}
+\lis{1}{2} The philosophy: the learner is deliberately small so that a flat
+  reward curve points at the environment, not at PPO.
+\lis{4}{6} Isaac Lab develop ships \code{rsl_rl}~5.x, whose native config
+  uses separate \code{actor} and \code{critic} model configs. This file uses
+  the older combined \code{policy} config; Isaac Lab's
+  \srcpath{handle_deprecated_rsl_rl_cfg} (in
+  \srcpath{source/isaaclab_rl/isaaclab_rl/rsl_rl/utils.py}) converts it at
+  start-up into an \code{RslRlMLPModelCfg} for the actor and one for the
+  critic, printing a deprecation notice. The behaviour is identical.
+\li{8} The configclass decorator.
+\li{9} The three config classes: the runner (loop settings), the
+  actor-critic network, and the PPO algorithm.
+\end{explain}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/agents/rsl_rl_ppo_cfg.py}{12}{26}
+
+\begin{explain}
+\li{12} A configclass \ldots
+\li{13} \ldots\ inheriting \code{RslRlOnPolicyRunnerCfg}, which fixes
+  \code{class_name = "OnPolicyRunner"} and provides defaults such as
+  \code{seed = 42}, \code{device = "cuda:0"}, \code{logger = "tensorboard"},
+  \code{run_name = ""}, \code{resume = False}.
+\li{14} Each iteration collects 50 steps per env before updating. At 50~Hz
+  that is one second of driving per env, half an episode, so every rollout
+  contains episode boundaries and the value function sees both early and
+  late steps.
+\li{15} Stop after 300 iterations. With 4 envs that is $300\times50\times4 =
+  60{,}000$ environment steps. Override with \code{--max_iterations}.
+\li{16} Save a checkpoint every 50 iterations
+  (\code{model_50.pt}, \code{model_100.pt}, \ldots) plus a final one.
+\li{17} The experiment name; checkpoints land in
+  \srcpath{logs/rsl_rl/tricycle/<timestamp>/}.
+\li{19} The network config.
+\li{20} Initial standard deviation of the Gaussian policy: 1.0 in action
+  units. Since actions are clamped to $[-1,1]$, early exploration is
+  essentially uniform over the whole range, which is what a task with an
+  unknown good action wants.
+\li{21} Actor: two hidden layers of 64 units.
+\li{22} Critic: the same shape.
+\li{23} ELU activations for both.
+\lis{24}{25} No running observation normalisation for either network. The
+  observations are already in sensible ranges (velocities in m/s, angles in
+  rad, actions in $[-1,1]$). These two fields replace the deprecated
+  runner-level \code{empirical_normalization = False} that this file used to
+  set; they are what the conversion helper would have derived from it.
+\li{26} End of the policy config.
+\end{explain}
+
+\codepart{\srcroot/luna_hifi_tasks/tricycle/agents/rsl_rl_ppo_cfg.py}{27}{40}
+
+\begin{explain}
+\li{27} The PPO algorithm config (\code{class_name = "PPO"} by default).
+\li{28} Weight of the critic's loss relative to the policy loss.
+\li{29} Clip the value-function update as well as the policy ratio
+  (PPO2 style), which stabilises the critic.
+\li{30} The PPO clipping range $\epsilon = 0.2$.
+\li{31} Entropy bonus coefficient 0.01: a mild push to keep exploring.
+\li{32} Four passes over each rollout.
+\li{33} Two mini-batches per pass: with 4 envs $\times$ 50 steps the
+  mini-batch is 100 samples.
+\li{34} Initial Adam learning rate $10^{-3}$.
+\li{35} Adaptive schedule: the learning rate is adjusted from the measured
+  KL divergence after each mini-batch (Chapter~\ref{ch:rl}).
+\li{36} Discount $\gamma = 0.99$, horizon about 100 steps = one episode.
+\li{37} GAE $\lambda = 0.95$.
+\li{38} Target KL of 0.01 for the adaptive schedule.
+\li{39} Gradient norm clipped to 1.0.
+\li{40} End.
+\end{explain}
+
+\begin{isaacbox}{from cfg to runner}
+\code{train_rsl_rl.py} calls \code{agent_cfg.to_dict()} and passes the dict
+to \code{OnPolicyRunner(env, cfg_dict, log_dir, device)}. The runner builds
+the actor and critic from the (converted) model configs, the PPO object from
+\code{algorithm}, and a rollout storage sized \code{num_envs} $\times$
+\code{num_steps_per_env}. The dict is also written to
+\srcpath{params/agent.yaml} in the log directory, so every run records the exact
+hyper-parameters it used.
+\end{isaacbox}

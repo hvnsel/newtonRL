@@ -1,0 +1,86 @@
+\chapter*{How to read this manual}
+\addcontentsline{toc}{chapter}{How to read this manual}
+\markboth{How to read this manual}{}
+
+This document explains the \code{Luna_HiFi} repository as it is used for the
+tricycle task: how the code is organised, what every line of every
+tricycle-related file does, and how each piece plugs into Isaac Lab, the Newton
+physics engine and the \code{rsl_rl} learning library. It is written for
+someone who can read Python but has not worked inside Isaac Lab before.
+Plain language is used on purpose. Where a word has a precise meaning in Isaac
+Lab it is introduced in a box the first time it appears and it is also listed
+in the glossary (Appendix~\ref{app:glossary}).
+
+\section*{Two parts}
+
+\textbf{Part~I, the big picture,} explains the system from the outside in: the
+repository layout, what reinforcement learning is, what happens between typing
+\code{isaaclab train} and a checkpoint appearing on disk, how the physics is
+put together, and how the car model becomes a USD asset.
+
+\textbf{Part~II, every file, every line,} walks through each file that takes
+part in tricycle training. Each file is shown in slices with its \emph{real
+line numbers} (the listings are read straight from the repository at build
+time, so what you see is exactly what is committed), and every slice is
+followed by a numbered explanation. Lines that belong together (a closing
+bracket, a blank line, a run of imports) are explained as a group, but no
+line is skipped.
+
+\section*{Conventions}
+
+\begin{itemize}[leftmargin=1.6em]
+  \item \code{monospace} marks names that appear literally in code, on the
+        command line or in a file path.
+  \item ``Line 42'' always refers to the line number printed in the listing
+        immediately above it, which is the line number in the actual file.
+  \item Coloured boxes carry background knowledge:
+\end{itemize}
+
+\begin{isaacbox}{a concept from Isaac Lab}
+Blue boxes explain something Isaac Lab does for you, usually with the
+file in the Isaac Lab source tree where it is implemented, so you can go and
+read the original.
+\end{isaacbox}
+
+\begin{newtonbox}{a concept from the physics engine}
+Purple boxes explain the Newton physics engine, its MuJoCo-Warp rigid body
+solver, or the implicit Material Point Method (MPM) soil solver.
+\end{newtonbox}
+
+\begin{whybox}{a design decision}
+Green boxes answer ``why is it written like this?''. Most of them record a
+lesson that cost real debugging time; they are the same lessons as in
+\code{RUNBOOK.md}, section 3, but placed next to the line of code they
+explain.
+\end{whybox}
+
+\begin{warnbox}{a trap}
+Orange boxes flag things that break silently or produce confusing errors.
+\end{warnbox}
+
+\section*{What is covered and what is not}
+
+Everything under \srcpath{luna_hifi_tasks/tricycle/}, the package root files,
+\code{pyproject.toml}, the converted asset under \srcpath{assets/tricycle/} and
+the commands in \code{RUNBOOK.md} are covered line by line. The
+\srcpath{luna_hifi_tasks/excavation/} folder is \emph{not} covered. It is a
+template for the future rover task, it still contains \code{STUB} and
+\code{VERIFY} markers, and nothing in it is imported when the tricycle trains
+(Chapter~\ref{ch:repo} shows why).
+
+\section*{Versions this manual matches}
+
+\begin{itemize}[leftmargin=1.6em]
+  \item Isaac Lab, \code{develop} branch, early September 2026 (the branch
+        that ships the \code{isaaclab train} command, the Newton backend and
+        \srcpath{isaaclab_contrib.coupling}). File paths quoted from Isaac Lab
+        are relative to the Isaac Lab checkout.
+  \item Newton 1.5 (the physics engine Isaac Lab develop installs).
+  \item \code{rsl_rl} 5.x as pulled in by \code{isaaclab -i}; the
+        configuration in this repository uses the older ``policy'' style and
+        Isaac Lab converts it on start-up (Chapter~\ref{ch:agents}).
+  \item Python 3.12 on Windows 11, exactly as in \code{RUNBOOK.md}.
+\end{itemize}
+
+Quoted line numbers of \emph{Isaac Lab} files may drift as the develop branch
+moves; the function and class names are stable enough to search for.

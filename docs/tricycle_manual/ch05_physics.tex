@@ -1,0 +1,276 @@
+\chapter{The physics stack}
+\label{ch:physics}
+
+The tricycle runs on \textbf{Newton}, NVIDIA's GPU physics engine built on
+Warp. Isaac Lab talks to Newton through a \emph{physics manager}, and the
+tricycle uses two of Newton's solvers at once: a rigid-body solver for the car
+and an implicit Material Point Method (MPM) solver for the soil. This chapter
+explains the pieces that \code{tricycle_env_cfg.py} assembles, so that the
+config in Chapter~\ref{ch:env_cfg} reads as a list of decisions rather than
+magic numbers.
+
+\section{Layers}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  layer/.style={draw,rounded corners=2pt,text width=13.2cm,minimum height=8mm,font=\footnotesize,align=center,fill=white},
+  arr/.style={-{Stealth[length=1.8mm]},black!70}
+]
+\node[layer,fill=isaacblue!6,draw=isaacblue] (env) {\textbf{TricycleEnv / DirectRLEnv} \quad your methods + step bookkeeping};
+\node[layer,below=3mm of env,fill=isaacblue!6,draw=isaacblue] (scene) {\textbf{InteractiveScene, Articulation, RigidObject, MPMObject} \quad tensors: \code{car.data.*}, \code{soil.data.*}};
+\node[layer,below=3mm of scene,fill=isaacblue!6,draw=isaacblue] (sim) {\textbf{SimulationContext} \quad owns the stage and the physics manager};
+\node[layer,below=3mm of sim,fill=newtonpurple!6,draw=newtonpurple] (mgr) {\textbf{NewtonCouplerManager} (\srcpath{isaaclab_contrib.coupling}) \quad builds one Newton Model, splits it into entries};
+\node[layer,below=3mm of mgr,fill=newtonpurple!6,draw=newtonpurple] (solver) {\textbf{Newton SolverCoupledProxy} \quad entry ``rover'': SolverMuJoCo (MJWarp) \quad entry ``soil'': SolverImplicitMPM};
+\node[layer,below=3mm of solver,fill=newtonpurple!6,draw=newtonpurple] (warp) {\textbf{Warp kernels on the GPU} \quad CUDA graph captured once, replayed every step};
+\draw[arr] (env) -- (scene); \draw[arr] (scene) -- (sim); \draw[arr] (sim) -- (mgr); \draw[arr] (mgr) -- (solver); \draw[arr] (solver) -- (warp);
+\end{tikzpicture}
+\caption{From environment code to GPU kernels. Blue layers are Isaac Lab; purple layers are Newton.}
+\end{figure}
+
+\begin{isaacbox}{physics managers}
+Isaac Lab develop can drive several physics backends (PhysX, Newton,
+OmniPhysX). \srcpath{SimulationCfg.physics} selects one by holding a
+\code{PhysicsCfg} subclass; \code{NewtonCfg}
+(\srcpath{source/isaaclab_newton/isaaclab_newton/physics/newton_manager_cfg.py})
+selects Newton. Inside \code{NewtonCfg}, \code{solver_cfg} selects
+\emph{which} Newton solver manager runs the model: \code{MJWarpSolverCfg},
+\code{MPMSolverCfg}, \code{XPBDSolverCfg}, \ldots, or, as here, a
+\code{CouplerProxyCfg} from \srcpath{isaaclab_contrib.coupling} that nests two of
+them. \srcpath{NewtonCfg.__post_init__} copies the manager class from
+\srcpath{solver_cfg.class_type} so you never set it yourself.
+\end{isaacbox}
+
+\section{The rigid-body side: MuJoCo-Warp}
+
+The car is an \emph{articulation}: a tree of rigid bodies (chassis, fork,
+three wheels) connected by joints (one free joint for the chassis, one steering
+hinge, three wheel hinges). Newton simulates it with \textbf{MJWarp}, a
+GPU port of MuJoCo's dynamics. Isaac Lab wraps it as \code{MJWarpSolverCfg}
+(\srcpath{physics/mjwarp_manager_cfg.py}). The four options the config sets:
+
+\begin{description}[leftmargin=1.6em,font=\ttfamily]
+  \item[use\_mujoco\_contacts=False] MuJoCo normally detects and resolves its
+    own contacts. Setting this to \code{False} hands collision detection to
+    Newton's own \emph{collision pipeline}, which is required whenever a
+    Newton \code{collision_cfg} is also given (the two are mutually
+    exclusive) and is what lets the coupler share contacts between solvers.
+  \item[integrator="implicitfast"] MuJoCo's implicit-in-velocity integrator.
+    It damps stiff joint drives and contacts far better than plain Euler at
+    the same step size, which matters with a 10~ms step and velocity-driven
+    wheels.
+  \item[njmax=128] maximum number of constraint rows per env (joint limits,
+    contacts, friction cones). Too small and contacts are dropped with a
+    warning; too large only costs memory.
+  \item[nconmax=128] maximum number of contact points per env.
+\end{description}
+
+\begin{isaacbox}{implicit actuators and \srcpath{use_newton_actuators}}
+Our joints use \code{ImplicitActuatorCfg}. ``Implicit'' means the drive is a
+PD controller \emph{inside the physics solver}: you give a position target
+(steering) or a velocity target (rear wheels) plus \code{stiffness} and
+\code{damping}, and the solver computes the torque as part of its implicit
+step. \code{effort_limit_sim} and \code{velocity_limit_sim} are written into
+the simulator as hard limits. \code{sim.use_newton_actuators = True} asks
+Newton to author and execute these drives natively rather than through the
+host-side adapter used for PhysX.
+\end{isaacbox}
+
+\section{The soil side: implicit MPM}
+\label{sec:mpm}
+
+\begin{newtonbox}{what MPM is}
+The Material Point Method represents a continuum (soil, snow, mud) as a
+cloud of \textbf{particles} that carry mass, velocity and deformation
+history, plus a background \textbf{grid} on which forces are solved each
+step. Every step: particle quantities are transferred to the grid
+(``P2G''), the momentum equations with the material's constitutive law are
+solved on the grid, and grid velocities are transferred back to move the
+particles (``G2P''). Rigid bodies enter as \emph{colliders}: signed-distance
+boundaries the grid velocities must respect. Newton's solver is
+\emph{implicit}: it solves the yield condition as an optimisation problem
+each step, which allows large steps (our 10~ms) without exploding.
+\end{newtonbox}
+
+Isaac Lab exposes it as \code{MPMSolverCfg}
+(\srcpath{physics/mpm_manager_cfg.py}). The fields the tricycle sets, grouped:
+
+\paragraph{Grid.}
+\code{voxel_size=0.05} is the grid spacing (5~cm). \code{grid_type="sparse"}
+allocates grid cells only where particles are. \code{grid_padding=0} adds no
+empty margin. \srcpath{separate_worlds=True} gives every env its own grid so
+envs cannot touch each other's soil and particle arrays are laid out
+contiguously per env.
+
+\paragraph{Sparse-grid capacities.}
+\srcpath{max_active_cell_count}, \code{max_leaf_node_count},
+\srcpath{max_lower_node_count}, \srcpath{max_upper_node_count} pre-allocate the
+sparse tree (leaf $\to$ lower $\to$ upper nodes) so that the CUDA graph can
+be captured once. They are \emph{totals across all envs}, not per env. Newton
+requires \code{upper <= lower <= leaf <= active}. The committed values
+$2^{14}/2^{13}/2^{12}/2^{10}$ were found by hand for 4 envs on 6~GB; a
+``capacity exceeded'' error names the tier to raise, and a
+``Failed to create volume'' plus CUDA error 700 means the caps were raised
+too far for the memory available.
+
+\paragraph{Numerics.}
+\code{max_iterations=24} and \code{tolerance=1e-4} bound the per-step
+rheology solve. \code{solver="auto"} lets Newton pick Gauss--Seidel for the
+\code{Q1} velocity basis. \srcpath{warmstart_mode="auto"} reuses last step's
+solution as a starting guess. \code{strain_basis="P0"} (piecewise constant
+strain per cell), \code{velocity_basis="Q1"} (trilinear velocities) and
+\srcpath{transfer_scheme="apic"} (affine particle-in-cell transfers, less
+numerical damping than PIC) are the standard granular preset also used by
+Isaac Lab's own \code{ur10_particle_push} task.
+
+\paragraph{Colliders.}
+\srcpath{collider_basis="pic27"} samples collider velocities with a 27-point
+stencil; \srcpath{collider_velocity_mode="forward"} uses the colliders'
+velocities at the start of the step. \srcpath{project_outside_colliders=False}
+is mandatory on a coupled entry: it disables a particle-level push-out pass
+that would fight the coupler.
+
+\paragraph{The material.}
+Particles carry an \code{MPMParticleMaterialCfg}
+(\srcpath{sim/spawners/mpm/mpm_cfg.py}). Its fields: \code{density}
+[kg/m$^3$], \code{young_modulus} [Pa], \code{poisson_ratio},
+\code{viscosity} [Pa$\cdot$s], \code{friction} (dimensionless, $\approx
+\tan\phi$ of the internal friction angle), \code{damping} [s],
+\code{yield_pressure} [Pa], \code{tensile_yield_ratio}, \code{yield_stress}
+[Pa] (cohesion), \code{hardening}, \code{dilatancy}. The yield surface is
+\[
+  \tau_{\max}(p) \;=\; \texttt{yield\_stress} \;+\; \texttt{friction}\cdot(p - p_{\min}),
+\]
+so shear strength grows with pressure $p$ like dry sand. The tricycle soil
+sets \code{density=1800}, \code{friction=0.84} ($=\tan 40^\circ$) and
+\code{yield_pressure=1e12} (effectively incompressible), leaving the very
+stiff default \code{young_modulus} so the strip behaves like packed ground
+rather than a sandbox.
+
+\paragraph{The particles.}
+\code{MPMGridCfg} fills an axis-aligned box with a lattice. Its resolution
+per axis is $\lceil \texttt{particles\_per\_cell}\cdot \text{extent}/\texttt{voxel\_size}\rceil$,
+so the $1.5\times0.6\times0.06$~m strip at 5~cm voxels gives $30\times12\times2 = 720$
+particles per env, each placed at a cell centre
+(\srcpath{particle_placement="cell_center"}) with mass = cell volume $\times$
+density.
+
+\begin{whybox}{the soil needs its own floor}
+The MPM solver only sees colliders that belong to \emph{its} coupler entry.
+The world ground plane belongs to the rigid entry, so to the soil it does not
+exist and particles would fall forever. \code{tricycle_env_cfg.py} therefore
+adds \code{MPMGround}, an invisible kinematic slab just below the strip, and
+lists it as the MPM entry's only body.
+\end{whybox}
+
+\section{Coupling the two solvers}
+\label{sec:coupling}
+
+\begin{newtonbox}{one Newton model, two solvers}
+Newton's experimental \emph{coupled solver} takes a single \code{Model} and a
+list of \textbf{entries}. Each entry owns a subset of bodies, joints, shapes
+and particles (a \code{ModelView}) and runs its own solver on that subset.
+\textbf{Proxy mappings} expose selected bodies of one entry inside another
+as \emph{virtual proxies}: massive ghost bodies whose pose is copied from the
+source each step and whose accumulated contact impulses are sent back as
+feedback forces. Newton calls this \emph{lagged-impulse} coupling because the
+feedback is applied one step late.
+\end{newtonbox}
+
+Isaac Lab wraps this as \code{CouplerProxyCfg}
+(\srcpath{source/isaaclab_contrib/isaaclab_contrib/coupling/coupler_cfg.py}):
+
+\begin{itemize}[leftmargin=1.6em]
+  \item \code{entries}: a list of \code{CouplerEntryCfg}. Each has a
+        \code{name}, a \code{solver_cfg}, a list of \code{bodies} (regexes
+        matched against full Newton body labels, descendants included),
+        \code{all_particles}, \srcpath{include_static_shapes} (whether the entry
+        owns shapes with no body, such as the ground plane),
+        \srcpath{include_child_joints}, \code{substeps} (how many equal
+        sub-steps the entry takes inside one coupled step) and
+        \code{in_place} (step into the same state buffer; required
+        \code{True} for MPM).
+  \item \code{proxies}: a list of \code{CouplerProxyMappingCfg} with
+        \code{source}, \code{destination}, \code{bodies},
+        \code{mode} (\code{"lagged"} or \code{"staggered"}), \srcpath{mass_scale} and
+        \code{collision_pipeline}.
+  \item \code{iterations}: proxy relaxation passes per coupled step.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  ent/.style={draw,rounded corners=3pt,minimum width=5.6cm,minimum height=2.6cm,align=left,font=\small,fill=white},
+  arr/.style={-{Stealth[length=2mm]},thick},
+]
+\node[ent,draw=isaacblue,fill=isaacblue!5] (rig) at (0,0) {\textbf{entry ``rover''} (MJWarp, 2 substeps)\\[2pt]
+  bodies: \srcpath{/World/envs/env_.*/Tricycle}\\ + all static shapes (ground plane)\\[2pt] solves: car dynamics, wheel drives,\\ car vs ground contacts};
+\node[ent,draw=newtonpurple,fill=newtonpurple!5] (mpm) at (7.6,0) {\textbf{entry ``soil''} (implicit MPM, 1 substep)\\[2pt]
+  bodies: \srcpath{/World/envs/env_.*/MPMGround}\\ + all particles\\[2pt] solves: soil flow, soil vs slab,\\ soil vs \emph{proxy} wheels};
+\draw[arr,isaacblue] ([yshift=5mm]rig.east) -- node[above,font=\scriptsize,align=center]{proxy: wheel poses \& velocities\\ (mass $\times$ 10)} ([yshift=5mm]mpm.west);
+\draw[arr,newtonpurple] ([yshift=-5mm]mpm.west) -- node[below,font=\scriptsize,align=center]{lagged feedback: soil impulses\\ on the wheels, next step} ([yshift=-5mm]rig.east);
+\end{tikzpicture}
+\caption{The two coupler entries and the one proxy mapping in \code{TricycleEnvCfg.__post_init__}. Only the three wheel bodies are mirrored into the soil solver.}
+\label{fig:coupler}
+\end{figure}
+
+What happens each 10~ms physics step: the rigid entry advances the car by two
+5~ms sub-steps using last step's soil feedback; the wheels' new poses and
+velocities are copied onto their proxies inside the MPM view; the MPM entry
+advances the soil one 10~ms step, colliding particles against the proxy
+wheels and the slab; the impulses the particles exerted on the proxies are
+stored and applied to the real wheels during the \emph{next} rigid step.
+
+\begin{whybox}{\code{mass_scale} is the stability knob}
+A proxy body is given the source body's mass times \code{mass_scale}. A
+heavy proxy barely moves when soil pushes on it, so the soil solve stays
+well-posed and the feedback impulses are smooth; the real wheel then receives
+those impulses one step late. If the scale is too small the lagged feedback
+can oscillate (the car ``chatters'' on the strip); too large and the soil
+feels the wheel as an immovable wall. The tricycle uses 10 through
+\srcpath{TricycleEnvCfg.proxy_mass_scale}.
+\end{whybox}
+
+\begin{warnbox}{rules the coupler enforces}
+\begin{itemize}[leftmargin=1.4em,nosep]
+  \item An MPM entry must have \code{in_place=True}; the coupler raises
+        \code{ValueError} otherwise (\code{coupler.py}, \code{_validate_config}).
+  \item A proxy \emph{source} entry may not be \code{in_place} in lagged mode
+        (Newton, \srcpath{solver_coupled_proxy.py}). The rigid entry is not, so
+        this is satisfied.
+  \item \srcpath{project_outside_colliders} must be \code{False} on a coupled
+        MPM entry.
+  \item Newton's proxy coupler supports at most two entries.
+\end{itemize}
+\end{warnbox}
+
+\section{The collision pipeline and \texttt{soft\_contact\_max=0}}
+
+With \srcpath{use_mujoco_contacts=False}, rigid contacts (car against ground
+plane) come from Newton's \code{CollisionPipeline}, configured by
+\code{NewtonCollisionPipelineCfg} (\srcpath{physics/newton_collision_cfg.py}).
+The only field the tricycle sets is \code{soft_contact_max=0}. ``Soft
+contacts'' are particle-versus-shape contacts generated by the generic
+pipeline; their default allocation is \code{shape_count * particle_count},
+which for thousands of particles is a huge buffer, and the MPM solver handles
+particle contacts itself anyway. Setting the maximum to zero disables that
+allocation.
+
+\section{Time stepping and CUDA graphs}
+
+\code{SimulationCfg.dt = 1/100} is the physics step; \srcpath{NewtonCfg.num_substeps=1}
+means one coupled solve per step (the rigid entry's own \code{substeps=2}
+happens inside it). \code{use_cuda_graph=True} records the whole step as a
+CUDA graph the first time and replays it afterwards, which is where most of
+the speed comes from; it also explains why buffer sizes (grid capacities,
+\code{njmax}) must be fixed up front. \code{decimation=2} in the env cfg
+means the policy acts every second physics step, i.e.\ at 50~Hz.
+
+\section{Why only a handful of envs fit}
+
+Each env carries 720 particles plus its own sparse grid; the grid tiers are
+shared caps. The GPU work per step is dominated by the number of \emph{active
+grid cells} times envs, and the 6~GB card runs out of memory well before the
+GPU runs out of compute. The runbook's numbers (4 envs, 90--160 steps/s) are
+the practical ceiling for this card; the same configuration on a large GPU
+simply needs the four caps raised in proportion to \code{--num_envs}.

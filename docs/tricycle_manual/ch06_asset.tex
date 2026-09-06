@@ -1,0 +1,185 @@
+\chapter{From MJCF to USD: the car asset}
+\label{ch:asset}
+
+The car is described twice in the repository: once as MJCF text inside
+\code{tricycle.py}, and once as a set of USD files under
+\srcpath{assets/tricycle/}. Only the USD is loaded at run time. This chapter
+explains how one becomes the other and what each USD layer contains, so that
+Chapters~\ref{ch:tricycle_py} and \ref{ch:usd} can go line by line.
+
+\section{Why two descriptions}
+
+MJCF (MuJoCo's XML format) is compact and human-writable: a body, a joint, a
+geom, done. Isaac Lab's Newton backend, however, builds its physics model from
+the \emph{USD stage} that \code{InteractiveScene} spawns. Isaac Lab can convert
+MJCF to USD, but the importer it uses is a Kit extension that only exists
+inside a running Isaac Sim application; the \code{isaaclab train} command never
+starts Kit. So the conversion is done once, offline, with
+\srcpath{scripts/tools/convert_mjcf.py}, and the result is committed.
+
+\begin{warnbox}{stale assets}
+Nothing checks that \srcpath{assets/tricycle/} matches \code{tricycle.py}. If
+you edit the MJCF and forget to reconvert, training silently uses the old car.
+The runbook's ``Convert the tricycle asset'' step is the fix, and
+\code{tricycle.py} now says so in its header. For this revision the committed
+USD was regenerated to match the new body.
+\end{warnbox}
+
+\section{Anatomy of the MJCF}
+
+\begin{lstlisting}[style=plain,numbers=none]
+<mujoco model="tricycle">
+  <compiler .../>          units and options for MuJoCo's model compiler
+  <default> ... </default> attributes every geom / joint inherits unless overridden
+  <worldbody>
+    <body name="chassis">  a rigid body; pos is relative to its parent
+      <freejoint/>         6 degrees of freedom: the chassis floats
+      <geom .../>          a shape with mass, attached to the body
+      <body name="fork">   a child body; its pos is relative to chassis
+        <joint .../>       1 degree of freedom between fork and chassis
+        ...
+\end{lstlisting}
+
+Bodies form a tree. Each body's pose is given relative to its parent, each
+joint sits between a body and its parent, and each geom belongs to exactly one
+body. Mass and inertia of a body are the sums over its geoms (MuJoCo computes
+the inertia tensor of a box or sphere from its dimensions and the given mass).
+That is why every body in \code{tricycle.py} has at least one geom with a
+mass: a body with zero inertia makes the solver divide by zero.
+
+\section{The converter}
+
+\code{convert_mjcf.py} wraps \srcpath{isaaclab.sim.converters.MjcfConverter}.
+On the develop branch this converter drives the \emph{MuJoCo USD Converter}
+(the \code{customLayerData} of every output file says
+\code{"MuJoCo USD Converter v0.2.0"}), which compiles the MJCF with MuJoCo's
+own compiler and then writes USD prims for what it finds. Isaac Lab then runs
+two post-processing passes recorded in \srcpath{assets/config.yaml}:
+\srcpath{run_asset_transformer} adds the Isaac robot schemas
+(\code{IsaacRobotAPI}, \code{IsaacLinkAPI}, \code{IsaacJointAPI}), and
+\srcpath{run_multi_physics_conversion} splits the physics into selectable
+variants (\code{physics}, \code{mujoco}, \code{physx}, \code{none}).
+
+The output is a small tree of \code{.usda} files (USD's text format):
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+File & Contains \\
+\midrule
+\code{tricycle.usda} & the entry point: references \code{base.usda}, defines the \code{Physics} variant set \\
+\srcpath{payloads/base.usda} & the geometry: one \code{Xform} per body, one \code{Cube}/\code{Sphere}/\code{Capsule} per geom \\
+\srcpath{payloads/robot.usda} & Isaac robot/link/joint tags, sublayered into \code{base.usda} \\
+\srcpath{payloads/Physics/physics.usda} & rigid-body, articulation-root, collision and mass schemas; the joints \\
+\srcpath{payloads/Physics/mujoco.usda} & MuJoCo-only extras (\code{MjcJointAPI} with \code{mjc:damping}) \\
+\srcpath{payloads/Physics/physx.usda} & PhysX-only extras (\code{PhysxJointAPI}); unused with Newton \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{isaacbox}{USD in five sentences}
+A USD \emph{stage} is a tree of \emph{prims} (nodes) each with a type
+(\code{Xform}, \code{Cube}, \code{PhysicsRevoluteJoint}, \ldots) and
+attributes. \emph{API schemas} such as \code{PhysicsRigidBodyAPI} are tags that
+can be applied to a prim to give it extra attributes and meaning. A stage is
+\emph{composed} from several files: \code{def} creates a prim,
+\code{over} adds to a prim defined elsewhere, \code{references} and
+\code{payload} pull in other files, \code{subLayers} stack files. A
+\emph{variant set} is a switch that selects which of several alternative
+sub-trees is active; Isaac Lab leaves the \code{Physics} variant on
+\code{"physics"}, so the \code{mujoco} and \code{physx} payloads are not
+loaded. Newton reads the composed result: bodies from
+\code{PhysicsRigidBodyAPI} prims, shapes from prims with
+\code{PhysicsCollisionAPI}, masses from \code{PhysicsMassAPI}, joints from
+\code{Physics*Joint} prims.
+\end{isaacbox}
+
+\section{How MJCF names become prim paths}
+\label{sec:prim_paths}
+
+The converter keeps the body tree and the body names:
+
+\begin{lstlisting}[style=plain,numbers=none]
+MJCF body tree                    USD prim (inside the asset)
+chassis                           /tricycle/Geometry/chassis
+  fork                            /tricycle/Geometry/chassis/fork
+    front_wheel_body              /tricycle/Geometry/chassis/fork/front_wheel_body
+  rear_left_body                  /tricycle/Geometry/chassis/rear_left_body
+  rear_right_body                 /tricycle/Geometry/chassis/rear_right_body
+joint "steer"                     /tricycle/Geometry/chassis/fork/steer
+joint "front_wheel"               /tricycle/Geometry/chassis/fork/front_wheel_body/front_wheel
+joint "rear_left"                 /tricycle/Geometry/chassis/rear_left_body/rear_left
+\end{lstlisting}
+
+When \code{InteractiveScene} spawns the asset at
+\code{prim_path="{ENV_REGEX_NS}/Tricycle"}, the asset root
+\srcpath{/tricycle} is placed at \srcpath{/World/envs/env_0/Tricycle},
+\srcpath{/World/envs/env_1/Tricycle}, and so on. The full Newton body label of the
+left rear wheel in env 0 is therefore
+\srcpath{/World/envs/env_0/Tricycle/Geometry/chassis/rear_left_body}. This is
+where two conventions in the env cfg come from:
+
+\begin{itemize}[leftmargin=1.6em]
+  \item Scene configs use the macro \code{{ENV_REGEX_NS}}, which Isaac Lab
+        expands to \srcpath{/World/envs/env_.*}.
+  \item Coupler \code{bodies} lists are plain regexes matched by Newton, so
+        they spell the expansion out:
+        \srcpath{/World/envs/env_.*/Tricycle/Geometry/chassis/.*_body} matches
+        all three wheel bodies (the \code{.*} also swallows \srcpath{fork/}),
+        but not the chassis or the fork.
+\end{itemize}
+
+Joint \emph{names} survive too: \srcpath{Articulation.find_joints(["steer"])}
+works because the USD joint prim is called \code{steer}.
+
+\section{What the new body looks like}
+\label{sec:new_body}
+
+The original chassis was a single $40\times24\times8$~cm box with the front
+wheel poking out of its nose. It has been replaced by a triangular frame: two
+side rails running from the steering head back to the rear corners, a rear
+crossbar, and a flat deck inside the rear half. All four are box geoms; the
+total chassis mass (5.0~kg), the wheel positions, radii and masses, and every
+joint and body name are unchanged, so the env config and the coupler mapping
+did not have to change.
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}[t]{0.48\textwidth}
+  \includegraphics[width=\linewidth]{tricycle_old_iso}
+  \caption{Before: box chassis.}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.48\textwidth}
+  \includegraphics[width=\linewidth]{tricycle_new_iso}
+  \caption{After: triangular frame with deck.}
+\end{subfigure}
+\\[6pt]
+\begin{subfigure}[t]{0.48\textwidth}
+  \includegraphics[width=\linewidth]{tricycle_new_top}
+  \caption{After, plan view. Apex forward (right), rear wheels at the base.}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.48\textwidth}
+  \includegraphics[width=\linewidth]{tricycle_new_side}
+  \caption{After, side view. The frame sits at 14~cm, wheel centres at 10~cm.}
+\end{subfigure}
+\caption{The tricycle as compiled by MuJoCo from \code{tricycle.py} (rendered with MuJoCo's own renderer, not Isaac Lab).}
+\label{fig:body}
+\end{figure}
+
+Because the wheels are 10~cm spheres and the frame sits at the chassis height
+of 14~cm, the frame's three corners disappear inside the wheels: the rails
+run into the rear wheels and the apex sits inside the front wheel. That is
+intentional; the corners of a real tricycle frame are also hidden by its hubs.
+
+\section{Regenerating the USD}
+
+Whenever \code{tricycle.py} changes, run the two commands in
+\code{RUNBOOK.md}, ``Convert the tricycle asset'': the first writes the MJCF
+to a temp file with \code{write_mjcf()}, the second converts it. The converter
+writes into \srcpath{assets/tricycle/tricycle.usda} regardless of the exact
+output filename given, and updates \srcpath{assets/config.yaml} and
+\srcpath{assets/.asset_hash}. Isaac Lab uses the hash to skip conversion when
+neither the MJCF nor the converter settings changed
+(\code{force_usd_conversion: true} in the committed config always
+reconverts).

@@ -1,0 +1,285 @@
+\chapter{Glossary}
+\label{app:glossary}
+
+\begin{description}[leftmargin=1.6em,font=\bfseries,itemsep=2pt]
+  \item[Action] The policy's output for one step; here two numbers in $[-1,1]$.
+  \item[Actuator (implicit)] A PD drive computed inside the physics solver from
+    position/velocity targets and gains. \code{ImplicitActuatorCfg}.
+  \item[Advantage] How much better an action turned out than the critic
+    expected. Estimated with GAE.
+  \item[Articulation] A tree of rigid bodies connected by joints, with one
+    root. The car. \code{Articulation} / \code{ArticulationCfg}.
+  \item[Asset] Anything the scene spawns and wraps in a Python object:
+    articulation, rigid object, MPM object, or a plain \code{AssetBaseCfg}.
+  \item[Checkpoint] A saved snapshot of the networks, \code{model_N.pt}.
+  \item[configclass] Isaac Lab's dataclass wrapper used for every config.
+  \item[Coupler] Newton's experimental solver that runs several solvers on
+    disjoint parts of one model and links them. \code{CouplerProxyCfg}.
+  \item[Coupler entry] One named sub-solver and the bodies/particles it owns.
+    \code{CouplerEntryCfg}.
+  \item[Critic / value function] The network that predicts expected return
+    from an observation.
+  \item[CUDA graph] A recorded sequence of GPU kernels replayed without CPU
+    overhead; requires fixed buffer sizes.
+  \item[Decimation] Physics steps per control step. 2 here.
+  \item[DirectRLEnv] Isaac Lab's base class for environments written as
+    explicit methods (as opposed to the manager-based workflow).
+  \item[Entry point] Installed package metadata that Isaac Lab uses to
+    discover task packages (\code{isaaclab.tasks} group).
+  \item[Env / environment instance] One copy of the scene on the env grid.
+  \item[Env origin] World position of an env's local frame.
+    \code{scene.env_origins}.
+  \item[Episode] A run from reset to done; 2~s or an early termination.
+  \item[GAE] Generalised Advantage Estimation, parameter $\lambda$.
+  \item[Hydra] The config-override system behind \code{physics=NAME} and
+    \code{env.xxx=value} command-line arguments.
+  \item[InteractiveScene] Turns a scene cfg into spawned prims and asset
+    objects; owns \code{env_origins}.
+  \item[Iteration] One PPO cycle: rollout, advantage, update.
+  \item[Kinematic body] A rigid body with a pose but no dynamics; the slab.
+  \item[Lagged coupling] Proxy poses sent forward each step, feedback
+    impulses applied one step late.
+  \item[MJCF] MuJoCo's XML model format. \code{tricycle.py} holds one.
+  \item[MJWarp] MuJoCo re-implemented in Warp; Newton's rigid-body solver.
+  \item[MPM] Material Point Method: particles plus a background grid for
+    continua such as soil.
+  \item[MPMObject] Isaac Lab asset wrapping one particle cloud per env.
+  \item[Newton] NVIDIA's GPU physics engine on Warp, Isaac Lab's default
+    backend on develop.
+  \item[Observation] The policy's input; 15 numbers here.
+  \item[Policy / actor] The network mapping observations to an action
+    distribution.
+  \item[PPO] Proximal Policy Optimisation, the learning algorithm.
+  \item[Prim] A node in a USD stage. Prim paths look like
+    \srcpath{/World/envs/env_0/Tricycle}.
+  \item[Proxy] A ghost copy of a body from one coupler entry placed inside
+    another so they can interact.
+  \item[Rigid object] A single rigid body asset. \code{RigidObjectCfg}.
+  \item[Rollout] The batch of experience collected before an update.
+  \item[Root state] Position, quaternion, linear and angular velocity of an
+    articulation's root body: 13 numbers.
+  \item[rsl\_rl] The learning library (ETH Zurich Robotic Systems Lab).
+  \item[SimulationContext] The Isaac Lab object that owns the stage and the
+    physics manager.
+  \item[Sparse grid] MPM grid that allocates cells only near particles; sized
+    by the four capacity caps.
+  \item[Time-out] Episode cut by the clock, not by failure; bootstrapped by
+    the learner.
+  \item[USD] Universal Scene Description, the scene file format Isaac Lab
+    builds physics from.
+  \item[Warp] NVIDIA's Python-to-CUDA kernel language that Newton and Isaac
+    Lab are written in.
+\end{description}
+
+\chapter{What changed in this revision}
+\label{app:changes}
+
+All changes are on the branch named on the title page. None changes the
+task's observation, action, reward or termination definitions.
+
+\section*{The car body}
+\begin{itemize}[leftmargin=1.6em]
+  \item \code{tricycle.py}: the single box chassis became a triangular frame
+    (two rails, crossbar, deck). Wheel positions, radii, masses, joint names
+    and body names are unchanged; the chassis total mass is still 5.0~kg.
+    Geometry is computed from a few named constants and a \code{_rail}
+    helper. The import-time \code{write_mjcf()} call was removed.
+  \item \srcpath{assets/tricycle/}: the committed USD was regenerated to match.
+    The four new \code{Cube} prims replace \code{chassis_geom} in
+    \code{base.usda}, \code{physics.usda} and \code{mujoco.usda}. The edit
+    was validated by composing the stage with OpenUSD: every prim carries the
+    same schemas as before and the four masses sum to 5.0~kg. The new MJCF
+    was also compiled with MuJoCo and driven for several seconds on a plane
+    (stands, drives straight, turns without tipping).
+  \item If anything ever looks wrong, the converter is the source of truth:
+    rerun the two conversion commands.
+\end{itemize}
+
+\section*{Code clean-up (behaviour preserved)}
+\begin{itemize}[leftmargin=1.6em]
+  \item \code{tricycle_env_cfg.py}: the hard-coded Windows asset path became
+    a path relative to the file; stale comments about \code{MjcfFileCfg}
+    were removed; the strip comment now states the real particle count.
+  \item \code{tricycle_env.py}: removed a stale \code{VERIFY} marker on an
+    import; type annotations on \code{self.car}/\code{self.soil}; the
+    unreachable \code{_ALL_INDICES} fallback replaced by \code{torch.arange};
+    the \code{soil.reset} comment now states what the call does.
+  \item \srcpath{tricycle/__init__.py}: header shows the current CLI commands
+    instead of the removed \code{train.py} script and \code{-v0} id.
+  \item \srcpath{agents/rsl_rl_ppo_cfg.py}: the deprecated runner-level
+    \srcpath{empirical_normalization} was replaced by the two policy-level
+    normalisation flags it used to set.
+  \item Deleted \srcpath{tricycle/soil.py}, an unused copy of
+    \srcpath{excavation/soil.py}; deleted the stray root file
+    \code{__init__ .py}.
+  \item Added \code{.gitignore}; \srcpath{__pycache__/} and
+    \srcpath{luna_hifi_tasks.egg-info/} are no longer tracked (they are
+    regenerated by Python and pip).
+\end{itemize}
+
+\section*{Documentation}
+\begin{itemize}[leftmargin=1.6em]
+  \item \code{RUNBOOK.md}: a note on the body change under section 5.
+  \item \srcpath{docs/tricycle_manual/}: this document and its LaTeX source.
+    Rebuild with \srcpath{./build.sh} (needs TeX Live with \code{latexmk},
+    \code{tcolorbox}, \code{tikz}, \code{listings}).
+\end{itemize}
+
+\section*{Pulling these changes}
+If \code{git checkout} or \code{git pull} complains that local changes to
+\code{.pyc} or \code{egg-info} files would be overwritten, those are the
+formerly tracked generated files; discard them with \code{git checkout -- .}
+(or \code{git stash}) and retry.
+
+No reinstall is needed: \code{pyproject.toml} is unchanged by this revision,
+and the \srcpath{egg-info} the pull removes is a build leftover rather than
+the metadata the CLI reads (Chapter~\ref{ch:pyproject}). \code{tricycle.py}
+did change, so reconvert the asset:
+\begin{lstlisting}[style=shell]
+.\isaaclab.bat -p -c "from luna_hifi_tasks.tricycle.tricycle import write_mjcf; print(write_mjcf())"
+.\isaaclab.bat -p scripts\tools\convert_mjcf.py C:\Users\hanse\AppData\Local\Temp\luna_hifi_assets\tricycle.xml C:\Users\hanse\Documents\Luna_HiFi\assets\tricycle.usd
+\end{lstlisting}
+If the registry check ever comes back empty, reinstall once and it will be
+populated again:
+\begin{lstlisting}[style=shell]
+.\isaaclab.bat -p -m pip install -e C:\Users\hanse\Documents\Luna_HiFi
+\end{lstlisting}
+
+\chapter{Tensor shapes cheat sheet}
+\label{app:shapes}
+
+$N$ is the number of envs.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Expression & Shape & Meaning \\
+\midrule
+\code{actions} (to \code{_pre_physics_step}) & $(N,2)$ & throttle, steer in $[-1,1]$ \\
+\code{self._actions} & $(N,2)$ & clamped copy, also observed \\
+\code{car.data.root_pos_w} & $(N,3)$ & root position, world frame \\
+\srcpath{car.data.root_lin_vel_b} & $(N,3)$ & root linear velocity, body frame \\
+\srcpath{car.data.root_ang_vel_b} & $(N,3)$ & root angular velocity, body frame \\
+\srcpath{car.data.projected_gravity_b} & $(N,3)$ & gravity direction in body frame \\
+\code{car.data.joint_pos} & $(N,J)$ & all joint positions; $J=4$ here \\
+\code{car.data.joint_vel} & $(N,J)$ & all joint velocities \\
+\srcpath{car.data.default_root_state} & $(N,13)$ & pos(3) quat(4) lin vel(3) ang vel(3) \\
+\srcpath{car.data.default_joint_pos} & $(N,J)$ & from the cfg \code{init_state} \\
+\code{scene.env_origins} & $(N,3)$ & env origins, world frame \\
+\code{obs["policy"]} & $(N,15)$ & the observation \\
+reward & $(N,)$ & float \\
+terminated, time\_out & $(N,)$ & bool \\
+\code{episode_length_buf} & $(N,)$ & long, steps since reset \\
+\srcpath{soil.data.nodal_pos_w} & $(N, 720, 3)$ & particle positions per env \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The joint count $J$ is 4: \code{steer}, \code{front_wheel},
+\code{rear_left}, \code{rear_right}; the chassis free joint is the root
+state, not a joint in this table. Their order in the tensors comes from the
+USD and is what \code{find_joints} resolves.
+
+\chapter{Where to look in the Isaac Lab source}
+\label{app:sources}
+
+Paths are relative to the Isaac Lab checkout (\code{develop}).
+
+\begin{center}
+\small
+\begin{tabular}{@{}p{5.6cm}p{9.2cm}@{}}
+\toprule
+Concept & File \\
+\midrule
+CLI, entry-point loading & \srcpath{source/isaaclab/isaaclab/cli/__init__.py} \\
+train / play backends & \srcpath{source/isaaclab_rl/isaaclab_rl/entrypoints/backends/train_rsl_rl.py}, \code{play_rsl_rl.py} \\
+common CLI args, \code{--num_envs} override & \srcpath{source/isaaclab_rl/isaaclab_rl/entrypoints/common.py} \\
+Hydra presets, \code{play_mode()} call & \srcpath{source/isaaclab_tasks/isaaclab_tasks/utils/hydra.py} \\
+\code{DirectRLEnv} step/reset & \srcpath{source/isaaclab/isaaclab/envs/direct_rl_env.py} \\
+\code{DirectRLEnvCfg} fields, base \code{play_mode} & \srcpath{source/isaaclab/isaaclab/envs/direct_rl_env_cfg.py} \\
+\code{configclass} & \srcpath{source/isaaclab/isaaclab/utils/configclass.py} \\
+spaces from ints & \srcpath{source/isaaclab/isaaclab/envs/utils/spaces.py} \\
+\code{InteractiveScene} & \srcpath{source/isaaclab/isaaclab/scene/interactive_scene.py} \\
+\code{SimulationCfg} & \srcpath{source/isaaclab/isaaclab/sim/simulation_cfg.py} \\
+articulation API & \srcpath{source/isaaclab/isaaclab/assets/articulation/base_articulation.py} \\
+root/joint data fields & \srcpath{source/isaaclab/isaaclab/assets/rigid_object/base_rigid_object_data.py} \\
+actuator cfgs & \srcpath{source/isaaclab/isaaclab/actuators/actuator_base_cfg.py}, \code{actuator_pd_cfg.py} \\
+\code{NewtonCfg} & \srcpath{source/isaaclab_newton/isaaclab_newton/physics/newton_manager_cfg.py} \\
+\code{MJWarpSolverCfg} & \srcpath{source/isaaclab_newton/isaaclab_newton/physics/mjwarp_manager_cfg.py} \\
+\code{MPMSolverCfg} & \srcpath{source/isaaclab_newton/isaaclab_newton/physics/mpm_manager_cfg.py} \\
+MPM manager, \code{reset_solver_state} & \srcpath{source/isaaclab_newton/isaaclab_newton/physics/mpm_manager.py} \\
+collision pipeline cfg & \srcpath{source/isaaclab_newton/isaaclab_newton/physics/newton_collision_cfg.py} \\
+\code{MPMObject}, \code{reset} & \srcpath{source/isaaclab_newton/isaaclab_newton/assets/mpm_object/mpm_object.py} \\
+\code{MPMGridCfg}, material & \srcpath{source/isaaclab_newton/isaaclab_newton/sim/spawners/mpm/mpm_cfg.py}, \code{mpm.py} \\
+Newton collision props & \srcpath{source/isaaclab_newton/isaaclab_newton/sim/schemas/schemas_cfg.py} \\
+coupler cfgs and manager & \srcpath{source/isaaclab_contrib/isaaclab_contrib/coupling/coupler_cfg.py}, \code{coupler.py} \\
+reference coupled task & \srcpath{source/isaaclab_tasks/isaaclab_tasks/contrib/ur10_particle_push/ur10_particle_push_env_cfg.py} \\
+Newton GL visualiser cfg & \srcpath{source/isaaclab_visualizers/isaaclab_visualizers/newton/newton_visualizer_cfg.py} \\
+rsl\_rl cfg classes & \srcpath{source/isaaclab_rl/isaaclab_rl/rsl_rl/rl_cfg.py} \\
+rsl\_rl cfg conversion & \srcpath{source/isaaclab_rl/isaaclab_rl/rsl_rl/utils.py} \\
+rsl\_rl wrapper & \srcpath{source/isaaclab_rl/isaaclab_rl/rsl_rl/vecenv_wrapper.py} \\
+MJCF converter & \srcpath{source/isaaclab/isaaclab/sim/converters/mjcf_converter.py}, \srcpath{scripts/tools/convert_mjcf.py} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+In the Newton package (\srcpath{newton/_src/}): the proxy coupler is
+\srcpath{solvers/coupled/solver_coupled_proxy.py}, the implicit MPM solver is
+\srcpath{solvers/implicit_mpm/solver_implicit_mpm.py}. In \code{rsl_rl}:
+\srcpath{runners/on_policy_runner.py} and \srcpath{algorithms/ppo.py}.
+
+\chapter{Numbers at a glance}
+\label{app:numbers}
+
+\section*{The car (chassis frame, metres, kilograms)}
+\begin{center}
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+Part & Centre $(x,y,z)$ & Half-sizes / radius & Mass \\
+\midrule
+left rail & $(0.035, 0.065, 0)$, yaw $-19.4^\circ$ & $(0.1961, 0.02, 0.015)$ & 0.8 \\
+right rail & $(0.035, -0.065, 0)$, yaw $+19.4^\circ$ & $(0.1961, 0.02, 0.015)$ & 0.8 \\
+crossbar & $(-0.15, 0, 0)$ & $(0.02, 0.15, 0.015)$ & 0.8 \\
+deck & $(-0.08, 0, 0)$ & $(0.06, 0.065, 0.01)$ & 2.6 \\
+fork capsule & $(0.22, 0, -0.04)$ & $r=0.012$, half-length 0.02 & 0.1 \\
+front wheel & $(0.22, 0, -0.04)$ & $r=0.10$ & 0.5 \\
+rear left wheel & $(-0.15, 0.16, -0.04)$ & $r=0.10$ & 0.5 \\
+rear right wheel & $(-0.15, -0.16, -0.04)$ & $r=0.10$ & 0.5 \\
+\midrule
+chassis body & COM $(-0.054, 0, 0)$ & inertia $(0.062, 0.044, 0.019)$ & 5.0 \\
+whole car & & wheelbase 0.37, track 0.32 & 6.6 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section*{The soil}
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+strip box (env-local) & $x\in[-0.4, 1.1]$, $y\in[-0.3, 0.3]$, $z\in[0.025, 0.085]$ \\
+voxel & 0.05 m \\
+particles per env & $30\times12\times2 = 720$, one per cell centre \\
+particle mass & $0.05^3\times1800 = 0.225$ kg \\
+material & $\rho=1800$, friction $0.84$, yield pressure $10^{12}$ Pa, cohesion 0 \\
+slab & $2.5\times1.6\times0.1$ m centred at $(0.35, 0, -0.05)$, kinematic, invisible \\
+grid caps (active/leaf/lower/upper) & $16384 / 8192 / 4096 / 1024$, totals for all envs \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section*{Time}
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+physics step & 10 ms (rigid entry: 2 sub-steps of 5 ms; MPM: 1) \\
+control step & 20 ms (50 Hz) \\
+episode & 2 s $=$ 100 control steps $=$ 200 physics steps \\
+rollout & 50 control steps per env per iteration \\
+training & 300 iterations, checkpoint every 50 \\
+\bottomrule
+\end{tabular}
+\end{center}

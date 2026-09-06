@@ -1,0 +1,73 @@
+\chapter{\texttt{pyproject.toml}}
+\label{ch:pyproject}
+
+\textbf{Role:} tells \code{pip} how to install the package and tells Isaac Lab
+that the package contains tasks. It is read once, at install time
+(Section~\ref{sec:when}). 17 lines.
+
+\plainfile{\srcroot/pyproject.toml}
+
+\begin{explain}
+\li{1} Opens the \code{[project]} table, the standard place (PEP~621) for a
+  package's metadata.
+\li{2} The distribution name. This is what \code{pip list} shows and what the
+  installed metadata folder is called (\srcpath{luna_hifi_tasks-0.1.0.dist-info}).
+  It happens to equal the import name, but the two are independent.
+\li{3} Version string; not used by anything in Isaac Lab, but required by pip.
+\li{4} Free-text description shown by \code{pip show}.
+\li{5} Refuses to install on Python older than 3.11. Newton~1.5 uses the
+  \code{X | None} union syntax in type annotations at run time, which Python
+  3.10 rejects (RUNBOOK section 1). The runbook goes further and uses 3.12.
+\li{6} No dependencies are declared, deliberately. Isaac Lab, Newton, torch,
+  warp and gymnasium all come from the Isaac Lab venv; declaring them here
+  would make pip try to resolve versions it must not touch.
+\li{7} Blank separator.
+\li{8} Opens the entry-point table for the group \code{isaaclab.tasks}. The
+  quotes are needed because the group name contains a dot. This is the single
+  line that makes the package discoverable by the \code{isaaclab} command
+  (Section~\ref{sec:step_cli}).
+\li{9} One entry point: name \code{luna_hifi_tasks}, target the module
+  \code{luna_hifi_tasks}. When Isaac Lab calls \code{entry_point.load()} on it,
+  Python imports that module, which triggers the task registration. The
+  target could have been a sub-module or an object; the whole package is used
+  so that adding \code{from . import excavation} later registers the second
+  task without touching this file.
+\li{10} Blank.
+\li{11} Opens the build-system table: which tool turns this folder into an
+  installable package.
+\li{12} Requires \code{setuptools} 64 or newer, the first version with
+  PEP~660 editable installs. That is what makes \code{pip install -e} work
+  without a \code{setup.py}.
+\li{13} The build backend entry point inside setuptools.
+\li{14} Blank.
+\li{15} Configures setuptools' automatic package discovery.
+\li{16} Search for packages starting in the repository root.
+\li{17} Only take folders whose name starts with \code{luna_hifi_tasks}. This
+  excludes \code{assets}, \code{docs} and anything else at the root. A
+  folder only counts as a package if it contains \code{__init__.py}; a
+  sub-folder without one is silently skipped, which is the
+  missing-\code{__init__.py} failure mode in the runbook. Adding the file is
+  the whole fix; see the box below on why no reinstall is needed for it.
+\end{explain}
+
+\begin{isaacbox}{editable installs, and when a reinstall is needed}
+\code{pip install -e <folder>} does not copy the code. With a modern
+setuptools (PEP~660) it writes two things into the venv's
+\code{site-packages}: a \code{.pth} file that installs an import finder, and
+the distribution metadata in \srcpath{luna_hifi_tasks-0.1.0.dist-info}. The
+finder holds a single mapping, the top-level name \code{luna_hifi_tasks}
+pointing at your source folder; every module below it is resolved off the
+filesystem at import time.
+
+So the source tree is read live, and \emph{one} kind of change needs a
+reinstall: editing \code{pyproject.toml}. Entry points and the package list
+are frozen into \code{dist-info} when you install, so a new or renamed entry
+point stays invisible until \code{pip install -e} runs again. Everything else
+takes effect on the next run: editing any \code{.py} file, adding a new
+subpackage, and adding an \code{__init__.py} to a folder that lacked one.
+
+The \srcpath{luna_hifi_tasks.egg-info/} folder that appears in the repository
+root is a leftover of the build, not the metadata anything reads; deleting it
+does not affect task discovery. All four behaviours were checked directly on
+this package in a clean virtual environment.
+\end{isaacbox}

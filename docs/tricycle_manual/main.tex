@@ -1,0 +1,187 @@
+% Luna_HiFi tricycle manual.  Build:  latexmk -pdf main.tex   (or ./build.sh)
+\documentclass[11pt,a4paper,oneside]{report}
+
+% ---------------------------------------------------------------- packages
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=2.3cm,headheight=14pt]{geometry}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{amsmath,amssymb}
+\usepackage{enumitem}
+\usepackage{parskip}
+\usepackage{microtype}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{needspace}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc,fit,backgrounds}
+\usepackage[most]{tcolorbox}
+\usepackage{url}
+\DeclareUrlCommand\srcpath{\urlstyle{tt}}
+\usepackage[hidelinks,bookmarksnumbered]{hyperref}
+
+% ---------------------------------------------------------------- colours
+\definecolor{codebg}{RGB}{247,247,250}
+\definecolor{codeframe}{RGB}{200,200,215}
+\definecolor{kw}{RGB}{0,92,170}
+\definecolor{str}{RGB}{160,50,40}
+\definecolor{cmt}{RGB}{90,130,90}
+\definecolor{num}{RGB}{140,140,150}
+\definecolor{isaacblue}{RGB}{25,95,170}
+\definecolor{warnorange}{RGB}{190,105,20}
+\definecolor{whygreen}{RGB}{35,125,80}
+\definecolor{newtonpurple}{RGB}{110,60,160}
+
+% ---------------------------------------------------------------- listings
+\lstdefinestyle{py}{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{kw}\bfseries,
+  stringstyle=\color{str},
+  commentstyle=\color{cmt}\itshape,
+  numberstyle=\tiny\color{num},
+  numbers=left,
+  numbersep=8pt,
+  stepnumber=1,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  framerule=0.4pt,
+  xleftmargin=2.4em,
+  framexleftmargin=2.0em,
+  breaklines=true,
+  breakatwhitespace=false,
+  postbreak=\mbox{\textcolor{num}{$\hookrightarrow$}\space},
+  showstringspaces=false,
+  tabsize=4,
+  columns=fullflexible,
+  keepspaces=true,
+  upquote=true,
+  literate={\_}{{\_}}1,
+}
+\lstdefinestyle{plain}{
+  basicstyle=\ttfamily\small,
+  numbers=left,
+  numberstyle=\tiny\color{num},
+  numbersep=8pt,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  framerule=0.4pt,
+  xleftmargin=2.4em,
+  framexleftmargin=2.0em,
+  breaklines=true,
+  postbreak=\mbox{\textcolor{num}{$\hookrightarrow$}\space},
+  showstringspaces=false,
+  columns=fullflexible,
+  keepspaces=true,
+  upquote=true,
+}
+\lstdefinestyle{shell}{
+  basicstyle=\ttfamily\small,
+  numbers=none,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  framerule=0.4pt,
+  breaklines=true,
+  postbreak=\mbox{\textcolor{num}{$\hookrightarrow$}\space},
+  showstringspaces=false,
+  columns=fullflexible,
+  keepspaces=true,
+  upquote=true,
+}
+\lstset{style=py}
+
+% Inline code.  \code{} works in headings too.
+\DeclareRobustCommand{\code}[1]{\texttt{\detokenize{#1}}}
+% A slice of a real source file, with the file's own line numbers.
+%   \codepart{path}{first}{last}
+\newcommand{\codepart}[3]{\lstinputlisting[firstline=#2,lastline=#3,firstnumber=#2]{#1}}
+\newcommand{\codefile}[1]{\lstinputlisting{#1}}
+\newcommand{\plainpart}[3]{\lstinputlisting[style=plain,firstline=#2,lastline=#3,firstnumber=#2]{#1}}
+\newcommand{\plainfile}[1]{\lstinputlisting[style=plain]{#1}}
+
+% Line-by-line explanations.
+\newlist{explain}{description}{1}
+\setlist[explain]{font=\sffamily\bfseries\color{isaacblue},leftmargin=2.2em,labelindent=0pt,itemsep=3pt,topsep=4pt}
+\newcommand{\li}[1]{\item[Line #1]}
+\newcommand{\lis}[2]{\item[Lines #1--#2]}
+
+% Boxes.
+\newtcolorbox{isaacbox}[1]{enhanced,breakable,colback=isaacblue!4,colframe=isaacblue,
+  title={Isaac Lab: #1},fonttitle=\bfseries,left=6pt,right=6pt,top=4pt,bottom=4pt,arc=2pt}
+\newtcolorbox{newtonbox}[1]{enhanced,breakable,colback=newtonpurple!4,colframe=newtonpurple,
+  title={Newton: #1},fonttitle=\bfseries,left=6pt,right=6pt,top=4pt,bottom=4pt,arc=2pt}
+\newtcolorbox{whybox}[1]{enhanced,breakable,colback=whygreen!5,colframe=whygreen,
+  title={Why: #1},fonttitle=\bfseries,left=6pt,right=6pt,top=4pt,bottom=4pt,arc=2pt}
+\newtcolorbox{warnbox}[1]{enhanced,breakable,colback=warnorange!5,colframe=warnorange,
+  title={Watch out: #1},fonttitle=\bfseries,left=6pt,right=6pt,top=4pt,bottom=4pt,arc=2pt}
+\newtcolorbox{plainbox}[1]{enhanced,breakable,colback=black!3,colframe=black!45,
+  title={#1},fonttitle=\bfseries,left=6pt,right=6pt,top=4pt,bottom=4pt,arc=2pt}
+
+% Headers.
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\nouppercase{\leftmark}}
+\fancyhead[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[C]{\small\thepage}\renewcommand{\headrulewidth}{0pt}}
+
+\titleformat{\chapter}[display]{\normalfont\huge\bfseries\color{isaacblue!80!black}}
+  {\chaptertitlename\ \thechapter}{12pt}{\Huge}
+\titlespacing*{\chapter}{0pt}{20pt}{30pt}
+
+\setcounter{tocdepth}{2}
+\setcounter{secnumdepth}{3}
+\setlength{\emergencystretch}{3em}
+
+\graphicspath{{figures/}}
+
+% Paths to the real source files, relative to this directory.
+\newcommand{\srcroot}{../..}
+
+\title{\Huge\bfseries Luna\_HiFi Tricycle\\[6pt]
+  \Large A line-by-line manual for the repository, Isaac Lab, Newton MPM soil and rsl\_rl PPO}
+\author{Generated for the \code{hvnsel/newtonRL} repository}
+\date{3 September 2026 \\[4pt] \small matches branch \code{claude/luna-hifi-isaac-runbook-imdm7y}}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\clearpage
+\tableofcontents
+\clearpage
+
+\include{ch01_reading}
+\part{The big picture}
+\include{ch02_repo}
+\include{ch03_rl}
+\include{ch04_pipeline}
+\include{ch05_physics}
+\include{ch06_asset}
+\part{Every file, every line}
+\include{ch07_pyproject}
+\include{ch08_package_init}
+\include{ch09_task_init}
+\include{ch10_tricycle_py}
+\include{ch11_env_cfg}
+\include{ch12_env}
+\include{ch13_agents}
+\include{ch14_usd}
+\include{ch15_runbook}
+\appendix
+\part{Appendices}
+\include{appendices}
+\end{document}

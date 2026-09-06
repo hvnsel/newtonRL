@@ -15,10 +15,14 @@
 #   - Scene prim_path uses {ENV_REGEX_NS}; coupler bodies use the expanded
 #     /World/envs/env_.* form.
 #
-# STILL UNVERIFIED: sim_utils.MjcfFileCfg in kit-less mode. If it does not
-# exist, see the note above TRICYCLE_CFG for the fallback.
+# The car is loaded from the USD in assets/tricycle/, which is converted
+# offline from the MJCF in tricycle.py (see RUNBOOK.md). MJCF cannot be
+# imported at runtime: the importer is a Kit extension and the CLI never
+# boots Kit.
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
@@ -55,7 +59,8 @@ MPM_COLLIDER_MARGIN = 0.5 * VOXEL_SIZE
 MPM_PARTICLES_PER_CELL = 1.0
 MPM_VISUAL_COLOR = (0.62, 0.55, 0.45)
 
-# Soil strip: 3 m long, 0.6 m wide, 6 cm deep. ~1.1k particles per env.
+# Soil strip: 1.5 m long, 0.6 m wide, 6 cm deep. With a 5 cm voxel and one
+# particle per cell that is 30 x 12 x 2 = 720 particles per env.
 STRIP_LENGTH, STRIP_WIDTH, STRIP_DEPTH = 1.5, 0.6, 0.06
 STRIP_START_X = -0.4                       # car spawns at x=0, on the strip
 
@@ -71,16 +76,16 @@ MPM_GROUND_POSITION = (STRIP_START_X + 0.5 * STRIP_LENGTH, 0.0, -0.05)
 # ---------------------------------------------------------------------------
 # Tricycle
 # ---------------------------------------------------------------------------
-#
-# If MjcfFileCfg does not exist in your build, convert tricycle.xml to USD once
-# (Isaac Sim's importer, or newton-usd-schemas) and swap this for:
-#     spawn=sim_utils.UsdFileCfg(usd_path=".../tricycle.usd")
+
+# <repo>/assets/tricycle/tricycle.usda, found relative to this file so the
+# repo can live anywhere. Regenerate it with the converter after editing
+# tricycle.py (RUNBOOK.md, "Convert the tricycle asset").
+ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
+TRICYCLE_USD_PATH = ASSETS_DIR / "tricycle" / "tricycle.usda"
 
 TRICYCLE_CFG = ArticulationCfg(
     prim_path="{ENV_REGEX_NS}/Tricycle",
-    spawn=sim_utils.UsdFileCfg(
-        usd_path=r"C:\Users\hanse\Documents\Luna_HiFi\assets\tricycle\tricycle.usda",
-    ),
+    spawn=sim_utils.UsdFileCfg(usd_path=str(TRICYCLE_USD_PATH)),
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0.0, 0.0, CHASSIS_Z + MPM_COLLIDER_MARGIN + STRIP_DEPTH + 0.01),
         rot=(1.0, 0.0, 0.0, 0.0),

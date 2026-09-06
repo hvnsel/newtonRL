@@ -26,7 +26,25 @@ over "tricycle"
     {
         over "chassis"
         {
-            over "chassis_geom" (
+            over "left_rail" (
+                prepend apiSchemas = ["MjcCollisionAPI"]
+            )
+            {
+            }
+
+            over "right_rail" (
+                prepend apiSchemas = ["MjcCollisionAPI"]
+            )
+            {
+            }
+
+            over "crossbar" (
+                prepend apiSchemas = ["MjcCollisionAPI"]
+            )
+            {
+            }
+
+            over "deck" (
                 prepend apiSchemas = ["MjcCollisionAPI"]
             )
             {

@@ -51,8 +51,12 @@
 #   blade at the leading edge of each mouth. Soil is cut by the blade, carried
 #   through the mouth, and retained in the cavity. A solid cylinder would push
 #   soil around; it would never fill.
-# * The chassis outweighs both drums roughly 13:1, so a full drum barely moves
-#   the CG and the machine does not pitch over its front axle while digging.
+# * The chassis outweighs both drums roughly 6.6:1 empty. A FULL pair is a
+#   different matter: the bore holds ~155 kg of regolith per drum, so a loaded
+#   machine carries around 64% of its own dry mass out on the arms. Arm hold
+#   torque goes from 230 N-m empty to ~1270 N-m full at earth gravity (205 N-m
+#   at lunar gravity). Size the arm actuator for the loaded case, and expect
+#   the policy to have to care about carrying a full drum.
 #
 # Wheels are cylinders with grousers, not the spheres the tricycle used. On
 # granular media a smooth wheel simply shears the surface and spins in place,
@@ -78,11 +82,21 @@ import tempfile
 # --- running gear ---
 WHEEL_RADIUS = 0.30
 WHEEL_HALF_W = 0.10             # 20 cm wide tyre
-WHEELBASE = 1.60                # front axle to rear axle, along x
+WHEELBASE = 1.40                # front axle to rear axle, along x
 TRACK = 1.15                    # left wheel centre to right wheel centre, along y
 
-AXLE_X = 0.5 * WHEELBASE        # +/- 0.80
+AXLE_X = 0.5 * WHEELBASE        # +/- 0.70
 WHEEL_Y = 0.5 * TRACK           # +/- 0.575
+
+# The arm pivot sits AHEAD of the axle, not on it. With a full-width drum the
+# assembly would otherwise swing back into the front wheels at full dig: the
+# drum ends and the yoke legs both pass through the wheel band in y, so the
+# only thing keeping them apart is separation in x. Buying that separation at
+# the pivot costs nothing in dig depth or dump height, where pulling the arm
+# limits in to avoid the wheels would cost both. Mounting arms ahead of the
+# axle is also how loaders are built.
+MAST_OFFSET_X = 0.12
+PIVOT_X = AXLE_X + MAST_OFFSET_X
 
 CHASSIS_Z = WHEEL_RADIUS        # chassis origin height with wheels on z = 0
 
@@ -99,7 +113,7 @@ DECK_HALF = (0.55, 0.40, 0.04)
 
 # --- mast: the tower on each crossmember that carries the arm pivot ---
 MAST_TOP_Z = 0.20               # arm pivot height in the chassis frame
-MAST_HALF = (0.05, 0.09, 0.13)
+MAST_HALF = (0.05, 0.09, 0.13)  # x half-size is extended to span MAST_OFFSET_X
 
 # --- arm ---
 # The arm is a YOKE, not a single boom. A centre boom running out to the drum
@@ -126,7 +140,11 @@ ARM_RANGE = (-0.55, 0.80)       # -31.5 deg (stowed high) .. +45.8 deg (full dig
 
 # --- drum ---
 DRUM_RADIUS = 0.20
-DRUM_HALF_LEN = 0.22            # 44 cm wide drum
+# Nearly a full-width drum: 2*(DRUM_HALF_LEN + 2*CAP_HALF_T) = 1.00 m against a
+# 1.15 m track, so it cuts an almost machine-wide swath but still stops short of
+# the wheels. Widening it further starts eating the wheel clearance that
+# MAST_OFFSET_X buys back.
+DRUM_HALF_LEN = 0.475           # ~100 cm wide drum
 DRUM_WALL_T = 0.030             # shell thickness; see the MPM note below
 DRUM_FACETS = 12                # angular slots around the circumference
 SCOOP_COUNT = 3                 # of those slots, this many are left open as mouths
@@ -151,12 +169,12 @@ DECK_MASS = 170.0               # the ballast: keeps the CG low and central
 MAST_MASS = 20.0                # each
 WHEEL_MASS = 12.0               # cylinder only
 GROUSER_MASS = 0.35             # each
-ARM_BOOM_MASS = 6.0             # each arm: boom + cross + two legs = 14 kg
-ARM_CROSS_MASS = 2.0
-ARM_LEG_MASS = 3.0
-DRUM_SEGMENT_MASS = 1.0         # each shell segment
+ARM_BOOM_MASS = 6.0             # each arm: boom + cross + two legs = 17.5 kg
+ARM_CROSS_MASS = 3.5
+ARM_LEG_MASS = 4.0
+DRUM_SEGMENT_MASS = 2.2         # each shell segment
 DRUM_CAP_MASS = 1.2             # each end cap
-DRUM_BLADE_MASS = 0.55          # each scoop blade
+DRUM_BLADE_MASS = 1.20          # each scoop blade
 
 # --- friction ---
 FRAME_FRICTION = "0.8 0.005 0.0001"
@@ -356,7 +374,7 @@ _LEG_X0 = BOOM_LEN - YOKE_HALF_W            # legs overlap the cross piece sligh
 
 
 def _arm_assembly(side: str, yaw: float, arm_joint: str, drum_prefix: str, drum_joint: str) -> str:
-    """One arm + drum, hung off the mast at AXLE_X.
+    """One arm + drum, hung off the mast at PIVOT_X.
 
     `yaw` is 0 for the front assembly and pi for the rear. The rear is a true
     180-degree copy, which is what gives the two drums opposite world spin axes
@@ -366,7 +384,7 @@ def _arm_assembly(side: str, yaw: float, arm_joint: str, drum_prefix: str, drum_
     enters the drum's swept envelope; see the YOKE comment in the dimensions
     block.
     """
-    x = AXLE_X * math.cos(yaw)
+    x = PIVOT_X * math.cos(yaw)
     leg_half = 0.5 * (ARM_LEN - _LEG_X0)
     leg_cx = 0.5 * (ARM_LEN + _LEG_X0)
     legs = "\n        ".join(
@@ -415,11 +433,13 @@ _FRAME_PARTS = [
     f'size="{DECK_HALF[0]} {DECK_HALF[1]} {DECK_HALF[2]}" '
     f'mass="{DECK_MASS}" rgba="{DECK_RGBA}" friction="{FRAME_FRICTION}"/>',
     # masts: towers carrying the two arm pivots
-    f'<geom name="mast_front" type="box" pos="{AXLE_X} 0 {0.5 * MAST_TOP_Z:.4f}" '
-    f'size="{MAST_HALF[0]} {MAST_HALF[1]} {MAST_HALF[2]}" '
+    f'<geom name="mast_front" type="box" '
+    f'pos="{AXLE_X + 0.5 * MAST_OFFSET_X:.4f} 0 {0.5 * MAST_TOP_Z:.4f}" '
+    f'size="{0.5 * MAST_OFFSET_X + MAST_HALF[0]:.4f} {MAST_HALF[1]} {MAST_HALF[2]}" '
     f'mass="{MAST_MASS}" rgba="{FRAME_RGBA}" friction="{FRAME_FRICTION}"/>',
-    f'<geom name="mast_rear" type="box" pos="{-AXLE_X} 0 {0.5 * MAST_TOP_Z:.4f}" '
-    f'size="{MAST_HALF[0]} {MAST_HALF[1]} {MAST_HALF[2]}" '
+    f'<geom name="mast_rear" type="box" '
+    f'pos="{-(AXLE_X + 0.5 * MAST_OFFSET_X):.4f} 0 {0.5 * MAST_TOP_Z:.4f}" '
+    f'size="{0.5 * MAST_OFFSET_X + MAST_HALF[0]:.4f} {MAST_HALF[1]} {MAST_HALF[2]}" '
     f'mass="{MAST_MASS}" rgba="{FRAME_RGBA}" friction="{FRAME_FRICTION}"/>',
 ]
 
@@ -507,14 +527,27 @@ def reach() -> dict[str, float]:
         "pivot_height": pivot_z,
         "dig_depth": -(pivot_z - ARM_LEN * math.sin(hi) - DRUM_RADIUS),
         "dump_height": pivot_z - ARM_LEN * math.sin(lo) - DRUM_RADIUS,
-        "reach_x": AXLE_X + ARM_LEN * math.cos(hi) + DRUM_RADIUS,
-        "overall_length": 2.0 * (AXLE_X + ARM_LEN * math.cos(0.0) + DRUM_RADIUS),
+        "reach_x": PIVOT_X + ARM_LEN * math.cos(hi) + DRUM_RADIUS,
+        "overall_length": 2.0 * (PIVOT_X + ARM_LEN * math.cos(0.0) + DRUM_RADIUS),
         "overall_width": TRACK + 2.0 * WHEEL_HALF_W,
         # Clear bore between the shell walls, and the narrower diameter the
         # blades sweep. Capacity sits between the two.
         "drum_bore_diameter": 2.0 * (DRUM_RADIUS - DRUM_WALL_T),
         "drum_blade_swept_diameter": 2.0 * BLADE_INNER_R,
         "drum_bore_volume": math.pi * (DRUM_RADIUS - DRUM_WALL_T) ** 2 * (2.0 * DRUM_HALF_LEN),
+        # Drum width against the AB/CD track. Deliberately just under 1.0.
+        "drum_outer_width": 2.0 * (DRUM_HALF_LEN + 2.0 * CAP_HALF_T),
+        "drum_width_over_track": 2.0 * (DRUM_HALF_LEN + 2.0 * CAP_HALF_T) / TRACK,
+        # The drum is WIDER than the gap between the wheels, so these two
+        # overlap in y. Nothing separates them but x, which is what
+        # MAST_OFFSET_X exists to provide -- swept min gap is 0.092 m at full
+        # dig (front cross piece vs front tyre). Widening the drum, shortening
+        # MAST_OFFSET_X or raising ARM_RANGE[1] all eat into that directly, so
+        # re-run the clearance sweep after touching any of them.
+        "drum_lateral_overlap": (DRUM_HALF_LEN + 2.0 * CAP_HALF_T) - (WHEEL_Y - WHEEL_HALF_W),
+        "wheel_standoff_at_full_dig": (
+            PIVOT_X + ARM_LEN * math.cos(hi) - DRUM_RADIUS
+        ) - (AXLE_X + WHEEL_RADIUS),
     }
 
 

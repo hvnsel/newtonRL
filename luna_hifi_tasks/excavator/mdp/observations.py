@@ -27,6 +27,24 @@ from dataclasses import dataclass
 import torch
 
 
+# ---------------------------------------------------------------------------
+# Scan geometry. Declared here because the observation width depends on it, and
+# imported by the terrain sensor so the two can never disagree.
+# ---------------------------------------------------------------------------
+
+# Navigation: far enough ahead to stop and turn, coarse enough that every cell
+# is a feature the machine can actually act on.
+NAV_SCAN_NX, NAV_SCAN_NY = 16, 12
+NAV_SCAN_CELL = 0.25
+NAV_SCAN_FORWARD_BIAS = 0.5     # metres the window is pushed ahead of the chassis
+NAV_SCAN_CELLS = NAV_SCAN_NX * NAV_SCAN_NY
+
+# Excavation: the cutting face, at the active drum.
+DIG_SCAN_NX, DIG_SCAN_NY = 16, 8
+DIG_SCAN_CELL = 0.125
+DIG_SCAN_CELLS = DIG_SCAN_NX * DIG_SCAN_NY
+
+
 @dataclass(frozen=True)
 class ObsTerm:
     """One named block of the observation vector."""
@@ -141,20 +159,23 @@ class ObsSpec:
 
 
 def navigate_obs_spec(
-    height_map_cells: int = 0,
+    terrain_cells: int = NAV_SCAN_CELLS,
     num_arms: int = 2,
     num_wheels: int = 4,
 ) -> ObsSpec:
     """Observation for the navigation skill.
 
-    `height_map_cells = 0` (the default) omits the terrain scan entirely.
+    The terrain scan is NOT optional. This rover drives over ground it has
+    itself excavated: 0.19 m pits and spoil piles against a 0.30 m wheel
+    radius. Proprioception lets a policy react to a slope it is already on; it
+    can never anticipate a pit. A blind navigator is not a simpler version of
+    this skill, it is a different and worse one.
 
-    On a flat bed a height scan is a block of constant inputs, which is worse
-    than useless: observation normalisation divides a constant channel by a
-    near-zero standard deviation, and the policy spends capacity learning to
-    ignore it. Turn it on when the terrain the rover drives over is terrain it
-    has itself dug -- 0.19 m pits against a 0.30 m wheel radius is not
-    something proprioception can anticipate, only react to.
+    Window is 4.0 x 3.0 m at 0.25 m, chassis-centred and slightly forward-
+    biased. That is sized from stopping distance: ~1.1 m to halt from 1.5 m/s,
+    on a machine that is itself 3.4 m long. Cell size is set by the features
+    that matter -- a 1.0 m drum cuts a 1.0 m swath, so sub-0.25 m detail is
+    below what the machine can act on.
     """
     terms = [
         ObsTerm("base_lin_vel", 3, "body frame"),
@@ -166,26 +187,29 @@ def navigate_obs_spec(
         ObsTerm("arm_pos", num_arms, "held stowed here, but it moves the CG"),
         ObsTerm("drum_fill", num_arms, "0 on the rigid tier; keeps the layout"),
         ObsTerm("last_action", 2, "[forward, yaw]"),
+        ObsTerm("terrain_scan", terrain_cells, "2-D, chassis-relative heights"),
     ]
-    if height_map_cells:
-        terms.append(ObsTerm("height_map", height_map_cells, "2-D scan, chassis-relative"))
     return ObsSpec(terms)
 
 
 def excavate_obs_spec(
-    profile_samples: int = 16,
+    terrain_cells: int = DIG_SCAN_CELLS,
     num_arms: int = 2,
     num_wheels: int = 4,
 ) -> ObsSpec:
     """Observation for the excavation skill.
 
-    The terrain term here is a 1-D PROFILE along the approach direction, not a
-    2-D grid, and that is a consequence of the machine's geometry rather than a
-    shortcut. The drum is 1.00 m wide on a 1.35 m machine, so it cuts a
-    full-width swath: there is no lateral degree of freedom for the policy to
-    exercise, and a 2-D grid would spend ~200 inputs describing variation the
-    drum cannot respond to differently. Sixteen samples along the direction of
-    travel carry nearly the same information at a twelfth of the width.
+    A 2-D scan, not a 1-D profile along the approach direction. The full-width
+    drum is a tempting argument for 1-D -- it cuts the whole swath at once, so
+    there is no lateral choice about WHERE in the cut to bite -- but the
+    machine still has two responses to lateral variation that a strip would
+    throw away: it can yaw, so approach angle relative to the face is a real
+    decision, and it can tip, so lateral slope is a safety input. 128 cells
+    against 16 is a cheap price for both.
+
+    Window is 2.0 x 1.0 m at 0.125 m, centred on the ACTIVE drum rather than
+    the chassis. Finer and smaller than the navigation scan because the
+    quantity of interest is the shape of the cutting face, not the route.
     """
     terms = [
         ObsTerm("base_lin_vel", 3, "body frame"),
@@ -196,13 +220,13 @@ def excavate_obs_spec(
         ObsTerm("arm_vel", num_arms, ""),
         ObsTerm("drum_vel", num_arms, ""),
         ObsTerm("drum_fill", num_arms, "fraction of bore capacity"),
-        ObsTerm("soil_profile", profile_samples, "1-D strip along +x at the drum"),
+        ObsTerm("terrain_scan", terrain_cells, "2-D, drum-centred heights"),
         ObsTerm("last_action", 4, "[forward, yaw, boom, drum]"),
     ]
     return ObsSpec(terms)
 
 
-def critic_state_spec(height_map_cells: int, num_arms: int = 2) -> ObsSpec:
+def critic_state_spec(terrain_cells: int = NAV_SCAN_CELLS, num_arms: int = 2) -> ObsSpec:
     """Privileged state for the critic only.
 
     The critic estimates value during training and is thrown away afterwards,
@@ -212,7 +236,7 @@ def critic_state_spec(height_map_cells: int, num_arms: int = 2) -> ObsSpec:
     Isaac Lab plumbs this through `state_space`, which the tricycle left at 0.
     """
     return ObsSpec([
-        ObsTerm("height_map_full", height_map_cells, "true 2-D soil surface"),
+        ObsTerm("terrain_scan_true", terrain_cells, "noise-free soil surface"),
         ObsTerm("drum_fill_mass", num_arms, "kg, exact"),
         ObsTerm("base_lin_vel_w", 3, "world frame"),
         ObsTerm("slip", num_arms, "commanded vs achieved contact speed"),

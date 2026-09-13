@@ -12,6 +12,12 @@ import pytest
 import torch
 
 from luna_hifi_tasks.excavator.mdp.observations import (
+    DIG_SCAN_CELL,
+    DIG_SCAN_CELLS,
+    DIG_SCAN_NX,
+    NAV_SCAN_CELL,
+    NAV_SCAN_CELLS,
+    NAV_SCAN_NX,
     ObsSpec,
     ObsTerm,
     critic_state_spec,
@@ -136,13 +142,13 @@ def test_hash_ignores_notes():
     assert a.schema_hash() == b.schema_hash()
 
 
-def test_enabling_the_height_map_changes_the_hash():
-    """The whole reason the hash exists: a policy trained blind must not load
-    silently against an observation that now carries terrain."""
-    blind = navigate_obs_spec()
-    seeing = navigate_obs_spec(height_map_cells=192)
-    assert blind.schema_hash() != seeing.schema_hash()
-    assert seeing.dim == blind.dim + 192
+def test_resizing_the_terrain_scan_changes_the_hash():
+    """The whole reason the hash exists: a policy trained against one scan
+    resolution must not load silently against another."""
+    coarse = navigate_obs_spec(terrain_cells=192)
+    fine = navigate_obs_spec(terrain_cells=384)
+    assert coarse.schema_hash() != fine.schema_hash()
+    assert fine.dim == coarse.dim + 192
 
 
 # ---------------------------------------------------------------------------
@@ -150,11 +156,14 @@ def test_enabling_the_height_map_changes_the_hash():
 # ---------------------------------------------------------------------------
 
 
-def test_navigate_spec_is_blind_by_default():
+def test_navigate_spec_always_carries_terrain():
+    """Not optional. This rover drives over ground it has itself dug: 0.19 m
+    pits against a 0.30 m wheel radius. Proprioception can react to a slope,
+    never anticipate a pit."""
     spec = navigate_obs_spec()
-    assert "height_map" not in spec.names
-    assert spec.dim == 3 + 3 + 3 + 2 + 2 + 4 + 2 + 2 + 2
-    assert spec.dim == 23
+    assert "terrain_scan" in spec.names
+    assert spec.dim == 23 + NAV_SCAN_CELLS
+    assert spec.dim == 215
 
 
 def test_navigate_spec_carries_drum_fill_even_without_mpm():
@@ -170,12 +179,21 @@ def test_navigate_spec_has_no_raw_angle_terms():
     assert spec.slice_of("goal_heading").stop - spec.slice_of("goal_heading").start == 2
 
 
-def test_excavate_soil_profile_is_one_dimensional_and_small():
-    """The drum is full width, so the dig has no lateral degree of freedom and
-    a 2-D grid would be mostly wasted inputs."""
+def test_excavate_terrain_is_two_dimensional():
+    """A 1-D strip along the approach would throw away both responses the
+    machine actually has to lateral variation: it can yaw, and it can tip."""
     spec = excavate_obs_spec()
-    assert spec.slice_of("soil_profile").stop - spec.slice_of("soil_profile").start == 16
-    assert spec.dim < 60, spec.describe()
+    sl = spec.slice_of("terrain_scan")
+    assert sl.stop - sl.start == DIG_SCAN_CELLS == 128
+
+
+def test_the_two_scans_are_sized_for_different_jobs():
+    """Navigation needs reach, excavation needs resolution at the face."""
+    assert NAV_SCAN_CELL > DIG_SCAN_CELL
+    nav_window_x = NAV_SCAN_NX * NAV_SCAN_CELL
+    dig_window_x = DIG_SCAN_NX * DIG_SCAN_CELL
+    assert nav_window_x > dig_window_x
+    assert nav_window_x >= 4.0        # 3.4 m machine + stopping distance
 
 
 def test_excavate_action_width_matches_the_symmetric_action_space():
@@ -186,15 +204,16 @@ def test_excavate_action_width_matches_the_symmetric_action_space():
 def test_critic_state_is_strictly_richer_than_the_actor_observation():
     """Asymmetric actor-critic: privileged soil state belongs to the critic."""
     actor = excavate_obs_spec()
-    critic = critic_state_spec(height_map_cells=192)
-    assert "height_map_full" in critic.names
-    assert "height_map_full" not in actor.names
+    critic = critic_state_spec()
+    assert "terrain_scan_true" in critic.names
+    assert "terrain_scan_true" not in actor.names
     assert "drum_fill_mass" in critic.names          # exact kg
     assert "drum_fill" in actor.names                # normalised fraction only
 
 
 def test_describe_renders_every_term():
-    text = navigate_obs_spec(height_map_cells=12).describe()
-    for name in navigate_obs_spec(height_map_cells=12).names:
+    spec = navigate_obs_spec()
+    text = spec.describe()
+    for name in spec.names:
         assert name in text
     assert "hash=" in text

@@ -1,15 +1,15 @@
-# Bucket-drum excavator.
+# Bucket-drum excavator tasks.
 #
-# Asset only, for now. There is deliberately no gym.register() here yet and
-# this package is NOT imported from luna_hifi_tasks/__init__.py -- registering
-# a task id that has no env behind it would put a broken entry in the gym
-# registry and break `isaaclab train --task` discovery for everything else.
+# Importing this package registers two Gymnasium ids:
 #
-# When the env lands, this file grows a gym.register() the way
-# tricycle/__init__.py has one, and luna_hifi_tasks/__init__.py grows a
-# matching `from . import excavator`.
+#   Luna-Excavator-Navigate   rigid procedural terrain, thousands of envs
+#   Luna-Excavator-Excavate   MPM regolith bed, tens of envs
 #
-# Until then the only thing here is excavator.py, which builds the MJCF that
-# the offline USD conversion step consumes.
+# Registration is string-based (entry points are module:Class strings), so
+# importing this package pulls in gymnasium and nothing else. The env and cfg
+# modules -- and with them isaaclab and newton -- load only when gym.make is
+# called. That keeps `luna_hifi_tasks.excavator.mdp` importable and testable
+# on a machine with no simulator, which is where most of its tests run.
 
-from . import excavator  # noqa: F401
+from . import excavator  # noqa: F401  (the asset generator)
+from . import excavate, navigate  # noqa: F401  (gym.register side effects)

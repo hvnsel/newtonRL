@@ -44,6 +44,24 @@ from .excavator import (
 ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 EXCAVATOR_USD_PATH = ASSETS_DIR / "excavator" / "excavator.usda"
 
+# ---------------------------------------------------------------------------
+# Prim paths
+# ---------------------------------------------------------------------------
+#
+# The MJCF -> USD converter nests every body under Geometry/<root body>. That
+# is verified for the tricycle (README: wheel bodies live at
+# /World/envs/env_.*/Tricycle/Geometry/chassis/.*_body) and assumed identical
+# here. Child bodies of child bodies (the drums hang off the arms) may nest one
+# level deeper, which the `.*` in the regex absorbs. scripts/smoke_test.py
+# prints the real paths so this can be confirmed in one run.
+EXCAVATOR_PRIM = "{ENV_REGEX_NS}/Excavator"
+CHASSIS_PRIM = EXCAVATOR_PRIM + "/Geometry/chassis"
+# Coupler configs take expanded regexes, not the {ENV_REGEX_NS} placeholder.
+EXCAVATOR_PRIM_REGEX = r"/World/envs/env_.*/Excavator"
+SOIL_CONTACT_BODIES_REGEX = (
+    r"/World/envs/env_.*/Excavator/Geometry/chassis/.*(wheel_.._body|drum_(front|rear)_body)"
+)
+
 # Spawn height: wheels rest on z = 0 when the chassis origin is one wheel
 # radius up. A small clearance stops the solver resolving an initial
 # interpenetration on the first step.

@@ -22,8 +22,7 @@
 
 from __future__ import annotations
 
-import math
-
+import numpy as np
 import torch
 
 from .observations import (
@@ -206,8 +205,91 @@ def scan_from_particles(
 
 
 # ---------------------------------------------------------------------------
+# The ray-caster backend (rigid tier, in the live sim)
+# ---------------------------------------------------------------------------
+
+
+def isaac_grid_pattern_count(size: tuple[float, float], resolution: float) -> int:
+    """How many rays isaaclab.sensors.patterns.grid_pattern emits for a size
+    and resolution. Reproduces its arithmetic (both endpoints included) so a
+    test can pin that our scan constants produce exactly NX*NY rays."""
+    nx = len(torch.arange(-size[0] / 2, size[0] / 2 + 1.0e-9, resolution))
+    ny = len(torch.arange(-size[1] / 2, size[1] / 2 + 1.0e-9, resolution))
+    return nx * ny
+
+
+def scan_from_raycaster(
+    sensor_pos_w: torch.Tensor,     # (E, 3)  RayCasterData.pos_w
+    ray_hits_w: torch.Tensor,       # (E, N, 3)  RayCasterData.ray_hits_w
+    sensor_height_offset: float,    # the z of RayCasterCfg.offset.pos
+    clip: float = 1.0,
+) -> torch.Tensor:
+    """Rigid tier, live. Same output as the other two backends.
+
+    Isaac Lab's own height_scan observation is
+        sensor_z - hit_z - offset
+    and with the sensor mounted `sensor_height_offset` above the chassis that
+    is exactly chassis_z - ground_z, the quantity scan_from_heightfield
+    returns. A ray that misses everything comes back with an inf/huge hit, so
+    the clip is load-bearing here, not cosmetic.
+    """
+    h = sensor_pos_w[:, 2:3] - ray_hits_w[..., 2] - sensor_height_offset
+    return torch.nan_to_num(h, nan=clip, posinf=clip, neginf=-clip).clamp(-clip, clip)
+
+
+# ---------------------------------------------------------------------------
 # Procedural excavation-like terrain for the rigid tier
 # ---------------------------------------------------------------------------
+
+
+def excavation_height_field_np(
+    width_pixels: int,
+    length_pixels: int,
+    horizontal_scale: float,
+    vertical_scale: float,
+    rng: np.random.Generator,
+    difficulty: float = 1.0,
+    num_pits: int = 3,
+    num_piles: int = 3,
+    pit_depth: tuple[float, float] = (0.05, 0.22),
+    pile_height: tuple[float, float] = (0.05, 0.20),
+    feature_radius: tuple[float, float] = (0.5, 1.2),
+    slope: float = 0.04,
+    noise: float = 0.01,
+) -> np.ndarray:
+    """One sub-terrain, as Isaac Lab's height_field_to_mesh wants it: an int16
+    array of shape (width_pixels, length_pixels) in units of vertical_scale,
+    with index [i, j] at x = i*horizontal_scale, y = j*horizontal_scale.
+
+    This is generate_excavation_terrain's numpy twin for the terrain
+    generator, which builds meshes on the CPU once at startup. Feature
+    amplitudes scale with `difficulty` so the importer's curriculum rows go
+    from gentle to full relief.
+    """
+    xs = np.arange(width_pixels, dtype=np.float64) * horizontal_scale
+    ys = np.arange(length_pixels, dtype=np.float64) * horizontal_scale
+    gx, gy = np.meshgrid(xs, ys, indexing="ij")
+    cx, cy = xs.mean(), ys.mean()
+
+    amp = 0.35 + 0.65 * float(np.clip(difficulty, 0.0, 1.0))
+    field = np.zeros((width_pixels, length_pixels), dtype=np.float64)
+
+    tilt = rng.uniform(-slope, slope, size=2) * amp
+    field += (gx - cx) * tilt[0] + (gy - cy) * tilt[1]
+
+    for count, (lo, hi), sign in ((num_pits, pit_depth, -1.0), (num_piles, pile_height, 1.0)):
+        for _ in range(count):
+            fx = rng.uniform(xs.min(), xs.max())
+            fy = rng.uniform(ys.min(), ys.max())
+            rad = rng.uniform(*feature_radius)
+            a = rng.uniform(lo, hi) * amp
+            d2 = (gx - fx) ** 2 + (gy - fy) ** 2
+            field += sign * a * np.exp(-d2 / (2.0 * rad ** 2))
+
+    if noise > 0:
+        field += rng.uniform(-noise, noise, size=field.shape)
+
+    return np.rint(field / vertical_scale).astype(np.int16)
 
 
 def generate_excavation_terrain(

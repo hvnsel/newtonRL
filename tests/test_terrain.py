@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 import pytest
 import torch
 
@@ -296,3 +298,84 @@ def test_generated_terrain_relief_stays_near_what_this_machine_can_dig():
     per_env_relief = field.amax(dim=(1, 2)) - field.amin(dim=(1, 2))
     assert per_env_relief.median().item() < 8.0 * E.reach()["dig_depth"]
     assert per_env_relief.min().item() > 0.02, "some relief in every env"
+
+
+# ---------------------------------------------------------------------------
+# the ray-caster backend and Isaac Lab's grid arithmetic
+# ---------------------------------------------------------------------------
+
+
+def test_scan_constants_produce_exactly_the_declared_ray_count():
+    """GridPatternCfg puts a point at both ends of each axis, so NX*cell would
+    give (NX+1)*(NY+1) rays. NAV_SCAN_SIZE / DIG_SCAN_SIZE are defined to make
+    the count come out exact; this pins it against Isaac's own arithmetic."""
+    from luna_hifi_tasks.excavator.mdp.observations import (
+        DIG_SCAN_CELL, DIG_SCAN_SIZE, NAV_SCAN_SIZE,
+    )
+    from luna_hifi_tasks.excavator.mdp.terrain import isaac_grid_pattern_count
+
+    assert isaac_grid_pattern_count(NAV_SCAN_SIZE, NAV_SCAN_CELL) == NAV_SCAN_CELLS == 192
+    assert isaac_grid_pattern_count(DIG_SCAN_SIZE, DIG_SCAN_CELL) == DIG_SCAN_CELLS == 128
+    # and the naive size would NOT
+    assert isaac_grid_pattern_count((NAV_SCAN_NX * NAV_SCAN_CELL, NAV_SCAN_NY * NAV_SCAN_CELL), NAV_SCAN_CELL) != NAV_SCAN_CELLS
+
+
+def test_raycaster_backend_matches_heightfield_backend_on_flat_ground():
+    """Third backend, same contract. Sensor 20 m over a chassis at 0.30 m on
+    ground at z = 0 must read 0.30 everywhere, like the other two."""
+    from luna_hifi_tasks.excavator.mdp.terrain import scan_from_raycaster
+
+    E, N = 2, NAV_SCAN_CELLS
+    sensor_pos = torch.tensor([[0.0, 0.0, 20.30], [5.0, 0.0, 20.30]])
+    hits = torch.zeros(E, N, 3)
+    got = scan_from_raycaster(sensor_pos, hits, sensor_height_offset=20.0, clip=1.0)
+    assert got.shape == (E, N)
+    assert torch.allclose(got, torch.full_like(got, 0.30), atol=1e-5)
+
+    field = torch.zeros(1, 40, 40)
+    ref = scan_from_heightfield(
+        field, torch.tensor([[0.0, 0.0, 0.30]]), IDENT, nav_scan_pattern(),
+        torch.zeros(1, 3), (-5.0, -5.0), 0.25, torch.tensor([0.30]), clip=1.0,
+    )
+    assert torch.allclose(got[0], ref[0], atol=1e-5)
+
+
+def test_raycaster_backend_clips_a_missed_ray():
+    """A ray that hits nothing returns inf. Unclipped, one bad ray poisons the
+    whole observation vector."""
+    from luna_hifi_tasks.excavator.mdp.terrain import scan_from_raycaster
+
+    hits = torch.zeros(1, 4, 3)
+    hits[0, 2, 2] = float("inf")
+    hits[0, 3, 2] = float("nan")
+    got = scan_from_raycaster(torch.tensor([[0.0, 0.0, 20.3]]), hits, 20.0, clip=1.0)
+    assert torch.isfinite(got).all()
+    assert got.abs().max() <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# the numpy height field that feeds Isaac Lab's terrain generator
+# ---------------------------------------------------------------------------
+
+
+def test_numpy_height_field_has_the_shape_and_dtype_the_generator_wants():
+    from luna_hifi_tasks.excavator.mdp.terrain import excavation_height_field_np
+
+    rng = np.random.default_rng(0)
+    hf = excavation_height_field_np(61, 41, 0.1, 0.005, rng)
+    assert hf.shape == (61, 41)
+    assert hf.dtype == np.int16
+
+
+def test_numpy_height_field_relief_scales_with_difficulty():
+    from luna_hifi_tasks.excavator.mdp.terrain import excavation_height_field_np
+
+    def relief(d):
+        out = []
+        for seed in range(6):
+            hf = excavation_height_field_np(81, 81, 0.1, 0.005, np.random.default_rng(seed), difficulty=d)
+            out.append(float(hf.max() - hf.min()) * 0.005)
+        return sum(out) / len(out)
+
+    assert relief(1.0) > relief(0.0)
+    assert relief(1.0) < 1.5   # metres; still terrain this machine could have made

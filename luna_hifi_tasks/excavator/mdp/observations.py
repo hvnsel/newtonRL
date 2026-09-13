@@ -39,10 +39,23 @@ NAV_SCAN_CELL = 0.25
 NAV_SCAN_FORWARD_BIAS = 0.5     # metres the window is pushed ahead of the chassis
 NAV_SCAN_CELLS = NAV_SCAN_NX * NAV_SCAN_NY
 
-# Excavation: the cutting face, at the active drum.
+# Excavation: the cutting face, at the FRONT drum. With symmetric arm control
+# the policy cannot act differently on the two ends, and driving forward the
+# front drum is the one meeting fresh soil, so one patch there is the whole
+# usable picture. Independent arm control would want a second patch.
 DIG_SCAN_NX, DIG_SCAN_NY = 16, 8
 DIG_SCAN_CELL = 0.125
 DIG_SCAN_CELLS = DIG_SCAN_NX * DIG_SCAN_NY
+
+# Isaac Lab's GridPatternCfg puts a point at BOTH ends of each axis:
+# arange(-size/2, size/2 + eps, res) yields size/res + 1 points. So to get
+# exactly NX x NY rays the pattern size must be (NX-1)*cell, not NX*cell.
+# Handing it NX*cell produces 17 x 13 = 221 rays against a 192-wide term, and
+# the mismatch surfaces as a shape error in observation assembly -- which is
+# the good outcome; the bad one is nobody noticing the window is a cell wider
+# than the tests assume. These constants make the two agree by construction.
+NAV_SCAN_SIZE = ((NAV_SCAN_NX - 1) * NAV_SCAN_CELL, (NAV_SCAN_NY - 1) * NAV_SCAN_CELL)
+DIG_SCAN_SIZE = ((DIG_SCAN_NX - 1) * DIG_SCAN_CELL, (DIG_SCAN_NY - 1) * DIG_SCAN_CELL)
 
 
 @dataclass(frozen=True)

@@ -14,7 +14,8 @@
 #
 # Nothing here imports isaaclab or newton. That is on purpose: it means the
 # whole file is testable on a laptop with no GPU, and it keeps the Newton API
-# surface confined to one small adapter (see particle_state_adapter below).
+# surface confined to two small adapters at the bottom, both of which are now
+# checked against the isaaclab_newton source rather than guessed.
 
 from __future__ import annotations
 
@@ -91,7 +92,7 @@ def drum_fill_mass(
     particle_env: torch.Tensor,        # (P,)
     particle_mass: torch.Tensor | float,
     drum_pos_w: torch.Tensor,          # (E, 3) drum body origin = drum axis centre
-    drum_quat_w: torch.Tensor,         # (E, 4) w,x,y,z
+    drum_quat_w: torch.Tensor,         # (E, 4) x,y,z,w  -- Isaac Lab 3.x order
     bore_radius: float,
     half_length: float,
     num_envs: int,
@@ -109,7 +110,7 @@ def drum_fill_mass(
     components.
     """
     rel = particle_pos_w - drum_pos_w[particle_env]
-    local = quat_rotate_inverse(drum_quat_w[particle_env], rel)
+    local = quat_apply_inverse(drum_quat_w[particle_env], rel)
 
     radial_sq = local[:, 0] ** 2 + local[:, 2] ** 2
     inside = (radial_sq < bore_radius ** 2) & (local[:, 1].abs() < half_length)
@@ -132,19 +133,24 @@ def drum_fill_fraction(fill_mass: torch.Tensor, capacity_kg: float) -> torch.Ten
 
 
 # ---------------------------------------------------------------------------
-# Quaternion helper (w, x, y, z -- Isaac Lab's convention)
+# Quaternion helper
+#
+# ORDER IS (x, y, z, w). Isaac Lab 3.x migrated from 2.x's (w, x, y, z), and
+# every pose in isaaclab.assets on this branch is xyzw -- base_articulation_data
+# documents it ten times and wxyz zero times. Getting this backwards does not
+# crash: it silently rotates by a different orientation, so drum fill reads
+# plausible-but-wrong numbers and the reward quietly trains the wrong thing.
+#
+# Mirrors isaaclab.utils.math.quat_apply_inverse exactly, duplicated so this
+# module stays importable without isaaclab.
 # ---------------------------------------------------------------------------
 
 
-def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-    """Rotate v by the inverse of q. Same formula isaaclab.utils.math uses;
-    duplicated here so this module stays importable without isaaclab."""
-    w = q[:, 0:1]
-    xyz = q[:, 1:4]
-    a = v * (2.0 * w * w - 1.0)
-    b = torch.cross(xyz, v, dim=-1) * w * 2.0
-    c = xyz * torch.sum(xyz * v, dim=-1, keepdim=True) * 2.0
-    return a - b + c
+def quat_apply_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """Rotate v by the inverse of q. Quaternion is (x, y, z, w)."""
+    xyz = q[:, :3]
+    t = torch.cross(xyz, v, dim=-1) * 2.0
+    return v - q[:, 3:4] * t + torch.cross(xyz, t, dim=-1)
 
 
 # ---------------------------------------------------------------------------
@@ -152,41 +158,67 @@ def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 
 
-def particle_state_adapter(mpm_object) -> tuple[torch.Tensor, torch.Tensor, float]:
-    """Pull (positions, env index, per-particle mass) out of a Newton MPMObject.
+def mpm_particle_state(mpm_object) -> tuple[torch.Tensor, torch.Tensor]:
+    """Flatten a Newton MPMObject's particles to (positions, env index).
 
-    THIS IS THE ONE FUNCTION WHOSE API IS UNVERIFIED. Everything else in this
-    file is plain tensor maths that is tested in tests/test_sensors.py; this
-    reaches into isaaclab_newton and the exact attribute names on
-    MPMObject.data were not checkable offline.
+    Verified against isaaclab_newton on the develop branch:
 
-    Check, in order:
-      * the positions attribute -- likely `mpm_object.data.particle_pos_w` or
-        `.particle_q`; it must be world-frame (P, 3)
-      * whether particles are stored flat across envs (then env index is
-        arange(P) // particles_per_env) or already shaped (E, P_per_env, 3),
-        in which case flatten and build the index with repeat_interleave
-      * per-particle mass: if Newton exposes only material density, mass is
-        density * voxel_size**3 / particles_per_cell
+        MPMObject.data.particle_pos_w   ProxyArray, wp.vec3f,
+                                        shape (num_instances, particles_per_object)
+        MPMObject.num_instances         int
+        MPMObject.particles_per_object  int
 
-    Get this wrong and drum_fill silently reads zero, which looks exactly like
-    a policy that has not learned to dig yet. Assert on it once at startup:
-    spawn the bed, drop the drum into it, and check fill goes up.
+    Two details worth knowing. Particles are ALREADY shaped per-environment, so
+    the env index is a repeat_interleave over a fixed stride and not the
+    "divide a flat array" guess it would be natural to write. And `.torch` is a
+    zero-copy view onto the warp array, so this costs a reshape, not a device
+    round-trip -- but it also means the tensor aliases live simulation memory
+    and must not be held across a step.
+
+    There is deliberately no mass here: MPMObjectData exposes no per-particle
+    mass at all. Use `mpm_grid_particle_mass` on the spawn cfg instead.
     """
-    data = mpm_object.data
-    pos = getattr(data, "particle_pos_w", None)
-    if pos is None:
-        pos = data.particle_q
-    pos = pos.view(-1, 3)
-
+    pos = mpm_object.data.particle_pos_w.torch          # (E, P, 3)
     num_envs = mpm_object.num_instances
-    per_env = pos.shape[0] // num_envs
-    env_idx = torch.arange(num_envs, device=pos.device).repeat_interleave(per_env)
-
-    mass = getattr(data, "particle_mass", None)
-    if mass is None:
+    per_env = mpm_object.particles_per_object
+    if pos.shape[:2] != (num_envs, per_env):
         raise RuntimeError(
-            "MPMObject.data has no particle_mass; compute it from the material "
-            "density and voxel size in the env cfg and pass it explicitly."
+            f"unexpected MPM particle layout {tuple(pos.shape)}; "
+            f"expected ({num_envs}, {per_env}, 3)"
         )
-    return pos, env_idx, mass
+    env_idx = torch.arange(num_envs, device=pos.device).repeat_interleave(per_env)
+    return pos.reshape(-1, 3), env_idx
+
+
+def mpm_grid_particle_mass(cfg) -> float:
+    """Per-particle mass [kg] for an MPMGridCfg, by the same arithmetic the
+    spawner uses.
+
+    Mirrors isaaclab_newton.sim.spawners.mpm.mpm exactly, because drum fill is
+    reported in kilograms and a mass that disagrees with the spawner's makes
+    every excavation reward wrong by a constant factor -- which trains a
+    perfectly confident policy toward a miscalibrated target.
+
+    Note the lattice resolution is ceil()ed per axis, so cell_volume is NOT
+    simply voxel_size**3 / particles_per_cell. Rounding up on a bed whose
+    extent is not a whole number of voxels makes the real particles smaller
+    than the naive formula suggests.
+    """
+    import math as _math
+
+    if getattr(cfg, "mass", None) is not None:
+        return float(cfg.mass)
+
+    lower = [float(v) for v in cfg.lower]
+    upper = [float(v) for v in cfg.upper]
+    extent = [u - l for u, l in zip(upper, lower)]
+    if any(e <= 0.0 for e in extent):
+        raise ValueError(f"MPM grid upper must exceed lower; got {cfg.lower} .. {cfg.upper}")
+
+    ppc = float(cfg.particles_per_cell)
+    voxel = float(cfg.voxel_size)
+    resolution = [max(int(_math.ceil(ppc * e / voxel)), 1) for e in extent]
+    cell_volume = 1.0
+    for e, r in zip(extent, resolution):
+        cell_volume *= e / r
+    return cell_volume * float(cfg.material.density)

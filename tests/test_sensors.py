@@ -19,7 +19,7 @@ from luna_hifi_tasks.excavator.mdp.sensors import (
     drum_fill_fraction,
     drum_fill_mass,
     heightmap_to_obs,
-    quat_rotate_inverse,
+    quat_apply_inverse,
     soil_heightmap,
 )
 
@@ -32,8 +32,10 @@ torch.manual_seed(0)
 
 
 def _quat_to_mat(q: torch.Tensor) -> torch.Tensor:
-    """(w,x,y,z) -> 3x3 rotation matrix, built from the definition."""
-    w, x, y, z = q
+    """(x,y,z,w) -> 3x3 rotation matrix, built from the definition.
+
+    Isaac Lab 3.x order. See the note on quat_apply_inverse."""
+    x, y, z, w = q
     return torch.tensor([
         [1 - 2*(y*y + z*z), 2*(x*y - w*z),     2*(x*z + w*y)],
         [2*(x*y + w*z),     1 - 2*(x*x + z*z), 2*(y*z - w*x)],
@@ -42,21 +44,30 @@ def _quat_to_mat(q: torch.Tensor) -> torch.Tensor:
 
 
 def _quat_about_y(angle: float) -> torch.Tensor:
-    return torch.tensor([math.cos(angle/2), 0.0, math.sin(angle/2), 0.0])
+    return torch.tensor([0.0, math.sin(angle/2), 0.0, math.cos(angle/2)])
 
 
-def test_quat_rotate_inverse_matches_transpose_of_rotation_matrix():
+def test_quat_apply_inverse_matches_transpose_of_rotation_matrix():
     for angle in (0.0, 0.3, -1.2, 2.7, math.pi):
         for axis in range(3):
             half = angle / 2
             q = torch.zeros(4)
-            q[0] = math.cos(half)
-            q[1 + axis] = math.sin(half)
+            q[3] = math.cos(half)             # w is LAST in Isaac Lab 3.x
+            q[axis] = math.sin(half)
             R = _quat_to_mat(q)
             v = torch.randn(5, 3)
-            got = quat_rotate_inverse(q.unsqueeze(0).expand(5, 4), v)
+            got = quat_apply_inverse(q.unsqueeze(0).expand(5, 4), v)
             want = v @ R                      # v @ R == (R^T @ v^T)^T
             assert torch.allclose(got, want, atol=1e-5), (angle, axis)
+
+
+def test_identity_quaternion_is_xyzw_not_wxyz():
+    """Pins the convention. Under wxyz, [0,0,0,1] is a 180 deg turn about z and
+    this test fails loudly instead of the reward quietly training on a rotated
+    drum frame."""
+    ident = torch.tensor([[0.0, 0.0, 0.0, 1.0]])
+    v = torch.tensor([[1.0, 2.0, 3.0]])
+    assert torch.allclose(quat_apply_inverse(ident, v), v, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +191,7 @@ def test_drum_fill_axis_is_local_y():
     """The cavity is a cylinder about the drum's own y. A particle far out
     along y is outside; the same distance along x is inside."""
     dpos = torch.zeros(1, 3)
-    dquat = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+    dquat = torch.tensor([[0.0, 0.0, 0.0, 1.0]])
     r, hl = 0.17, 0.475
     along_y = torch.tensor([[0.0, 0.60, 0.0]])     # beyond half-length
     along_x = torch.tensor([[0.10, 0.0, 0.0]])     # inside the bore
@@ -207,7 +218,7 @@ def test_drum_fill_follows_a_pitched_arm():
 def test_drum_fill_per_particle_mass_tensor():
     dpos = torch.zeros(2, 3)
     dpos[1, 0] = 5.0
-    dquat = torch.tensor([[1.0, 0.0, 0.0, 0.0]] * 2)
+    dquat = torch.tensor([[0.0, 0.0, 0.0, 1.0]] * 2)
     pos = torch.tensor([[0.0, 0.0, 0.0], [0.05, 0.0, 0.0], [5.0, 0.0, 0.0]])
     env = torch.tensor([0, 0, 1])
     mass = torch.tensor([2.0, 3.0, 7.0])
@@ -246,7 +257,7 @@ def test_fill_rises_monotonically_as_the_drum_is_lowered_into_a_bed():
     bore = E.DRUM_RADIUS - E.DRUM_WALL_T
     bed = _particle_bed()
     env = torch.zeros(bed.shape[0], dtype=torch.long)
-    q = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+    q = torch.tensor([[0.0, 0.0, 0.0, 1.0]])
 
     # Drum-CENTRE heights, strictly descending. Note the centre at full dig is
     # +0.012, not negative: reach()["dig_depth"] measures the drum's lowest
@@ -273,7 +284,7 @@ def test_fill_never_exceeds_the_analytic_bore_capacity():
     bore = E.DRUM_RADIUS - E.DRUM_WALL_T
     bed = _particle_bed(spacing=spacing, depth=0.9)
     env = torch.zeros(bed.shape[0], dtype=torch.long)
-    q = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+    q = torch.tensor([[0.0, 0.0, 0.0, 1.0]])
 
     # bury the drum completely
     centre = torch.tensor([[0.0, 0.0, -0.45]])
@@ -290,3 +301,81 @@ def test_fill_never_exceeds_the_analytic_bore_capacity():
     assert got_volume <= analytic * 1.001, (got_volume, analytic)
     assert got_volume == pytest.approx(analytic, rel=0.05), (got_volume, analytic)
     assert got_volume == pytest.approx(E.reach()["drum_bore_volume"], rel=0.05)
+
+
+# ---------------------------------------------------------------------------
+# Newton adapters
+# ---------------------------------------------------------------------------
+
+
+class _FakeMaterial:
+    density = 1800.0
+
+
+class _FakeGridCfg:
+    lower = (-0.4, -0.3, 0.025)
+    upper = (1.1, 0.3, 0.085)
+    voxel_size = 0.05
+    particles_per_cell = 1.0
+    material = _FakeMaterial()
+    mass = None
+
+
+def test_particle_mass_matches_the_spawner_arithmetic():
+    """Reproduces isaaclab_newton's derivation: resolution is ceil()ed per
+    axis, so cell volume is NOT voxel_size**3 / particles_per_cell."""
+    from luna_hifi_tasks.excavator.mdp.sensors import mpm_grid_particle_mass
+
+    cfg = _FakeGridCfg()
+    extent = [u - l for u, l in zip(cfg.upper, cfg.lower)]
+    res = [max(math.ceil(cfg.particles_per_cell * e / cfg.voxel_size), 1) for e in extent]
+    cell_vol = 1.0
+    for e, r in zip(extent, res):
+        cell_vol *= e / r
+    assert mpm_grid_particle_mass(cfg) == pytest.approx(cell_vol * 1800.0)
+
+    naive = cfg.voxel_size ** 3 * 1800.0
+    assert mpm_grid_particle_mass(cfg) < naive, "ceil() must shrink the real particle"
+
+
+def test_particle_mass_honours_an_explicit_override():
+    from luna_hifi_tasks.excavator.mdp.sensors import mpm_grid_particle_mass
+
+    cfg = _FakeGridCfg()
+    cfg.mass = 0.123
+    assert mpm_grid_particle_mass(cfg) == pytest.approx(0.123)
+
+
+class _FakeProxy:
+    def __init__(self, t): self.torch = t
+
+
+class _FakeData:
+    def __init__(self, t): self.particle_pos_w = _FakeProxy(t)
+
+
+class _FakeMPM:
+    def __init__(self, E, P):
+        self.num_instances = E
+        self.particles_per_object = P
+        self.data = _FakeData(torch.arange(E * P * 3, dtype=torch.float32).reshape(E, P, 3))
+
+
+def test_mpm_particle_state_builds_the_env_index_by_stride():
+    """Particles are already (E, P, 3). The env index is repeat_interleave over
+    a fixed stride, NOT a divide over a flat array."""
+    from luna_hifi_tasks.excavator.mdp.sensors import mpm_particle_state
+
+    pos, env = mpm_particle_state(_FakeMPM(3, 5))
+    assert pos.shape == (15, 3)
+    assert env.tolist() == [0]*5 + [1]*5 + [2]*5
+    assert torch.equal(pos[5], torch.tensor([15.0, 16.0, 17.0]))
+
+
+def test_mpm_particle_state_rejects_an_unexpected_layout():
+    from luna_hifi_tasks.excavator.mdp.sensors import mpm_particle_state
+
+    bad = _FakeMPM(3, 5)
+    bad.particles_per_object = 7          # disagrees with the array
+    with pytest.raises(RuntimeError, match="unexpected MPM particle layout"):
+        mpm_particle_state(bad)

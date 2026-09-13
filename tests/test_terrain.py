@@ -32,15 +32,15 @@ from luna_hifi_tasks.excavator.mdp.terrain import (
     yaw_from_quat,
 )
 
-IDENT = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+IDENT = torch.tensor([[0.0, 0.0, 0.0, 1.0]])   # xyzw, Isaac Lab 3.x
 
 
 def _quat_z(a: float) -> torch.Tensor:
-    return torch.tensor([[math.cos(a / 2), 0.0, 0.0, math.sin(a / 2)]])
+    return torch.tensor([[0.0, 0.0, math.sin(a / 2), math.cos(a / 2)]])
 
 
 def _quat_y(a: float) -> torch.Tensor:
-    return torch.tensor([[math.cos(a / 2), 0.0, math.sin(a / 2), 0.0]])
+    return torch.tensor([[0.0, math.sin(a / 2), 0.0, math.cos(a / 2)]])
 
 
 # ---------------------------------------------------------------------------

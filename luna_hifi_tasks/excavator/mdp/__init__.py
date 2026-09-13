@@ -8,6 +8,8 @@ from .sensors import (  # noqa: F401
     drum_fill_fraction,
     drum_fill_mass,
     heightmap_to_obs,
-    quat_rotate_inverse,
+    mpm_grid_particle_mass,
+    mpm_particle_state,
+    quat_apply_inverse,
     soil_heightmap,
 )

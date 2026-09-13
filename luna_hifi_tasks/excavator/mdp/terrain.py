@@ -71,14 +71,19 @@ def dig_scan_pattern(device="cpu") -> torch.Tensor:
 
 
 def yaw_from_quat(q: torch.Tensor) -> torch.Tensor:
-    """Yaw only, from a (w, x, y, z) quaternion. Returns (E,)."""
-    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    """Yaw only, from an (x, y, z, w) quaternion. Returns (E,).
+
+    Order matters and is Isaac Lab 3.x's xyzw, not 2.x's wxyz. A swapped order
+    here does not raise -- it yields a yaw that is wrong by a rotation, and the
+    terrain scan silently samples the ground somewhere the machine is not.
+    """
+    x, y, z, w = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
     return torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
 def scan_points_world(
     origin_w: torch.Tensor,     # (E, 3) chassis or drum position
-    quat_w: torch.Tensor,       # (E, 4) w,x,y,z
+    quat_w: torch.Tensor,       # (E, 4) x,y,z,w
     pattern: torch.Tensor,      # (N, 2)
 ) -> torch.Tensor:
     """Place the scan pattern in the world. Returns (E, N, 2) of xy.

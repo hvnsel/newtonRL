@@ -107,7 +107,7 @@ MAST_HALF = (0.05, 0.09, 0.13)
 # the volume we are trying to fill with soil. So the boom stops short of the
 # drum, and two legs pass outboard of the end caps to pick up the axle. This is
 # also how real drum excavators are built, for the same reason.
-ARM_LEN = 0.55                  # pivot to drum axis
+ARM_LEN = 0.68                  # pivot to drum axis
 ARM_HALF_H = 0.05
 ARM_HALF_W = 0.07
 YOKE_HALF_W = 0.04
@@ -115,7 +115,14 @@ YOKE_HALF_H = 0.05
 YOKE_CLEARANCE = 0.005          # gap between the end cap and the inner face of a leg
 # Positive arm angle pitches the boom DOWN, toward the soil. See the sign note
 # in the module docstring block below the model string.
-ARM_RANGE = (-0.60, 1.00)       # -34 deg (stowed high) .. +57 deg (full dig)
+#
+# The down limit is tied to ARM_LEN, not chosen independently: a longer boom
+# reaches deeper at the same angle, and past roughly one drum radius of
+# burial the drum is submerged beyond its own axis, where the mouths are
+# fighting the whole overburden and it stalls instead of cutting. 0.80 rad
+# keeps the cut at ~0.19 m, just under DRUM_RADIUS. Lengthen the boom again
+# and this limit has to come down to match.
+ARM_RANGE = (-0.55, 0.80)       # -31.5 deg (stowed high) .. +45.8 deg (full dig)
 
 # --- drum ---
 DRUM_RADIUS = 0.20
@@ -474,9 +481,9 @@ EXCAVATOR_MJCF = f"""
 #               JOINT_WHEELS_RIGHT together; equal = straight, opposite = spin.
 #
 #   arms        positive joint angle pitches the boom DOWN toward the soil.
-#               0 is horizontal, ARM_RANGE[1] = 1.00 rad is full dig, which
-#               puts the drum's lowest point ~16 cm below the ground plane.
-#               ARM_RANGE[0] = -0.60 rad stows the drum ~61 cm up, which is the
+#               0 is horizontal, ARM_RANGE[1] = 0.80 rad is full dig, which
+#               puts the drum's lowest point ~19 cm below the ground plane.
+#               ARM_RANGE[0] = -0.55 rad stows the drum ~66 cm up, which is the
 #               dump height.
 #
 #   drums       positive joint velocity DIGS, on both ends. Because the rear

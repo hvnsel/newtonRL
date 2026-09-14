@@ -125,9 +125,23 @@ whenever `tricycle.py` changes.
 training loads. They only agree if you re-run this, and nothing warns you when
 they don't — the old USD just keeps loading.
 
-```powershell
-$REPO = "C:\Users\hanse\Documents\luna_hifi"
+Do NOT hardcode the repo path. There is more than one `luna_hifi*` checkout on
+this machine and the tricycle's lives somewhere else; converting into the wrong
+one writes a USD that nothing loads while the env keeps reading the stale asset
+from the right one. Derive it from the installed package instead, which is by
+construction the same root `EXCAVATOR_USD_PATH` resolves against:
 
+```powershell
+# isaaclab.bat prints an [INFO] line first, hence -Last 1.
+$REPO = (.\isaaclab.bat -p -c "import luna_hifi_tasks, os; print(os.path.dirname(os.path.dirname(luna_hifi_tasks.__file__)))" | Select-Object -Last 1).Trim()
+$REPO                                    # sanity: is this the newtonRL checkout?
+git -C $REPO remote -v                   # sanity: does it point at hvnsel/newtonRL?
+Test-Path $REPO\scripts\dig_demo.py      # sanity: must be True
+```
+
+Then:
+
+```powershell
 # 1. Check the geometry BEFORE converting. Needs MuJoCo, not Isaac Lab.
 .\isaaclab.bat -p -m pip install mujoco
 .\isaaclab.bat -p $REPO\scripts\check_excavator.py

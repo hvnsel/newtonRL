@@ -202,6 +202,15 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     bed_x: tuple[float, float] = (-3.0, 5.0)
     bed_y: tuple[float, float] = (-1.0, 1.0)
     bed_depth: float = 0.25
+    # THE parameter for whether the drum can fill. The coupler inflates every
+    # collider by half a voxel per side, so it eats a whole voxel out of every
+    # passage, and particles are spawned one voxel apart. The drum's entry
+    # channel opens 0.082 m, so at 0.05 there is 0.032 m clear -- less than one
+    # particle, and soil bridges the opening and stops in the lip instead of
+    # going in. At 0.03 the same channel is 1.7 particles wide and flows.
+    #
+    # It is not free: halving it multiplies the particle count by eight for a
+    # given bed. That is why the Micro preset shrinks the bed at the same time.
     voxel_size: float = VOXEL_SIZE
     particles_per_cell: float = MPM_PARTICLES_PER_CELL
     spawn_on_bed: bool = True
@@ -411,7 +420,15 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                     CouplerEntryCfg(
                         name=MPM_ENTRY,
                         solver_cfg=MPMSolverCfg(
-                            voxel_size=VOXEL_SIZE,
+                            # self.voxel_size, NOT the module constant. This is
+                            # the SOLVER's grid, and it is what sets both the
+                            # particle spacing and the margin the coupler
+                            # inflates every collider by. Pinned to VOXEL_SIZE
+                            # it silently ignored a finer cfg voxel: particles
+                            # spawned closer together, the grid stayed coarse,
+                            # and nothing about what fits through the drum
+                            # changed.
+                            voxel_size=self.voxel_size,
                             grid_type="sparse",
                             grid_padding=0,
                             strain_basis="P0",
@@ -519,3 +536,53 @@ class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
         self.scene.num_envs = min(self.scene.num_envs, self.max_num_envs)
         self.scene.env_spacing = 8.0
         super().__post_init__()
+
+
+@configclass
+class ExcavatorExcavateMicroEnvCfg(ExcavatorExcavateSmallEnvCfg):
+    """Small enough to run at a 0.03 m voxel, which is the point.
+
+    The Small preset cannot fill the drum and no drum geometry can fix that.
+    The coupler inflates every collider by half a voxel per side, so it eats a
+    whole voxel out of every passage, and particles are spawned one voxel
+    apart. The drum's entry channel opens 0.082 m:
+
+        voxel 0.05 -> 0.032 m clear = 0.6 particle spacings -> soil bridges
+                      the opening and stops IN the lip, scooped but never in
+        voxel 0.03 -> 0.052 m clear = 1.7 particle spacings -> it goes in
+
+    That is the whole difference, and it is a resolution limit rather than a
+    shape problem. Watch for it in the readouts: soil visibly carried around on
+    the lips while drum_fill_mass stays near zero is this, because fill is
+    counted inside r = 0.17 m and the lip channel sits outside it.
+
+    The bed pays for it. A finer voxel costs particles as the CUBE, so this one
+    is a pad just under the front drum rather than a strip the machine drives
+    along: 0.35 x 0.80 x 0.24 m gives 2,592 particles against the tricycle's
+    validated 2,880, and grid_cap_multiplier drops to 6 to keep the sparse grid
+    at the 16,384 cells that card is known to take. Both numbers are inside the
+    envelope that already ran here; the 9,504/65,536 attempt is what failed as
+    a CUDA 700 storm.
+
+    Consequences of being a pad: only the front drum ever sees soil, the
+    machine cannot drive far while cutting, and fill tops out well below one
+    drum. None of that matters for the question this preset exists to answer,
+    which is whether soil enters the drum at all.
+    """
+
+    voxel_size: float = 0.03
+
+    # Under the front drum at dig angle, not under the machine.
+    bed_x: tuple[float, float] = (1.30, 1.65)
+    bed_y: tuple[float, float] = (-0.40, 0.40)
+    # Deep enough that the lips are not grounding out: they stand 0.108 m proud
+    # of the shell now, so a 0.18 m bed would cap the usable cut at 0.073 m.
+    bed_depth: float = 0.24
+    spawn_on_bed: bool = False
+
+    # 6, not 8. 2,592 particles x 6 rounds to the 16,384 cells that are known
+    # to fit; x8 would round to 32,768 and this card has already failed there.
+    grid_cap_multiplier: float = 6.0
+
+    max_num_envs = 1
+    episode_length_s = 30.0

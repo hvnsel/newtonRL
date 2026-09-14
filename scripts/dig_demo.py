@@ -48,6 +48,8 @@ from luna_hifi_tasks.excavator.excavator import (
     MAST_TOP_Z,
 )
 from luna_hifi_tasks.excavator.excavator_cfg import MAX_DRUM_SPEED
+from luna_hifi_tasks.excavator.excavate.excavate_env_cfg import BORE_HALF_LEN
+from luna_hifi_tasks.excavator.mdp.sensors import drum_fill_mass
 
 TASK = "Luna-Excavator-Excavate-Small"
 
@@ -141,6 +143,27 @@ def boom_command_for_cut(cfg, cut: float) -> tuple[float, float]:
     lo, hi = cfg.arm_range
     angle = min(max(angle, lo), hi)
     return 2.0 * (angle - lo) / (hi - lo) - 1.0, angle
+
+
+def carried_in_lips(u) -> torch.Tensor:
+    """(E, 2) kg of soil riding in the lip channel but NOT inside the bore.
+
+    The difference between two of the same measurement: mass inside the lips'
+    swept radius, minus mass inside the bore. It exists because those two
+    states look identical in the viewer and completely different in the
+    reward. Soil scooped up, carried round on the lips and never getting past
+    the entry channel reads as zero fill -- the same as a drum that never
+    touched anything -- and the only way to tell them apart is to count the
+    particles in between.
+    """
+    pos, env = u._particles()
+    dpos, dquat = u._drum_poses()
+    wide = torch.stack([
+        drum_fill_mass(pos, env, u._particle_mass, dpos[:, i], dquat[:, i],
+                       BLADE_SWEPT_OUTER_R, BORE_HALF_LEN, u.num_envs)
+        for i in range(2)
+    ], dim=-1)
+    return (wide - u._fill_kg).clamp(min=0.0)
 
 
 def cut_diagnosis(cfg, cut: float) -> list[str]:
@@ -273,6 +296,7 @@ def main(argv=None) -> int:
         action = torch.zeros(u.num_envs, 4, device=u.device)
 
         peak = torch.zeros(u.num_envs, 2, device=u.device)
+        peak_lip = torch.zeros(u.num_envs, 2, device=u.device)
         phase = ""
         for i in range(steps):
             t = i * dt
@@ -300,8 +324,11 @@ def main(argv=None) -> int:
             if i % int(0.5 / dt) == 0:
                 arm = float(u.robot.data.joint_pos.torch[0, u._arm_ids[0]])
                 fill = u._fill_kg[0]
+                lip = carried_in_lips(u)[0]
+                peak_lip = torch.maximum(peak_lip, carried_in_lips(u))
                 print(f"  t={t:5.1f}s  arm={arm:+.3f} rad  "
-                      f"fill=[{fill[0]:7.2f}, {fill[1]:7.2f}] kg  "
+                      f"in bore=[{fill[0]:6.2f}, {fill[1]:6.2f}] kg  "
+                      f"in lips=[{lip[0]:6.2f}, {lip[1]:6.2f}] kg  "
                       f"reward={float(rew[0]):+7.3f}")
             if bool(term.any()) or bool(trunc.any()):
                 print(f"  t={t:5.1f}s  episode ended (terminated={bool(term.any())}, "
@@ -309,6 +336,15 @@ def main(argv=None) -> int:
 
         print("\n=== result ===")
         print(f"  peak fill per drum, per env (kg):\n{peak}")
+        print(f"  peak carried IN THE LIPS but never inside (kg):\n{peak_lip}")
+        if float(peak_lip.max()) > 1.0 and float(peak.max()) < 1.0:
+            print("\n  Soil is being scooped and then held in the lip channel without")
+            print("  ever getting inside. That is a RESOLUTION limit, not a shape one:")
+            print("  the coupler inflates every collider by half a voxel per side, so")
+            print("  it eats a whole voxel out of the entry channel, and particles are")
+            print("  spawned one voxel apart. Run the task that fixes it:")
+            print("     --task Luna-Excavator-Excavate-Micro")
+            print("  which is the same machine at a 0.03 m voxel on a smaller bed.")
         ok = bool((peak.sum(dim=-1) > 1.0).all())
         print(("  PASS  " if ok else "  FAIL  ") +
               "drum fill rose while the drums were in the bed")

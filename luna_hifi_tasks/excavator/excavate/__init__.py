@@ -34,3 +34,18 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:ExcavatorExcavatePPORunnerCfg",
     },
 )
+
+# Same task again at a 0.03 m voxel on a small pad under the front drum. The
+# 0.05 m presets physically cannot fill the drum: the coupler eats a whole
+# voxel out of every passage and the entry channel is left narrower than one
+# particle, so soil is scooped and then stops in the lip. See
+# ExcavatorExcavateMicroEnvCfg.
+gym.register(
+    id="Luna-Excavator-Excavate-Micro",
+    entry_point=f"{__name__}.excavate_env:ExcavatorExcavateEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.excavate_env_cfg:ExcavatorExcavateMicroEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:ExcavatorExcavatePPORunnerCfg",
+    },
+)

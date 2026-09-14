@@ -157,7 +157,11 @@ Then:
 
 ```powershell
 # 1. Check the geometry BEFORE converting. Needs MuJoCo, not Isaac Lab.
-.\isaaclab.bat -p -m pip install mujoco
+#    3.13+: older builds return 0.0 from mj_geomDistance for every pair, so
+#    every clearance reads 0.0000 and the script "fails" a model that is fine.
+#    It now probes for that and skips those checks rather than lying, but the
+#    checks are worth having.
+.\isaaclab.bat -p -m pip install -U "mujoco>=3.13"
 .\isaaclab.bat -p $REPO\scripts\check_excavator.py
 
 # 2. Write the MJCF.

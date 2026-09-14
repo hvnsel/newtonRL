@@ -9,7 +9,9 @@ dependencies = []
 # MuJoCo but deliberately NOT Isaac Lab, so it runs wherever you are editing
 # excavator.py.
 [project.optional-dependencies]
-assets = ["mujoco>=3.1.6"]      # 3.1.6 is where mj_geomDistance lands
+assets = ["mujoco>=3.13"]       # below this mj_geomDistance silently returns 0.0
+                                # for every pair, which makes every clearance and
+                                # passage number in check_excavator.py a fiction
 
 [project.entry-points."isaaclab.tasks"]
 "luna_hifi_tasks" = "luna_hifi_tasks"

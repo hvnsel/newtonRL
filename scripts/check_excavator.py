@@ -50,6 +50,13 @@ _spec.loader.exec_module(X)
 
 DISTMAX = 1.0
 
+# mj_geomDistance is what every clearance and passage number here is built on,
+# and on some MuJoCo builds it silently returns 0.0 for every pair instead of
+# failing. That turns this script from a safety net into a liar: it reported a
+# sealed drum and two clearance breaches on a model whose analytic geometry was
+# provably fine. So it gets probed before it is trusted.
+MIN_MUJOCO = "3.13"
+
 # Clearance below this is reported as a failure. The arm and the wheels overlap
 # in y -- the drum is wider than the gap between the tyres -- so the only thing
 # keeping them apart is separation in x, bought by MAST_OFFSET_X.
@@ -95,6 +102,30 @@ def _subtree_geoms(m: mujoco.MjModel, body: str) -> list[int]:
         out += list(range(m.body_geomadr[b], m.body_geomadr[b] + m.body_geomnum[b]))
         stack += [i for i in range(m.nbody) if m.body_parentid[i] == b and i != b]
     return out
+
+
+def distance_works(m: mujoco.MjModel, d: mujoco.MjData) -> bool:
+    """Does mj_geomDistance actually measure anything on this build?
+
+    Probed against a pair whose separation is obvious from the model's own
+    frames -- the deck and a drum end cap are the better part of a metre apart
+    -- so a zero here cannot be a real contact.
+    """
+    a = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "deck")
+    b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "drum_front_cap_l")
+    if a < 0 or b < 0:
+        return True                      # cannot probe; assume it works
+    apart = float(np.linalg.norm(d.geom_xpos[a] - d.geom_xpos[b]))
+    got = mujoco.mj_geomDistance(m, d, a, b, DISTMAX, None)
+    if apart > 0.5 and got <= 1e-9:
+        print(f"\n  !! mj_geomDistance returns {got} for two geoms {apart:.2f} m apart.")
+        print(f"     This MuJoCo ({mujoco.__version__}) does not implement it usefully;")
+        print(f"     {MIN_MUJOCO} or newer does. Every clearance and passage number below")
+        print("     would be 0.0000 and every one of those checks would 'fail' on a")
+        print("     model that is fine. They are SKIPPED instead.")
+        print("       pip install -U mujoco")
+        return False
+    return True
 
 
 def check_masses(m: mujoco.MjModel, fail: list[str]) -> None:
@@ -484,21 +515,28 @@ def main() -> int:
     mujoco.mj_forward(m, d)
 
     fail: list[str] = []
+    skipped: list[str] = []
     check_masses(m, fail)
     check_arm_load(m, fail)
     check_reach(fail)
     check_drum_envelope(m, fail)
     check_shell_continuity(fail)
     check_cavity(m, d, fail)
-    check_passages(m, d, fail)
-    check_clearance(m, d, fail)
+    if distance_works(m, d):
+        check_passages(m, d, fail)
+        check_clearance(m, d, fail)
+    else:
+        skipped += ["passages into the drum", "arm/drum clearance sweep"]
 
     print("\n=== result ===")
+    for sk in skipped:
+        print(f"  SKIPPED: {sk} (needs MuJoCo {MIN_MUJOCO}+)")
     if fail:
         for f in fail:
             print("  FAILED:", f)
         return 1
-    print("  all checks passed")
+    print("  all checks passed" if not skipped else
+          "  everything that could be checked passed")
     return 0
 
 

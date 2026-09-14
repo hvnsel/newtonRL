@@ -21,11 +21,33 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import subprocess
 import sys
 
 
+def _silence_crash_dialog() -> None:
+    """Stop Windows popping a modal "memory could not be read" box on a crash.
+
+    Without this the parent's subprocess.run blocks forever on the first rung
+    that dies, waiting for a dialog nobody is going to click, and the ladder
+    collects no data at all -- which is exactly what a probe must not do.
+    SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX = 0x0003.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.SetErrorMode(0x0003)
+        # Also opt out of Windows Error Reporting for this process.
+        ctypes.windll.kernel32.SetThreadErrorMode(0x0003, None)
+    except Exception:
+        pass
+
+
 def child(args) -> int:
+    _silence_crash_dialog()
     import gymnasium as gym
     import torch
 
@@ -103,6 +125,8 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Find the MPM limit on this GPU by trying it.")
     p.add_argument("--task", default="Luna-Excavator-Excavate-Micro")
     p.add_argument("--steps", type=int, default=30)
+    p.add_argument("--timeout", type=float, default=300.0,
+                   help="seconds per rung before it is called a hang")
     p.add_argument("--child", action="store_true", help="run ONE trial (internal)")
     p.add_argument("--voxel", type=float, default=0.05)
     p.add_argument("--bed_len", type=float, default=0.90)
@@ -125,22 +149,36 @@ def main() -> int:
                "--steps", str(args.steps), "--voxel", str(voxel),
                "--bed_len", str(blen), "--bed_wid", str(bwid),
                "--bed_depth", str(bdep), "--cap_mult", str(cap), "--couple", couple]
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        ok = "PROBE_OK" in r.stdout
+        env = dict(os.environ)
+        # Belt and braces with SetErrorMode in the child: this one also covers
+        # a crash before Python gets far enough to call it.
+        env["PYTHONFAULTHANDLER"] = "1"
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=args.timeout, env=env)
+            rc, out = r.returncode, r.stdout
+        except subprocess.TimeoutExpired:
+            rc, out = "timeout", ""
+        ok = "PROBE_OK" in out
         n = ""
-        for line in r.stdout.splitlines():
+        for line in out.splitlines():
             if line.startswith("PROBE_OK"):
                 n = " " + line.split("particles=")[1] + "p"
         bed = f"{blen:.2f}x{bwid:.2f}x{bdep:.2f}"
+        # Announce the rung BEFORE running it. Isaac Lab takes the better part
+        # of a minute to start, and a silent terminal during that is
+        # indistinguishable from a hang.
+        print(f"  ... trying {label} ({voxel} m voxel, {couple}) ", end="", flush=True)
         # Work out the count here too, so a rung that dies still says how big
         # it was: the child takes the process with it and prints nothing.
         want = 1
         for extent in (blen, bwid, bdep):
             want *= max(math.ceil(extent / voxel), 1)
         cells = 1 << max(int(int(cap * want) - 1).bit_length(), 1)
+        print("\r", end="")
         print(f"{label:<24} {voxel:6.3f} {bed:>18} {cap:5.0f} {couple:>7} "
               f"{want:7,d}p {cells:9,d}c  "
-              f"{'OK' + n if ok else 'DIED (rc=%s)' % r.returncode}")
+              f"{'OK' + n if ok else 'DIED (rc=%s)' % rc}")
         if ok:
             last_ok = label
         sys.stdout.flush()

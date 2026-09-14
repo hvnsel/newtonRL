@@ -162,7 +162,7 @@ MAST_HALF = (0.05, 0.09, 0.13)  # x half-size is extended to span MAST_OFFSET_X
 # the volume we are trying to fill with soil. So the boom stops short of the
 # drum, and two legs pass outboard of the end caps to pick up the axle. This is
 # also how real drum excavators are built, for the same reason.
-ARM_LEN = 0.68                  # pivot to drum axis
+ARM_LEN = 0.76# pivot to drum axis
 ARM_HALF_H = 0.05
 ARM_HALF_W = 0.07
 YOKE_HALF_W = 0.04
@@ -251,19 +251,25 @@ SCOOP_GAP = 1.6 * MPM_TARGET_VOXEL      # what it takes to flow, not merely to o
 # Where each lip ends up. The channel between them is the difference, so these
 # two numbers ARE the passage width: keep them at least SCOOP_GAP apart over
 # the span where the lips overlap.
-SCOOP_OUTER_TIP_R = 0.3# outer lip tip, well proud of the 0.20 shell
-SCOOP_INNER_TIP_R = 0.058# inner lip tip, well inside the 0.17 bore
+SCOOP_OUTER_TIP_R = 0.34# outer lip tip, well proud of the 0.20 shell
+SCOOP_INNER_TIP_R = 0.04# inner lip tip, well inside the 0.17 bore
 # How far round each lip reaches, in MOUTH WIDTHS. Above 1.0 the lip overhangs
 # past the far edge of its own gap, which is the overlap that closes the mouth
 # to anything trying to leave radially.
 SCOOP_OUTER_SPAN = 1.15
 SCOOP_INNER_SPAN = 1.15
-# Radius goes as a power of the distance along the lip. BELOW 1 for both, so
-# each leaves its root fast and then runs nearly concentric: that opens the
-# channel to full width within the first part of the gap instead of pinching
-# against the shell it is rooted to.
-SCOOP_OUTER_RISE = 0.45
-SCOOP_INNER_DROP = 0.45
+# Radius goes as a power of the distance along the lip. 1.0 is a straight
+# spiral -- radius rising evenly with angle, constant curvature, no corner
+# anywhere along it.
+#
+# It was 0.45, which leaves the root almost radially and then runs flat. That
+# puts a near right-angle elbow where the lip meets the shell, and granular
+# material packs into a re-entrant corner like that and stops: soil was
+# visibly collecting in the bend and riding round with the drum instead of
+# travelling the channel. A gentler curve on its own NARROWS the channel
+# (0.094 -> 0.087), so the tips move apart to pay for it.
+SCOOP_OUTER_RISE = 1.0
+SCOOP_INNER_DROP = 1.0
 SCOOP_SEGMENTS = 5              # straight boxes per lip
 
 # Thin. A lip is a cutting edge, not structure, and a thick one wastes the

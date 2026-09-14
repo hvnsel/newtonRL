@@ -47,7 +47,10 @@ from luna_hifi_tasks.excavator.excavator import (
     DRUM_WALL_T,
     MAST_TOP_Z,
 )
+from luna_hifi_tasks.excavator.excavator import scoop_channel
 from luna_hifi_tasks.excavator.excavator_cfg import MAX_DRUM_SPEED
+
+CHANNEL_OPENING = scoop_channel()[0]
 from luna_hifi_tasks.excavator.excavate.excavate_env_cfg import BORE_HALF_LEN
 from luna_hifi_tasks.excavator.mdp.sensors import drum_fill_mass
 
@@ -110,6 +113,15 @@ def _parse(argv):
                    help="soil yield_stress in Pa; 0 sprays, ~800 holds a cut together")
     p.add_argument("--friction", type=float, default=None, help="soil friction, ~tan(phi)")
     p.add_argument("--density", type=float, default=None, help="soil density, kg/m3")
+    # The channel opens 0.122 m and the coupler eats a whole voxel of it, while
+    # particles are spawned one voxel apart -- so this sets how many GRAINS wide
+    # the way in is, and granular material arches across an orifice narrower
+    # than about four of them however hard it is driven.
+    #   0.03 -> 3.0 grains   0.025 -> 3.9   0.02 -> 5.0
+    # Finer costs particles as the cube, which is affordable now that the rigid
+    # solver's contact buffers are no longer the limit.
+    p.add_argument("--voxel", type=float, default=None,
+                   help="MPM voxel; sets how many grains wide the drum's entry channel is")
 
     add_launcher_args(p)
     p.set_defaults(device=None, visualizer=["newton_gl"])
@@ -241,6 +253,10 @@ def main(argv=None) -> int:
     env_cfg, _ = resolve_task_config(args.task, "")
     env_cfg.scene.num_envs = args.num_envs
 
+    if args.voxel is not None:
+        env_cfg.voxel_size = args.voxel
+        # Re-derives the bed, the particle count and the grid caps from it.
+        env_cfg.__post_init__()
     for flag, field in (("cohesion", "soil_cohesion"),
                         ("friction", "soil_friction"),
                         ("density", "soil_density")):
@@ -285,6 +301,12 @@ def main(argv=None) -> int:
         mat = u.cfg.scene.soil.spawn.material
         print(f"  soil: density {mat.density:.0f} kg/m3, friction {mat.friction:.2f}, "
               f"cohesion {mat.yield_stress:.0f} Pa")
+        # The number that decides whether soil can enter at all.
+        chan = CHANNEL_OPENING - 2.0 * 0.006
+        grains = (chan - u.cfg.voxel_size) / u.cfg.voxel_size
+        print(f"  entry channel {chan:.4f} m, {u.cfg.voxel_size:.3f} m voxel -> "
+              f"{grains:.1f} grains wide "
+              f"({'arches' if grains < 3.0 else 'marginal' if grains < 4.5 else 'flows'})")
         rad_s = args.drum * MAX_DRUM_SPEED
         print(f"  drum: {args.drum:+.2f} -> {rad_s:+.1f} rad/s -> "
               f"lip {abs(rad_s) * BLADE_SWEPT_OUTER_R:.2f} m/s "

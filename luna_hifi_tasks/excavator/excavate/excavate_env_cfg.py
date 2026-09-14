@@ -229,11 +229,12 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # 100 MB on a card with six thousand. Being stingy here buys nothing and
     # costs particles, which are the one thing actually worth spending on.
     #
-    # 24, not the tricycle's 5.7, because the cells are not all for particles:
-    # the solver activates cells around every coupled collider too, and this
-    # machine brings 104 geoms to the coupling against the tricycle's 8. That
-    # is what a finer voxel multiplies, and what a smaller bed does not shrink.
-    grid_cap_multiplier: float = 24.0
+    # 8, the tricycle's proven ratio. Raising it to 24 on the theory that the
+    # caps were the binding constraint changed nothing: the 0.03 m voxel died
+    # exactly the same way with 32x the grid. So the caps are NOT what this
+    # machine is hitting, and scripts/mpm_probe.py exists to find what is
+    # instead of the next plausible-sounding guess.
+    grid_cap_multiplier: float = 8.0
 
     # Which bodies are coupled to the soil. Narrow it on a preset whose soil
     # some of them cannot reach: each body brings every one of its geoms, and
@@ -562,42 +563,40 @@ class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
 
 @configclass
 class ExcavatorExcavateMicroEnvCfg(ExcavatorExcavateSmallEnvCfg):
-    """Fine voxel. The name is about the VOXEL, not the bed -- the bed is eight
-    times the Small preset's, because the thing that was limiting it turned out
-    not to be memory at all.
+    """A finer voxel on a small bed, with only the front drum coupled.
 
-    Why the voxel. The coupler inflates every collider by half a voxel per
-    side, so it eats a whole voxel out of every passage, and particles are
-    spawned one voxel apart. The drum's entry channel opens 0.082 m:
+    Why a finer voxel at all: the coupler inflates every collider by half a
+    voxel per side, so it eats a whole voxel out of every passage, and
+    particles are spawned one voxel apart. The drum's entry channel opens
+    0.082 m, so at 0.05 there is 0.032 m clear -- 0.6 of a particle spacing,
+    and soil bridges the opening and stops in the lip instead of going in. At
+    0.03 it is 1.7 spacings.
 
-        voxel 0.05 -> 0.032 m clear = 0.6 particle spacings -> soil bridges the
-                      opening and stops IN the lip, scooped but never inside
-        voxel 0.03 -> 0.052 m clear = 1.7 particle spacings -> it goes in
+    Why only the front drum: on a pad ahead of the machine nothing else touches
+    soil, and each body drags all its geoms into the coupling. That is 38
+    colliders instead of 104, which matters because a finer voxel multiplies
+    the cells each collider occupies by roughly eight.
 
-    No drum geometry fixes 0.6 of a particle, and several rounds were spent
-    trying before the arithmetic got done.
-
-    Why the bed is not small. Overrunning the sparse-grid caps raises an
-    ILLEGAL ACCESS -- a CUDA 700 storm, or 0xC0000374 on Windows -- which was
-    read as running out of VRAM and answered by shrinking the bed, every time,
-    which made the shortfall worse relative to a collider set that does not
-    shrink with it. A grid cell is tens of bytes: 524,288 of them is about
-    50 MB on a card with six thousand. The caps were never the memory
-    constraint, so this preset stops pretending they are and spends the card on
-    particles instead -- 12,580 of them, against 1,584 at a coarser voxel.
+    What is NOT claimed: that these numbers fit. Three theories about the limit
+    on this card -- particle count, sparse-grid capacity, collider footprint --
+    were each argued and each failed to predict a crash. This preset is sized
+    conservatively against the one configuration known to run (1,584 particles
+    at 0.05 with all 104 colliders), and scripts/mpm_probe.py walks a ladder in
+    separate processes to find the real boundary, because an over-capacity MPM
+    config kills the process rather than raising and cannot be bisected in one.
     """
 
     voxel_size: float = 0.03
 
-    # A real strip to cut, clear of the wheels at spawn, spanning the full drum
-    # width so both the cut and the fill are representative.
-    bed_x: tuple[float, float] = (1.05, 2.05)
-    bed_y: tuple[float, float] = (-0.55, 0.55)
-    # Deep enough that the lips are not grounding out: they stand 0.108 m proud
-    # of the shell, so a shallow bed caps the usable cut well before the arm
-    # range does.
-    bed_depth: float = 0.28
+    # Under the front drum, clear of the wheels. Deliberately smaller than the
+    # Small preset's in particle terms: 0.35 x 0.80 x 0.21 at a 0.03 m voxel is
+    # 2,268 particles against that preset's 1,584.
+    bed_x: tuple[float, float] = (1.30, 1.65)
+    bed_y: tuple[float, float] = (-0.40, 0.40)
+    bed_depth: float = 0.21
     spawn_on_bed: bool = False
+
+    soil_contact_regex: str = FRONT_DRUM_ONLY_REGEX
 
     max_num_envs = 1
     episode_length_s = 30.0

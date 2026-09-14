@@ -119,6 +119,46 @@ whenever `tricycle.py` changes.
 
 ---
 
+### Rebuild the excavator asset (whenever `excavator.py` changes)
+
+`excavator.py` is the source; `assets\excavator\excavator.usda` is what
+training loads. They only agree if you re-run this, and nothing warns you when
+they don't — the old USD just keeps loading.
+
+```powershell
+$REPO = "C:\Users\hanse\Documents\luna_hifi"
+
+# 1. Check the geometry BEFORE converting. Needs MuJoCo, not Isaac Lab.
+.\isaaclab.bat -p -m pip install mujoco
+.\isaaclab.bat -p $REPO\scripts\check_excavator.py
+
+# 2. Write the MJCF.
+.\isaaclab.bat -p -c "from luna_hifi_tasks.excavator.excavator import write_mjcf; print(write_mjcf())"
+
+# 3. Delete the old output first. The converter appends _1 rather than
+#    overwriting, and the env then loads the STALE asset from the old folder.
+Remove-Item -Recurse -Force $REPO\assets\excavator -ErrorAction SilentlyContinue
+
+# 4. Convert. Note the output path: assets\excavator.usd, NOT
+#    assets\excavator\excavator.usd -- the converter keeps only the directory
+#    and forces <stem>\<stem>.usda, so the nested path lands a level too deep
+#    and the spawn fails with FileNotFoundError.
+.\isaaclab.bat -p scripts\tools\convert_mjcf.py $env:TEMP\luna_hifi_assets\excavator.xml $REPO\assets\excavator.usd
+
+# 5. Watch it dig.
+.\isaaclab.bat -p $REPO\scripts\dig_demo.py
+```
+
+`check_excavator.py` is step 1 for a reason. It catches the class of fault that
+survives conversion and then never gets reported: MuJoCo does not test a body
+against its own parent, and Isaac articulations default to
+`self_collision=False`, so an arm passing through its own drum runs perfectly
+happily in both and only shows up as a policy that will not learn. It measures
+swept envelopes off the geoms, ray-probes the drum cavity, and sweeps the arms
+through `ARM_RANGE` against the wheels and frame.
+
+---
+
 ## 2. Daily commands
 
 Every session, in each new PowerShell window:

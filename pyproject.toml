@@ -5,6 +5,12 @@ description = "Isaac Lab tricycle task: articulated vehicle on Newton implicit-M
 requires-python = ">=3.11"
 dependencies = []
 
+# scripts/check_excavator.py validates the excavator geometry offline and needs
+# MuJoCo but deliberately NOT Isaac Lab, so it runs wherever you are editing
+# excavator.py.
+[project.optional-dependencies]
+assets = ["mujoco>=3.1.6"]      # 3.1.6 is where mj_geomDistance lands
+
 [project.entry-points."isaaclab.tasks"]
 "luna_hifi_tasks" = "luna_hifi_tasks"
 

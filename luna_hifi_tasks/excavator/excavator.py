@@ -187,7 +187,13 @@ DRUM_RADIUS = 0.20
 # MAST_OFFSET_X buys back.
 DRUM_HALF_LEN = 0.475           # ~100 cm wide drum
 DRUM_WALL_T = 0.030             # shell thickness; see the MPM note below
-DRUM_FACETS = 12                # angular slots around the circumference
+# Six 60-degree facets, not twelve 30-degree ones. The mouth is the way in and
+# at this voxel the way in has to be WIDE: the entry slot is an arc at roughly
+# the shell radius, so a 30 degree mouth could not offer more than about 10 cm
+# of it even with nothing else in the way, and half of that is eaten by the
+# coupler margin. Sixty degrees buys room for a real slot and a lip as well,
+# and takes the open fraction from 15% to 33% besides.
+DRUM_FACETS = 6                 # angular slots around the circumference
 # Two mouths, 180 degrees apart (slots 0 and 6). Not three: a mouth is a hole,
 # and every hole is a chance per revolution for the load to fall out of the
 # bottom of the drum. Two is the fewest that still balances -- one would put
@@ -255,11 +261,34 @@ SCOOP_CURL = -1.0
 #          keeps going well past its far edge.
 #   HOOD   knee -> tip, outside. Matched to 1 - ENTRY so the lid covers the
 #          same span of mouth the floor does.
-SCOOP_TIP_R = 0.245             # cutting tip; the shell is at DRUM_RADIUS = 0.20
-SCOOP_ROOT_R = 0.070            # inner end of the curl
-SCOOP_ENTRY = 0.22
-SCOOP_WRAP = 2.20
-SCOOP_HOOD = 0.78
+#
+# AND EVERY ONE OF THEM IS FLOORED BY THE SOLVER, not by the steel. The MPM
+# coupler inflates every collider by half a voxel PER SIDE, so a geometric gap
+# of g reads as g - voxel to the particles: at the 0.05 m voxel a 4 cm slot is
+# not a tight slot, it is a WALL. The first version of this lip crossed the
+# shell line hard against a shell plate and left a 9 mm pinch there, so the
+# drum was sealed shut -- it cut, it threw regolith about, and not one particle
+# ever got inside. Nothing reported it, because a sealed drum and an empty drum
+# look identical.
+#
+# So the lip is laid out around clearances now, and check_excavator.py measures
+# every passage against MPM_CLEARANCE and fails if the soil cannot fit.
+MPM_TARGET_VOXEL = 0.05
+MPM_CLEARANCE = MPM_TARGET_VOXEL        # below this a passage is simply closed
+SCOOP_GAP = 1.6 * MPM_TARGET_VOXEL      # what it takes to actually flow, not just open
+
+SCOOP_TIP_R = 0.245# cutting tip; the shell is at DRUM_RADIUS = 0.20
+# Deep enough that the pocket between the curl and the shell clears SCOOP_GAP:
+# the bore is at 0.17, so the curl has to get under 0.09 and stay there.
+SCOOP_ROOT_R = 0.065
+SCOOP_ENTRY = 0.4
+SCOOP_WRAP = 1.7
+SCOOP_HOOD = 0.26
+# The curl leaves the knee at the SHELL radius and has to be clear of the bore
+# before it passes under a shell plate, or it pinches against one. It has the
+# rest of the mouth to do that in, which is what this is: mouth widths from the
+# knee, and it must not exceed 1 - SCOOP_ENTRY.
+SCOOP_CLEAR_BY = 0.45
 # +1 folds the hood back the way the curl runs, over the mouth. -1 continues
 # the spiral outward instead, which is what this was before and which leaves
 # the mouth open to the sky.
@@ -269,13 +298,14 @@ SCOOP_HOOD_DIR = 1.0
 # third and then runs nearly concentric, which is the shape that holds soil
 # against the shell. The hood is the mirror case, below 1, so it climbs off the
 # knee immediately and then runs concentric as a lid rather than a ramp.
-SCOOP_DIVE = 5.9
-# Well below 1. The hood emerges at the bore line and has to climb the 3 cm of
-# shell wall before it counts as a lid at all, and that climb is angle spent
-# not covering the mouth -- at 0.55 it cost 15 points of coverage. Stretching
-# the hood does not help, because the climb scales with it; only climbing
-# faster does.
-SCOOP_HOOD_RISE = 0.30
+# Derived, not chosen: whatever exponent gets the curl from the shell radius
+# down to SCOOP_GAP clear of the bore within SCOOP_CLEAR_BY. Choosing it by
+# hand is how the curl ended up still hugging the shell when it reached the
+# far side of its mouth.
+SCOOP_DIVE = math.log(
+    (DRUM_RADIUS - DRUM_WALL_T - SCOOP_GAP - SCOOP_ROOT_R) / (DRUM_RADIUS - SCOOP_ROOT_R)
+) / math.log(1.0 - SCOOP_CLEAR_BY / SCOOP_WRAP)
+SCOOP_HOOD_RISE = 0.60
 SCOOP_SEGMENTS = 9              # straight boxes approximating the curve
 
 # Thin. A lip is a cutting edge, not structure, and a thick one wastes the
@@ -309,7 +339,10 @@ GROUSER_MASS = 0.35             # each
 ARM_BOOM_MASS = 6.0             # each arm: boom + cross + two legs = 17.5 kg
 ARM_CROSS_MASS = 3.5
 ARM_LEG_MASS = 4.0
-DRUM_SEGMENT_MASS = 2.2         # each shell segment
+# Each shell segment, and it is PER SEGMENT, so it tracks DRUM_FACETS: four
+# 60-degree plates carry the same steel as ten 30-degree ones would have, less
+# the extra mouth area. 4.4 keeps the shell at ~18 kg either way.
+DRUM_SEGMENT_MASS = 4.4
 DRUM_CAP_MASS = 1.2             # each end cap
 # Total for one scoop lip, split between its segments by arc length. Half the
 # old figure because the plate is half as thick over a similar developed
@@ -420,11 +453,16 @@ def _scoop_branch(v: float, outer: bool) -> tuple[float, float]:
     mouth gets a lid and a floor instead of a single ramp.
     """
     step = 2.0 * math.pi / DRUM_FACETS
+    # Both branches leave the knee at the SHELL radius, not the bore. The knee
+    # sits in the open mouth, so that is where the lip crosses the shell band --
+    # the one place along the circumference where there is no shell plate to
+    # pinch against. Starting it at the bore instead put the crossing hard
+    # against a plate and sealed the drum.
     if outer:
         return (SCOOP_HOOD_DIR * SCOOP_HOOD * step * v,
-                BORE_R + (SCOOP_TIP_R - BORE_R) * v ** SCOOP_HOOD_RISE)
+                DRUM_RADIUS + (SCOOP_TIP_R - DRUM_RADIUS) * v ** SCOOP_HOOD_RISE)
     return (SCOOP_WRAP * step * v,
-            SCOOP_ROOT_R + (BORE_R - SCOOP_ROOT_R) * (1.0 - v) ** SCOOP_DIVE)
+            SCOOP_ROOT_R + (DRUM_RADIUS - SCOOP_ROOT_R) * (1.0 - v) ** SCOOP_DIVE)
 
 
 def _scoop_knee(phi_anchor: float) -> float:

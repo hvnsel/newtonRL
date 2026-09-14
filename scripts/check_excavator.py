@@ -135,8 +135,12 @@ def check_drum_envelope(m: mujoco.MjModel, fail: list[str]) -> None:
     print(f"  vane reaching into the cavity        {bore - blade_lo:+.4f}")
 
     inside, outside = X.scoop_mouth_coverage()
-    print(f"  mouth covered from inside (curl)       {inside * 100:.0f}%")
-    print(f"  mouth covered from outside (hood)      {outside * 100:.0f}%")
+    step = 360.0 / X.DRUM_FACETS
+    # Degrees as well as percent: the fraction is of ONE MOUTH, so halving
+    # DRUM_FACETS halves it without a single millimetre of lip moving.
+    print(f"  mouth is {step:.0f} deg wide, entry slot {X.SCOOP_ENTRY * step:.0f} deg")
+    print(f"  covered from inside (curl)   {inside * 100:3.0f}%  = {inside * step:4.1f} deg")
+    print(f"  covered from outside (hood)  {outside * 100:3.0f}%  = {outside * step:4.1f} deg")
 
     if blade_hi <= X.DRUM_RADIUS:
         fail.append("lips do not stand proud of the shell -- nothing bites first")
@@ -255,6 +259,56 @@ def check_cavity(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:
     print(f"  lip segments overlap by {worst:+.4f} m at the tightest joint")
     if worst < 0.0:
         fail.append(f"lip segments leave a {-worst:.4f} m notch at a joint")
+
+
+def check_passages(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:
+    """Can the soil actually get in?
+
+    The single most important check in this file, and the one that was missing
+    while the drum quietly refused to take a particle. The MPM coupler inflates
+    every collider by half a voxel PER SIDE, so a geometric gap of g reads as
+    g - voxel to the particles. A 9 mm slot at a 5 cm voxel is not tight, it is
+    a wall -- and a drum that is sealed shut behaves exactly like a drum that is
+    simply bad at digging, which is why this needs measuring rather than
+    eyeballing.
+
+    Lip against cap is skipped: the lip spans the full drum width and meets the
+    end caps by construction. That is a weld, not a passage.
+    """
+    print("\n=== passages into the drum ===")
+    gids = _body_geoms(m, "drum_front_body")
+    nm = lambda g: mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g)
+    lips = [g for g in gids if "lip" in nm(g)]
+    shell = [g for g in gids if "shell" in nm(g)]
+    scoop_of = lambda g: nm(g).split("_scoop")[1].split("_")[0]
+
+    pairs = [(a, b) for a in lips for b in shell]
+    pairs += [(a, b) for i, a in enumerate(lips) for b in lips[i + 1:]
+              if scoop_of(a) != scoop_of(b)]
+    measured = sorted((mujoco.mj_geomDistance(m, d, a, b, DISTMAX, None), nm(a), nm(b))
+                      for a, b in pairs)
+
+    voxel = X.MPM_TARGET_VOXEL
+    print(f"  at the {voxel:.3f} m voxel the coupler eats {voxel:.3f} m of every gap")
+    print(f"  open needs > {X.MPM_CLEARANCE:.3f} m, flowing needs > {X.SCOOP_GAP:.3f} m")
+    for dist, a, b in measured[:3]:
+        verdict = ("SEALED" if dist < X.MPM_CLEARANCE
+                   else "open, tight" if dist < X.SCOOP_GAP else "flows")
+        print(f"    {dist:7.4f} m  {a} <-> {b}   [{verdict}]")
+
+    tightest = measured[0][0]
+    if tightest < X.MPM_CLEARANCE:
+        fail.append(
+            f"narrowest passage into the drum is {tightest:.4f} m, under the "
+            f"{X.MPM_CLEARANCE:.3f} m the coupler eats at a {voxel:.3f} m voxel. The drum "
+            "is SEALED: it will cut and throw soil and take none of it, and nothing at "
+            "run time will say so"
+        )
+    elif tightest < X.SCOOP_GAP:
+        print(f"  note: {tightest:.4f} m is open but under {X.SCOOP_GAP:.3f} m, so soil "
+              f"trickles rather than flows. A finer voxel is the real fix -- at 0.03 the "
+              f"same gap reads as {tightest - 0.03:.3f} m clear instead of "
+              f"{tightest - voxel:.3f} m.")
 
 
 def check_clearance(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:
@@ -406,6 +460,7 @@ def main() -> int:
     check_drum_envelope(m, fail)
     check_shell_continuity(fail)
     check_cavity(m, d, fail)
+    check_passages(m, d, fail)
     check_clearance(m, d, fail)
 
     print("\n=== result ===")

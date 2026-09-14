@@ -48,9 +48,11 @@
 #   in traction.
 # * The drums are hollow: a ring of box segments closed at both ends by cap
 #   discs, with SCOOP_COUNT of the segments left open as scoop mouths. At each
-#   mouth stands a thin CURVED lip. It starts proud of the shell at the mouth's
-#   leading edge, dives inward, and curls back ACROSS the mouth from inside,
-#   carrying on under the shell past the far edge.
+#   mouth stands a thin CURVED lip, folded at a knee on the bore line. From
+#   that knee a HOOD runs outward and across the mouth, and a CURL runs inward
+#   and across it the same way round -- a lid and a floor, not one ramp. What
+#   is left open is a slot at the upstream end, between the knee and the shell
+#   edge, and that slot is the only way in or out.
 #
 #   Read it in the drum's frame and the shape explains itself. A joint velocity
 #   of sign k turns the drum toward -k*phi, so relative to the drum the soil
@@ -60,10 +62,12 @@
 #   the ramp, against the stream. Which k does that is SCOOP_CURL, and
 #   DIG_DRUM_SIGN is derived from it so the two cannot disagree.
 #
-#   The curl overlaps 78% of its own mouth and runs 1.4 mouth widths past the
-#   far edge. There is no straight line from the drum axis to the outside at
-#   any angle -- scripts/check_excavator.py measures that, and it was 30
-#   degrees' worth when the lips were straight plates.
+#   The curl floors 78% of its mouth and the hood lids 74% of it, which is the
+#   point: covering one side only means the load either drops out through the
+#   floor or lifts out through the lid. scripts/check_excavator.py measures
+#   both and fails under 25%, and it also reports how much of the drum still
+#   has a straight line from the axis to the outside -- 6 degrees, against 30
+#   when the lips were flat plates.
 #
 #   That overlap is the whole design. A straight blade cuts and lifts, but the
 #   pocket behind it is open to the same hole the soil came through, and half a
@@ -220,32 +224,59 @@ SCOOP_COUNT = 2
 # one constant and the digging direction follows.
 SCOOP_CURL = -1.0
 
+# The lip is NOT one monotone spiral. It has a KNEE, where it crosses the bore
+# line at the mouth, and two branches running from that knee in the SAME
+# rotational direction:
+#
+#            soil streams this way  <----
+#
+#                  shell        entry slot
+#              ___________     |<->|
+#                         \        .-------------____        <- HOOD, outside
+#                          |   knee                          
+#                         /        '-.______                 <- CURL, inside
+#              ___________              
+#
+# so the mouth ends up covered from outside by the hood and from inside by the
+# curl, and what is left is a slot at the upstream end between the shell edge
+# and the knee. Soil goes in through it and then has both a lid and a floor.
+# That is the difference between a pocket and a hole, and it is why the two
+# branches must fold the same way: run them in opposite directions and the lip
+# is a single spiral again, with the outside half pointing away from the very
+# mouth it is supposed to cover.
+#
+# Angular budgets, all in MOUTH WIDTHS, so each is a number you set rather than
+# one you discover afterwards:
+#
+#   ENTRY  the mouth's trailing shell edge -> the knee. This is the way in, and
+#          it is the only way in, so it is also the one thing that must NOT be
+#          covered.
+#   WRAP   knee -> root, inside. Roofs the remaining 1 - ENTRY of the mouth and
+#          keeps going well past its far edge.
+#   HOOD   knee -> tip, outside. Matched to 1 - ENTRY so the lid covers the
+#          same span of mouth the floor does.
 SCOOP_TIP_R = 0.245             # cutting tip; the shell is at DRUM_RADIUS = 0.20
 SCOOP_ROOT_R = 0.070            # inner end of the curl
-# The lip's two jobs, each given its own angular budget in MOUTH WIDTHS, so
-# neither can quietly eat the other:
-#
-#   BITE  tip -> the bore line. This part is the cutting edge, standing outside
-#         the shell. It is angle spent NOT roofing, so it directly sets the
-#         roofed fraction: 0.22 leaves 78% of the mouth covered.
-#   WRAP  bore line -> root. This is the roof, and it runs well past the far
-#         edge of the mouth -- 2.2 against a 1.0-wide mouth, so 1.4 mouth
-#         widths of overhang beyond it.
-#
-# Splitting it this way is what makes "more overlap" a number you can set
-# rather than something you discover after the fact.
-SCOOP_BITE = 0.22
+SCOOP_ENTRY = 0.22
 SCOOP_WRAP = 2.20
-SCOOP_SEGMENTS = 7              # straight boxes approximating the curve
-# Curvature is DERIVED, not chosen: the radius falls as (1 - u)**SCOOP_DIVE
-# along the curl, and the exponent is whatever makes the lip cross the bore
-# line exactly at SCOOP_BITE. Picking it by hand instead is how the first
-# version ended up with a gentle curve that was still outside the shell
-# halfway across its own mouth.
-_SCOOP_U_BITE = SCOOP_BITE / (SCOOP_BITE + SCOOP_WRAP)
-SCOOP_DIVE = math.log(
-    (DRUM_RADIUS - DRUM_WALL_T - SCOOP_ROOT_R) / (SCOOP_TIP_R - SCOOP_ROOT_R)
-) / math.log(1.0 - _SCOOP_U_BITE)
+SCOOP_HOOD = 0.78
+# +1 folds the hood back the way the curl runs, over the mouth. -1 continues
+# the spiral outward instead, which is what this was before and which leaves
+# the mouth open to the sky.
+SCOOP_HOOD_DIR = 1.0
+# Curvature of each branch: radius goes as a power of the distance along it.
+# The curl is sharp (about 6) -- it drops to near its root radius in the first
+# third and then runs nearly concentric, which is the shape that holds soil
+# against the shell. The hood is the mirror case, below 1, so it climbs off the
+# knee immediately and then runs concentric as a lid rather than a ramp.
+SCOOP_DIVE = 5.9
+# Well below 1. The hood emerges at the bore line and has to climb the 3 cm of
+# shell wall before it counts as a lid at all, and that climb is angle spent
+# not covering the mouth -- at 0.55 it cost 15 points of coverage. Stretching
+# the hood does not help, because the climb scales with it; only climbing
+# faster does.
+SCOOP_HOOD_RISE = 0.30
+SCOOP_SEGMENTS = 9              # straight boxes approximating the curve
 
 # Thin. A lip is a cutting edge, not structure, and a thick one wastes the
 # mouth it stands in. Note that at the 5 cm MPM voxel this is nearly invisible
@@ -378,15 +409,32 @@ def _radial_blade(
     )
 
 
-def _scoop_radius(u: float) -> float:
-    """Lip radius at angular fraction `u` along the curl, 0 at the tip."""
-    return SCOOP_ROOT_R + (SCOOP_TIP_R - SCOOP_ROOT_R) * (1.0 - u) ** SCOOP_DIVE
+BORE_R = DRUM_RADIUS - DRUM_WALL_T
 
 
-def _scoop_point(phi_anchor: float, u: float) -> tuple[float, float]:
+def _scoop_branch(v: float, outer: bool) -> tuple[float, float]:
+    """(angle offset from the knee, radius) a fraction `v` along one branch.
+
+    Offsets are returned in the CURL direction, positive, for both branches --
+    that is the fold: hood and curl leave the knee the same way round, so the
+    mouth gets a lid and a floor instead of a single ramp.
+    """
     step = 2.0 * math.pi / DRUM_FACETS
-    a = phi_anchor + SCOOP_CURL * (SCOOP_BITE + SCOOP_WRAP) * step * u
-    r = _scoop_radius(u)
+    if outer:
+        return (SCOOP_HOOD_DIR * SCOOP_HOOD * step * v,
+                BORE_R + (SCOOP_TIP_R - BORE_R) * v ** SCOOP_HOOD_RISE)
+    return (SCOOP_WRAP * step * v,
+            SCOOP_ROOT_R + (BORE_R - SCOOP_ROOT_R) * (1.0 - v) ** SCOOP_DIVE)
+
+
+def _scoop_knee(phi_anchor: float) -> float:
+    """Where the lip crosses the bore line: SCOOP_ENTRY in from the mouth edge."""
+    return phi_anchor + SCOOP_CURL * SCOOP_ENTRY * (2.0 * math.pi / DRUM_FACETS)
+
+
+def _scoop_point(phi_anchor: float, v: float, outer: bool) -> tuple[float, float]:
+    d, r = _scoop_branch(v, outer)
+    a = _scoop_knee(phi_anchor) + SCOOP_CURL * d
     return r * math.cos(a), r * math.sin(a)
 
 
@@ -396,14 +444,22 @@ def _scoop_curve(phi_anchor: float) -> list[tuple[float, float]]:
     `phi_anchor` is the edge of the mouth the tip is welded to; SCOOP_CURL
     decides which edge and which way the curl runs from it.
 
-    Points are spaced evenly by ARC LENGTH, not by angle. The curve is
-    deliberately sharp near the tip -- SCOOP_DIVE is around 6 -- so angular
-    spacing would put one box across the whole elbow and the rest strung out
-    along the nearly-circular tail, which approximates the one part of the
-    shape that has to be right with the one segment that cannot represent it.
+    Runs tip -> knee -> root, so the fold is a single polyline and everything
+    downstream -- the boxes, the swept radii, the overlap check -- sees one
+    curve rather than two special cases.
+
+    Points are spaced evenly by ARC LENGTH, not by angle. Both branches are
+    deliberately sharp at the knee, so angular spacing would put one box across
+    the elbow and string the rest along the nearly-concentric tails, which
+    approximates the one part of the shape that has to be right with the one
+    segment that cannot represent it.
     """
     fine = 400
-    pts = [_scoop_point(phi_anchor, i / fine) for i in range(fine + 1)]
+    half = fine // 2
+    pts = [_scoop_point(phi_anchor, 1.0 - i / half, outer=True) for i in range(half)]
+    pts += [_scoop_point(phi_anchor, i / (fine - half), outer=False)
+            for i in range(fine - half + 1)]
+    fine = len(pts) - 1
     cum = [0.0]
     for a, b in zip(pts, pts[1:]):
         cum.append(cum[-1] + math.dist(a, b))
@@ -417,7 +473,11 @@ def _scoop_curve(phi_anchor: float) -> list[tuple[float, float]]:
             j += 1
         span = cum[j + 1] - cum[j]
         f = 0.0 if span <= 0.0 else min((target - cum[j]) / span, 1.0)
-        out.append(_scoop_point(phi_anchor, (j + f) / fine))
+        # Interpolate along the polyline rather than re-evaluating a parametric
+        # point: the curve is two branches spliced together, so there is no
+        # single parameter that runs the whole way along it.
+        (x0, z0), (x1, z1) = pts[j], pts[j + 1]
+        out.append((x0 + f * (x1 - x0), z0 + f * (z1 - z0)))
     return out
 
 
@@ -481,29 +541,32 @@ def _scoop_xml(prefix: str, phi_anchor: float) -> list[str]:
     ]
 
 
-def scoop_mouth_coverage() -> float:
-    """Fraction of a mouth's angular span that the lip roofs from inside.
+def scoop_mouth_coverage() -> tuple[float, float]:
+    """(inside, outside) fractions of a mouth's angular span that the lip covers.
 
-    The lip only retains what it covers: where it is still outside the shell it
-    is a cutting edge, and where it has not reached yet the mouth is simply
-    open. Sampled off the curve rather than derived, because SCOOP_DIVE makes
-    the closed form unpleasant and this is the number that says whether the
-    shape does its job.
+    Measured from the mouth's trailing shell edge, in the CURL direction, which
+    is how soil crosses it. The two should be comparable: a floor without a lid
+    lets the load lift straight out of the mouth, and a lid without a floor is
+    just a shade. Sampled rather than derived so that changing a branch's
+    curvature cannot quietly invalidate the number.
     """
     step = 2.0 * math.pi / DRUM_FACETS
-    bore = DRUM_RADIUS - DRUM_WALL_T
-    pts: list[tuple[float, float]] = []
-    fine, roofed = 400, 0
-    span = (SCOOP_BITE + SCOOP_WRAP) * step
-    for i in range(fine + 1):
-        u = i / fine
-        pts.append((span * u, _scoop_radius(u)))
-    for i in range(fine + 1):
-        a = step * i / fine                      # across one mouth, from the anchor
-        r = next((rr for aa, rr in pts if aa >= a), None)
-        if r is not None and r < bore:
-            roofed += 1
-    return roofed / (fine + 1)
+    fine = 400
+    inner = [_scoop_branch(i / fine, outer=False) for i in range(fine + 1)]
+    outer = [_scoop_branch(i / fine, outer=True) for i in range(fine + 1)]
+
+    def covered(branch, want_inside: bool) -> float:
+        hit = 0
+        for i in range(fine + 1):
+            # Angle into the mouth, measured from the trailing edge; the knee
+            # sits SCOOP_ENTRY in, so the branch starts there.
+            a = step * i / fine - SCOOP_ENTRY * step
+            r = next((rr for dd, rr in branch if dd >= a), None) if a >= 0.0 else None
+            if r is not None and ((r < BORE_R) if want_inside else (r > DRUM_RADIUS)):
+                hit += 1
+        return hit / (fine + 1)
+
+    return covered(inner, True), covered(outer, False)
 
 
 def _wheel(name: str, x: float, y: float, joint: str) -> str:
@@ -545,10 +608,10 @@ def _drum(prefix: str, joint: str) -> str:
     The mouths are spread as evenly as SCOOP_COUNT divides DRUM_FACETS allows;
     at SCOOP_COUNT = 2 that is slots 0 and 6, exactly opposite.
 
-    Each open slot gets one curved lip anchored at the mouth's LEADING edge,
-    phi - step/2, leading under a positive joint velocity (which turns the drum
-    toward decreasing phi). The lip cuts there and curls back across the mouth,
-    roofing it from inside; see the scoop block in the dimensions section.
+    Each open slot gets one folded lip, anchored at the mouth edge that faces
+    upstream. Which edge that is depends on SCOOP_CURL, so it is written in
+    terms of that rather than spelled out; see the scoop block in the
+    dimensions section for the shape and why it folds.
     """
     step = 2.0 * math.pi / DRUM_FACETS
     mid_r = DRUM_RADIUS - 0.5 * DRUM_WALL_T
@@ -608,9 +671,9 @@ BLADE_SWEPT_INNER_R, BLADE_SWEPT_OUTER_R = _scoop_swept_radii()
 # than written down, because the two are one fact:
 #
 #   a joint velocity of sign k turns the drum toward -k*phi, so in the drum's
-#   frame the soil streams toward +k*phi; the lip catches a stream that runs
-#   from its tip toward its root, and SCOOP_CURL is by definition the direction
-#   tip -> root. So loading needs k = SCOOP_CURL.
+#   frame the soil streams toward +k*phi. Soil has to enter through the slot
+#   and then travel deeper under the hood, which is the CURL direction by
+#   construction. So loading needs k = SCOOP_CURL.
 #
 # Mirror the lip and this follows automatically. Getting it wrong does not
 # break anything visibly -- the drum still turns, still throws regolith about,
@@ -802,10 +865,12 @@ def reach() -> dict[str, float]:
         "drum_blade_swept_diameter": 2.0 * BLADE_SWEPT_INNER_R,
         "drum_lip_proud_of_shell": BLADE_SWEPT_OUTER_R - DRUM_RADIUS,
         "drum_lifter_into_bore": (DRUM_RADIUS - DRUM_WALL_T) - BLADE_SWEPT_INNER_R,
-        # How much of the mouth the curl roofs from inside. The lip only
-        # retains what it covers, so this is the number that says whether the
-        # drum is a trap or a hole.
-        "drum_mouth_roofed_fraction": scoop_mouth_coverage(),
+        # How much of the mouth the lip covers, from inside (the curl) and from
+        # outside (the hood). Between them they decide whether the drum is a
+        # trap or a hole, and they should be comparable -- a floor without a lid
+        # lets the load lift straight back out of the mouth it came in through.
+        "drum_mouth_covered_inside": scoop_mouth_coverage()[0],
+        "drum_mouth_covered_outside": scoop_mouth_coverage()[1],
         "drum_bore_volume": math.pi * (DRUM_RADIUS - DRUM_WALL_T) ** 2 * (2.0 * DRUM_HALF_LEN),
         # Drum width against the AB/CD track. Deliberately just under 1.0.
         "drum_outer_width": 2.0 * (DRUM_HALF_LEN + 2.0 * CAP_HALF_T),

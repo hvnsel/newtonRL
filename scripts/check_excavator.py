@@ -134,7 +134,9 @@ def check_drum_envelope(m: mujoco.MjModel, fail: list[str]) -> None:
     print(f"  lip standing proud of the shell      {blade_hi - X.DRUM_RADIUS:+.4f}")
     print(f"  vane reaching into the cavity        {bore - blade_lo:+.4f}")
 
-    print(f"  mouth roofed by the curl               {X.scoop_mouth_coverage() * 100:.0f}%")
+    inside, outside = X.scoop_mouth_coverage()
+    print(f"  mouth covered from inside (curl)       {inside * 100:.0f}%")
+    print(f"  mouth covered from outside (hood)      {outside * 100:.0f}%")
 
     if blade_hi <= X.DRUM_RADIUS:
         fail.append("lips do not stand proud of the shell -- nothing bites first")
@@ -143,11 +145,17 @@ def check_drum_envelope(m: mujoco.MjModel, fail: list[str]) -> None:
             f"lips stop at r={blade_lo:.3f}, outside the bore at {bore:.3f}: they cut "
             "but nothing lifts captured soil, so it falls straight back out"
         )
-    if X.scoop_mouth_coverage() < 0.25:
+    if inside < 0.25:
         fail.append(
-            f"the curl roofs only {X.scoop_mouth_coverage() * 100:.0f}% of its mouth, so "
-            "the pocket is open to the same hole the soil came in through and empties "
-            "through it half a turn later. Raise SCOOP_WRAP or SCOOP_DIVE"
+            f"the curl floors only {inside * 100:.0f}% of its mouth, so the pocket is open "
+            "to the same hole the soil came in through and empties through it half a turn "
+            "later. Lower SCOOP_ENTRY or raise SCOOP_WRAP"
+        )
+    if outside < 0.25:
+        fail.append(
+            f"the hood lids only {outside * 100:.0f}% of its mouth: the load can lift "
+            "straight back out radially. Raise SCOOP_HOOD, and check SCOOP_HOOD_DIR is +1 "
+            "-- at -1 the hood spirals away from the mouth instead of folding over it"
         )
 
 

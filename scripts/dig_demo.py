@@ -41,6 +41,7 @@ import luna_hifi_tasks  # noqa: F401  (registers Luna-* tasks)
 from luna_hifi_tasks.excavator.excavator import (
     ARM_LEN,
     BLADE_SWEPT_OUTER_R,
+    DIG_DRUM_SIGN,
     CHASSIS_Z,
     DRUM_RADIUS,
     DRUM_WALL_T,
@@ -84,14 +85,16 @@ def _parse(argv):
     # 1.0 is 8 rad/s, a 2.0 m/s speed at the lip, which throws soil clear of
     # the drum instead of carrying it in. 0.4 is 0.8 m/s and scoops.
     #
-    # POSITIVE is the loading direction, and that is geometry rather than a
-    # guess: a positive command turns the drum toward decreasing phi, so in the
-    # drum's frame the soil streams toward increasing phi -- the direction the
-    # curved lip is shaped to catch. Its tip leads, its concave face deflects
-    # the cut inward, and its curl roofs the mouth behind it. Negative presents
-    # the convex back of the same lip to the stream, which sheds soil outward.
-    p.add_argument("--drum", type=float, default=0.4,
-                   help="drum command once spinning; |cmd| > ~0.5 flings rather than scoops")
+    # The LOADING sign is not a free choice and not a guess: a command of sign k
+    # turns the drum toward -k*phi, so in the drum's frame the soil streams
+    # toward +k*phi, and the lip only catches a stream running from its tip
+    # toward its root. DIG_DRUM_SIGN is derived from the lip handedness for
+    # that reason, so mirroring the lip moves this default with it. Run the
+    # other sign and the convex back of the lip meets the stream, which sheds
+    # soil outward -- worth seeing once, and worth not shipping by accident.
+    p.add_argument("--drum", type=float, default=0.4 * DIG_DRUM_SIGN,
+                   help="drum command once spinning; |cmd| > ~0.5 flings rather than scoops. "
+                        f"The loading sign for this lip is {DIG_DRUM_SIGN:+.0f}")
     p.add_argument("--drive", type=float, default=0.25, help="forward command once crawling")
 
     # Soil. These are explicit flags rather than Hydra overrides on purpose.
@@ -239,7 +242,11 @@ def main(argv=None) -> int:
         rad_s = args.drum * MAX_DRUM_SPEED
         print(f"  drum: {args.drum:+.2f} -> {rad_s:+.1f} rad/s -> "
               f"lip {abs(rad_s) * BLADE_SWEPT_OUTER_R:.2f} m/s "
-              f"(at r = {BLADE_SWEPT_OUTER_R:.3f} m, the blade tip, not the shell)")
+              f"(at r = {BLADE_SWEPT_OUTER_R:.3f} m, the lip tip, not the shell)")
+        if args.drum * DIG_DRUM_SIGN < 0:
+            print(f"  * this is the NON-loading sign. The lip is shaped for "
+                  f"{DIG_DRUM_SIGN:+.0f}; at {args.drum:+.2f} its convex back meets the "
+                  "soil and sheds it outward. Expect near-zero fill.")
 
         boom, angle = boom_command_for_cut(u.cfg, args.cut)
         if args.boom is not None:
@@ -322,10 +329,10 @@ def main(argv=None) -> int:
             print("                             NOT env.soil_cohesion=1500: Hydra applies")
             print("                             that after the material is already built")
             print("    --drum 0.25              slower; lip speed throws soil clear")
-            print("    --drum -0.4              presents the convex back of the lip to the")
-            print("                             stream. This should be WORSE -- if it is")
-            print("                             better the lip is mirrored, i.e. anchored to")
-            print("                             the wrong edge of its mouth")
+            print(f"    --drum {-0.4 * DIG_DRUM_SIGN:+.1f}             presents the convex back of the lip to")
+            print("                             the stream. This should be WORSE -- if it is")
+            print("                             BETTER, SCOOP_CURL is mirrored: flip that one")
+            print("                             constant and DIG_DRUM_SIGN follows it")
         env.close()
     return 0 if ok else 1
 

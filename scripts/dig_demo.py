@@ -73,8 +73,12 @@ def _parse(argv):
     # the ground beside it. Hardcoding one is how a demo ends up waving the
     # drum in the air while the operator concludes the fill sensor is broken.
     # boom_command_for_cut() solves it from the env's own config instead.
-    p.add_argument("--cut", type=float, default=0.12,
-                   help="how deep the drum should cut, metres")
+    # Depth of the SHELL below the soil surface, in metres -- not a boom
+    # command. 0.10 rather than 0.12 because the lips stand 0.046 m proud of
+    # the shell and the small bed is only 0.16 m deep on a rigid floor, so 0.12
+    # already drags them through it. cut_diagnosis() reports this per run.
+    p.add_argument("--cut", type=float, default=0.10,
+                   help="how deep the drum SHELL should cut below the surface, metres")
     p.add_argument("--boom", type=float, default=None,
                    help="raw boom command, overriding --cut")
     # 1.0 is 8 rad/s, a 2.0 m/s speed at the lip, which throws soil clear of
@@ -132,6 +136,44 @@ def boom_command_for_cut(cfg, cut: float) -> tuple[float, float]:
     lo, hi = cfg.arm_range
     angle = min(max(angle, lo), hi)
     return 2.0 * (angle - lo) / (hi - lo) - 1.0, angle
+
+
+def cut_diagnosis(cfg, cut: float) -> list[str]:
+    """Whether the bed can actually supply the requested cut.
+
+    The bed is a finite slab on a rigid floor, so `cut` is not free: past a
+    point the drum is no longer cutting soil, it is grinding on the hidden slab
+    that holds the particles up, and the run looks like a dig that will not
+    load. The lips reach DEEPER than the shell, so they hit the floor first --
+    which is easy to miss, because the number you typed refers to the shell.
+    """
+    proud = BLADE_SWEPT_OUTER_R - DRUM_RADIUS
+    floor = cfg.bed_top - cfg.bed_depth
+    shell_z = cfg.bed_top - cut
+    lip_z = shell_z - proud
+    bore_r = DRUM_RADIUS - DRUM_WALL_T
+
+    out = []
+    if shell_z < floor:
+        out.append(f"the drum SHELL would sit {floor - shell_z:.3f} m below the bed floor "
+                   f"at z={floor:.3f}: it grinds on the slab, it does not dig")
+    elif lip_z < floor:
+        out.append(f"the LIPS would reach {floor - lip_z:.3f} m below the bed floor at "
+                   f"z={floor:.3f}. They stand {proud:.3f} m proud of the shell, so they "
+                   f"hit the slab before the shell does")
+    ceiling = cfg.bed_depth - proud
+    if cut > ceiling:
+        out.append(f"deepest cut this {cfg.bed_depth:.2f} m bed supports is "
+                   f"{ceiling:.3f} m; try --cut {max(ceiling - 0.005, 0.0):.2f}")
+
+    submerged = max(min(cut - DRUM_WALL_T, 2.0 * bore_r), 0.0)
+    out.append(f"{submerged / (2.0 * bore_r) * 100:.0f}% of the {2.0 * bore_r:.2f} m bore "
+               f"ends up below grade")
+    if submerged < bore_r:
+        out.append(f"that is under half. A {2.0 * bore_r * 0.5 + DRUM_WALL_T + proud:.2f} m "
+                   "deep bed is what it takes to bury half the bore, and no cut depth or "
+                   "cohesion value substitutes for it")
+    return out
 
 
 def _ramp(t: float, t0: float, duration: float = 1.5) -> float:
@@ -213,8 +255,10 @@ def main(argv=None) -> int:
             print(f"  to cut {args.cut:.3f} m -> arm {angle:+.3f} rad "
                   f"-> boom command {boom:+.3f}")
             print(f"  lips reach {args.cut + proud:.3f} m down, "
-                  f"bore bottom {args.cut - DRUM_WALL_T:.3f} m below grade "
-                  f"of a {2.0 * (DRUM_RADIUS - DRUM_WALL_T):.2f} m bore\n")
+                  f"bore bottom {args.cut - DRUM_WALL_T:.3f} m below grade")
+            for line in cut_diagnosis(u.cfg, args.cut):
+                print(f"  * {line}")
+            print()
 
         obs, _ = env.reset()
         action = torch.zeros(u.num_envs, 4, device=u.device)

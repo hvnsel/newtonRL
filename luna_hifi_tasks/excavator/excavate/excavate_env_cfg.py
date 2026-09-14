@@ -608,13 +608,15 @@ class ExcavatorExcavateMicroEnvCfg(ExcavatorExcavateSmallEnvCfg):
 
     voxel_size: float = 0.03
 
-    # A strip to cut, clear of the wheels at spawn and spanning the full drum
-    # width: 10,064 particles against the Small preset's 1,584, at a voxel the
-    # drum's entry channel can actually pass soil through.
-    bed_x: tuple[float, float] = (1.05, 2.05)
-    bed_y: tuple[float, float] = (-0.55, 0.55)
-    bed_depth: float = 0.24
+    # Sized under BOTH candidate limits, because which one is real is still
+    # open: 3,000 particles is below the 3,168 that ran, and cap 2 puts the
+    # grid at 8,192 cells against the 32,768 that ran. If this dies too then
+    # neither quantity is the constraint and the search moves elsewhere.
+    bed_x: tuple[float, float] = (1.20, 1.80)
+    bed_y: tuple[float, float] = (-0.45, 0.45)
+    bed_depth: float = 0.15
     spawn_on_bed: bool = False
+    grid_cap_multiplier: float = 2.0
 
     max_num_envs = 1
     episode_length_s = 30.0

@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import subprocess
 import sys
 
@@ -74,25 +75,27 @@ def child(args) -> int:
 
 
 # One knob changed per rung, against a baseline that is known to run.
+# Hold ONE of (particles, grid cap) fixed while the other moves. The previous
+# ladder could not tell them apart: active is next_pow2(cap * particles), so
+# every rung moved both together and "died above 65,536 cells" and "died above
+# ~4,100 particles" were the same sentence. These rungs break that.
+#
+# All at a 0.05 m voxel and the same bed footprint, so the only things changing
+# are the two under test.
 LADDER = [
     # label,                voxel, len,  wid, depth, cap, couple
-    #
-    # The first four are the configurations that settled it: survival tracked
-    # the sparse-grid cap exactly, at every voxel and with the collider set
-    # varied, and nothing else moved the boundary. Keep them as a regression --
-    # if "was 6882, DIED" fails again, the leaf-node ratio has regressed.
-    ("baseline",             0.05, 0.90, 1.10, 0.16,  8.0, "all"),
-    ("was 3168, OK",         0.05, 1.80, 1.10, 0.16,  8.0, "front"),
-    ("was 5544, DIED",       0.05, 1.80, 1.10, 0.32,  8.0, "front"),
-    ("was 6882, DIED",       0.03, 0.90, 1.10, 0.16,  8.0, "front"),
-    # Now the point of the exercise: a bed worth digging, at a voxel the drum
-    # can actually pass soil through.
-    ("0.03, all coupled",    0.03, 0.90, 1.10, 0.16,  8.0, "all"),
-    ("0.03, 10k",            0.03, 1.00, 1.10, 0.24,  8.0, "all"),
-    ("0.03, 20k",            0.03, 1.60, 1.30, 0.30,  8.0, "all"),
-    ("0.03, 40k",            0.03, 2.60, 1.60, 0.36,  8.0, "all"),
-    ("0.025, 40k",          0.025, 1.80, 1.30, 0.30,  8.0, "all"),
-    ("0.03, 80k",            0.03, 4.00, 1.80, 0.42,  8.0, "all"),
+    ("control 3168p cap8",   0.05, 1.80, 1.10, 0.16,  8.0, "all"),
+    # Same particles, 4x the grid. If THIS dies, the grid is the constraint.
+    ("3168p cap32",          0.05, 1.80, 1.10, 0.16, 32.0, "all"),
+    # Same particles, quarter the grid. If the control lives and this dies too,
+    # the tree floors are being starved rather than the grid overflowing.
+    ("3168p cap2",           0.05, 1.80, 1.10, 0.16,  2.0, "all"),
+    # Particles that DIED at cap 8, now with a quarter of the grid. If this
+    # lives, it was the grid all along and the fix is the cap, not the bed.
+    ("5544p cap2",           0.05, 1.80, 1.10, 0.32,  2.0, "all"),
+    # And bisect the particle boundary itself, grid held as low as it goes.
+    ("3960p cap2",           0.05, 1.80, 1.10, 0.25,  2.0, "all"),
+    ("4752p cap2",           0.05, 1.80, 1.10, 0.30,  2.0, "all"),
 ]
 
 
@@ -114,7 +117,8 @@ def main() -> int:
 
     print("Each rung is its own process: an over-capacity MPM config kills the")
     print("process rather than raising, so it cannot be caught and retried.\n")
-    print(f"{'rung':<24} {'voxel':>6} {'bed':>18} {'cap':>5} {'couple':>7}  result")
+    print(f"{'rung':<24} {'voxel':>6} {'bed':>18} {'cap':>5} {'couple':>7} "
+          f"{'parts':>8} {'cells':>10}  result")
     last_ok = None
     for label, voxel, blen, bwid, bdep, cap, couple in LADDER:
         cmd = [sys.executable, __file__, "--child", "--task", args.task,
@@ -128,13 +132,24 @@ def main() -> int:
             if line.startswith("PROBE_OK"):
                 n = " " + line.split("particles=")[1] + "p"
         bed = f"{blen:.2f}x{bwid:.2f}x{bdep:.2f}"
-        print(f"{label:<24} {voxel:6.3f} {bed:>18} {cap:5.0f} {couple:>7}  "
+        # Work out the count here too, so a rung that dies still says how big
+        # it was: the child takes the process with it and prints nothing.
+        want = 1
+        for extent in (blen, bwid, bdep):
+            want *= max(math.ceil(extent / voxel), 1)
+        cells = 1 << max(int(int(cap * want) - 1).bit_length(), 1)
+        print(f"{label:<24} {voxel:6.3f} {bed:>18} {cap:5.0f} {couple:>7} "
+              f"{want:7,d}p {cells:9,d}c  "
               f"{'OK' + n if ok else 'DIED (rc=%s)' % r.returncode}")
         if ok:
             last_ok = label
         sys.stdout.flush()
     print(f"\nlast rung that survived: {last_ok}")
-    print("The first DIED tells you which knob is the real limit. Paste the table.")
+    print("\nRead it like this:")
+    print("  3168p cap32 dies        -> the GRID is the constraint, shrink the cap")
+    print("  5544p cap2 lives        -> same conclusion, and the bed was never the problem")
+    print("  only the particle count -> it is the particles, and the cap is a red herring")
+    print("     tracks the deaths       (which is what the last ladder could not tell us)")
     return 0
 
 

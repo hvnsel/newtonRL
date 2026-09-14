@@ -20,7 +20,7 @@
 # are provably in the soil, so fill MUST rise. It is the one check that cannot
 # be made without a simulator.
 #
-# Pass --headless to run it as a plain assertion with no window.
+# Pass --no_window to run it as a plain assertion with no viewer.
 
 from __future__ import annotations
 
@@ -46,7 +46,10 @@ def _parse(argv):
     p.add_argument("--task", default=TASK, help=f"default {TASK}")
     p.add_argument("--num_envs", type=int, default=1)
     p.add_argument("--seconds", type=float, default=30.0, help="simulated seconds to run")
-    p.add_argument("--headless", action="store_true", help="no window; just run the checks")
+    # NOT --headless: AppLauncher guards that name as a SimulationApp config
+    # key (it never adds the flag, but _check_argparser_config_params rejects a
+    # parser that already carries it).
+    p.add_argument("--no_window", action="store_true", help="skip the viewer; just run the checks")
 
     # Phase boundaries, in simulated seconds.
     p.add_argument("--t_lower", type=float, default=1.5, help="start lowering the boom")
@@ -101,7 +104,7 @@ def main(argv=None) -> int:
     env_cfg, _ = resolve_task_config(args.task, "")
     env_cfg.scene.num_envs = args.num_envs
 
-    if not args.headless:
+    if not args.no_window:
         from isaaclab_visualizers.newton import NewtonGLVisualizerCfg
 
         env_cfg.sim.visualizer_cfgs = [

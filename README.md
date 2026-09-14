@@ -132,11 +132,25 @@ from the right one. Derive it from the installed package instead, which is by
 construction the same root `EXCAVATOR_USD_PATH` resolves against:
 
 ```powershell
-# isaaclab.bat prints an [INFO] line first, hence -Last 1.
-$REPO = (.\isaaclab.bat -p -c "import luna_hifi_tasks, os; print(os.path.dirname(os.path.dirname(luna_hifi_tasks.__file__)))" | Select-Object -Last 1).Trim()
+# Plain python, NOT isaaclab.bat: the launcher writes an "[INFO] Using Python:"
+# line on another stream that lands unpredictably in the captured output, so
+# any positional Select-Object on it eventually picks up the INFO line instead
+# of the answer. And find_spec LOCATES the package without executing it, so
+# this needs neither Isaac Lab nor a Kit app.
+$REPO = (python -c "import importlib.util, os; print(os.path.dirname(os.path.dirname(importlib.util.find_spec('luna_hifi_tasks').origin)))").Trim()
+
 $REPO                                    # sanity: is this the newtonRL checkout?
 git -C $REPO remote -v                   # sanity: does it point at hvnsel/newtonRL?
 Test-Path $REPO\scripts\dig_demo.py      # sanity: must be True
+```
+
+If the package is not installed, or you want to find every checkout on the
+machine rather than the installed one:
+
+```powershell
+Get-ChildItem C:\Users\hanse -Directory -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+  Where-Object { Test-Path (Join-Path $_.FullName "scripts\dig_demo.py") } |
+  Select-Object -ExpandProperty FullName
 ```
 
 Then:

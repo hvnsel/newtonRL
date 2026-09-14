@@ -76,16 +76,23 @@ def child(args) -> int:
 # One knob changed per rung, against a baseline that is known to run.
 LADDER = [
     # label,                voxel, len,  wid, depth, cap, couple
-    ("baseline (Small-ish)", 0.05, 0.90, 1.10, 0.16,  8.0, "all"),
-    ("+ front drum only",    0.05, 0.90, 1.10, 0.16,  8.0, "front"),
-    ("+ 2x particles",       0.05, 1.80, 1.10, 0.16,  8.0, "front"),
-    ("+ 4x particles",       0.05, 1.80, 1.10, 0.32,  8.0, "front"),
-    ("voxel 0.04",           0.04, 0.90, 1.10, 0.16,  8.0, "front"),
-    ("voxel 0.04, all",      0.04, 0.90, 1.10, 0.16,  8.0, "all"),
-    ("voxel 0.03",           0.03, 0.90, 1.10, 0.16,  8.0, "front"),
-    ("voxel 0.03, all",      0.03, 0.90, 1.10, 0.16,  8.0, "all"),
-    ("voxel 0.03, big cap",  0.03, 0.90, 1.10, 0.16, 24.0, "front"),
-    ("voxel 0.03, big bed",  0.03, 1.00, 1.10, 0.28,  8.0, "front"),
+    #
+    # The first four are the configurations that settled it: survival tracked
+    # the sparse-grid cap exactly, at every voxel and with the collider set
+    # varied, and nothing else moved the boundary. Keep them as a regression --
+    # if "was 6882, DIED" fails again, the leaf-node ratio has regressed.
+    ("baseline",             0.05, 0.90, 1.10, 0.16,  8.0, "all"),
+    ("was 3168, OK",         0.05, 1.80, 1.10, 0.16,  8.0, "front"),
+    ("was 5544, DIED",       0.05, 1.80, 1.10, 0.32,  8.0, "front"),
+    ("was 6882, DIED",       0.03, 0.90, 1.10, 0.16,  8.0, "front"),
+    # Now the point of the exercise: a bed worth digging, at a voxel the drum
+    # can actually pass soil through.
+    ("0.03, all coupled",    0.03, 0.90, 1.10, 0.16,  8.0, "all"),
+    ("0.03, 10k",            0.03, 1.00, 1.10, 0.24,  8.0, "all"),
+    ("0.03, 20k",            0.03, 1.60, 1.30, 0.30,  8.0, "all"),
+    ("0.03, 40k",            0.03, 2.60, 1.60, 0.36,  8.0, "all"),
+    ("0.025, 40k",          0.025, 1.80, 1.30, 0.30,  8.0, "all"),
+    ("0.03, 80k",            0.03, 4.00, 1.80, 0.42,  8.0, "all"),
 ]
 
 

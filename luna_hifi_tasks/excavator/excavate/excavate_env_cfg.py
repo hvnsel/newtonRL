@@ -241,6 +241,12 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # the drums are 38 geoms apiece.
     soil_contact_regex: str = SOIL_CONTACT_BODIES_REGEX
 
+    # Active cells per LEAF NODE, as a right shift: 7 is one leaf per 128
+    # cells, four times the theoretical minimum for 8^3 blocks. Lower it (more
+    # leaves) only if the solver runs out of tree, and expect every step to
+    # cost 512 cells of storage.
+    grid_leaf_shift: int = 7
+
 
 
     # --- regolith ---
@@ -410,19 +416,39 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
         total_particles = self.bed_particles_per_env * self.max_num_envs
         active = _next_pow2(int(self.grid_cap_multiplier * total_particles))
+        # A leaf is a BLOCK of cells, not a cell. That one fact is why this
+        # machine appeared to be capped at a few thousand particles:
+        #
+        #   max_leaf_node_count was active >> 1, so for every two active cells
+        #   we asked for one whole leaf BLOCK. At the sparse-grid block size of
+        #   8^3 = 512 cells, that is 256 times more storage than the active
+        #   cell count calls for -- 200 MB of grid for 1,584 particles, and
+        #   800 MB by 5,544, which is where a 6 GB card running Kit gives out.
+        #
+        # A ladder of single-knob trials (scripts/mpm_probe.py) put it beyond
+        # doubt: every configuration with active <= 32,768 ran and every one
+        # with active >= 65,536 died, at three different voxel sizes and with
+        # the collider set varied. Neither the voxel nor the colliders moved
+        # the boundary at all. It was always this.
+        #
+        # >> 7 keeps four times the theoretical minimum of one leaf per 512
+        # cells, and the floors stop a small bed from starving the tree.
+        leaf = max(active >> self.grid_leaf_shift, 1024)
+        lower = max(leaf >> 3, 256)
+        upper = max(lower >> 3, 64)
         print(
             f"[excavate] bed {length:.1f} x {width:.1f} x {self.bed_depth:.2f} m at "
             f"{self.voxel_size:.3f} m voxel -> {self.bed_particles_per_env} particles/env "
             f"x {self.max_num_envs} max envs = {total_particles} particles"
         )
         print(
-            f"[excavate] sparse grid active={active} leaf={active >> 1} "
-            f"lower={active >> 2} upper={active >> 4}"
+            f"[excavate] sparse grid active={active} leaf={leaf} "
+            f"lower={lower} upper={upper}"
         )
         print(
-            f"[excavate]   {self.grid_cap_multiplier:.0f} cells per particle, rounded up "
-            f"to a power of two. A cell is tens of bytes: even 2^20 of them is well "
-            f"under 100 MB, so this is a CORRECTNESS bound, not a memory budget."
+            f"[excavate]   {self.grid_cap_multiplier:.0f} cells/particle; a leaf covers "
+            f"{1 << self.grid_leaf_shift} of them and is the thing that actually costs "
+            f"memory -- roughly {leaf * 512 * 48 / 1e6:.0f} MB of grid here."
         )
 
         self.sim.physics = NewtonCfg(
@@ -468,9 +494,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             project_outside_colliders=False,
                             # upper <= lower <= leaf <= active
                             max_active_cell_count=active,
-                            max_leaf_node_count=active >> 1,
-                            max_lower_node_count=active >> 2,
-                            max_upper_node_count=active >> 4,
+                            max_leaf_node_count=leaf,
+                            max_lower_node_count=lower,
+                            max_upper_node_count=upper,
                         ),
                         bodies=[r"/World/envs/env_.*/MPMGround"],
                         all_particles=True,
@@ -572,31 +598,23 @@ class ExcavatorExcavateMicroEnvCfg(ExcavatorExcavateSmallEnvCfg):
     and soil bridges the opening and stops in the lip instead of going in. At
     0.03 it is 1.7 spacings.
 
-    Why only the front drum: on a pad ahead of the machine nothing else touches
-    soil, and each body drags all its geoms into the coupling. That is 38
-    colliders instead of 104, which matters because a finer voxel multiplies
-    the cells each collider occupies by roughly eight.
-
-    What is NOT claimed: that these numbers fit. Three theories about the limit
-    on this card -- particle count, sparse-grid capacity, collider footprint --
-    were each argued and each failed to predict a crash. This preset is sized
-    conservatively against the one configuration known to run (1,584 particles
-    at 0.05 with all 104 colliders), and scripts/mpm_probe.py walks a ladder in
-    separate processes to find the real boundary, because an over-capacity MPM
-    config kills the process rather than raising and cannot be bisected in one.
+    Why the bed is no longer tiny: it never needed to be. A ladder of
+    single-knob trials showed survival tracking the sparse-grid cap and nothing
+    else -- not the voxel, not the collider count -- and the cap was being
+    turned into 256 times its own weight in memory by a leaf-node ratio that
+    counted blocks as though they were cells. See the note by grid_leaf_shift.
+    Three rounds of shrinking beds were chasing the wrong quantity.
     """
 
     voxel_size: float = 0.03
 
-    # Under the front drum, clear of the wheels. Deliberately smaller than the
-    # Small preset's in particle terms: 0.35 x 0.80 x 0.21 at a 0.03 m voxel is
-    # 2,268 particles against that preset's 1,584.
-    bed_x: tuple[float, float] = (1.30, 1.65)
-    bed_y: tuple[float, float] = (-0.40, 0.40)
-    bed_depth: float = 0.21
+    # A strip to cut, clear of the wheels at spawn and spanning the full drum
+    # width: 10,064 particles against the Small preset's 1,584, at a voxel the
+    # drum's entry channel can actually pass soil through.
+    bed_x: tuple[float, float] = (1.05, 2.05)
+    bed_y: tuple[float, float] = (-0.55, 0.55)
+    bed_depth: float = 0.24
     spawn_on_bed: bool = False
-
-    soil_contact_regex: str = FRONT_DRUM_ONLY_REGEX
 
     max_num_envs = 1
     episode_length_s = 30.0

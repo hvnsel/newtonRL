@@ -9,6 +9,10 @@
 #
 #   isaaclab -p scripts/smoke_test.py --task Luna-Excavator-Navigate --watch --steps 3000
 #
+# Hydra overrides also work, in Hydra syntax (no leading dashes):
+#
+#   isaaclab -p scripts/smoke_test.py --task Luna-Excavator-Navigate env.scene.num_envs=4
+#
 # It builds the env exactly the way `isaaclab zero_agent` does, steps it a few
 # hundred times, and asserts the things that fail SILENTLY in training:
 #
@@ -40,6 +44,7 @@ import torch
 from isaaclab.app import add_launcher_args, launch_simulation
 
 import isaaclab_tasks  # noqa: F401
+from isaaclab_tasks.utils import setup_preset_cli
 from isaaclab_tasks.utils.hydra import resolve_task_config
 
 import luna_hifi_tasks  # noqa: F401  (registers Luna-* tasks)
@@ -59,7 +64,16 @@ def _parse(argv):
     p.add_argument("--terrain_rows", type=int, default=None, help="navigate only; rows of sub-terrain")
     p.add_argument("--terrain_cols", type=int, default=None, help="navigate only; cols of sub-terrain")
     add_launcher_args(p)
-    return p.parse_args(argv)
+    # Kitless default, matching Isaac Lab's own checkpoint-free agents.
+    p.set_defaults(device=None, visualizer=["newton_gl"])
+
+    # resolve_task_config runs Hydra, and Hydra re-reads sys.argv. So this
+    # script's own flags have to be split off first and the REMAINDER handed
+    # over, or Hydra rejects --task and friends as unrecognised. Same two lines
+    # isaaclab_rl's simple_agents uses, for the same reason.
+    args, hydra_args = setup_preset_cli(p, argv)
+    sys.argv = [sys.argv[0]] + hydra_args
+    return args
 
 
 def _check(cond: bool, msg: str, failures: list[str]) -> None:
@@ -72,6 +86,8 @@ def main(argv=None) -> int:
     args = _parse(argv)
     torch.manual_seed(0)
 
+    # sys.argv now holds only the Hydra remainder, so plain Hydra overrides
+    # work here too, e.g.  env.scene.num_envs=4  (no leading dashes).
     env_cfg, _ = resolve_task_config(args.task, "")
 
     # This script uses plain argparse, not the Hydra CLI, so `--env.*` overrides

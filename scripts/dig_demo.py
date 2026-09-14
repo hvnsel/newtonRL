@@ -10,7 +10,7 @@
 #   drive    slow forward crawl, cutting a trench
 #
 #   isaaclab -p scripts/dig_demo.py
-#   isaaclab -p scripts/dig_demo.py --boom 0.9 --drive 0.35 --seconds 40
+#   isaaclab -p scripts/dig_demo.py --cut 0.05 --drive 0.35 --seconds 40
 #
 # The point is not the motion -- it is the FILL READOUT. drum_fill_mass is the
 # entire excavation reward, and it reads particle positions through an adapter
@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 
 import gymnasium as gym
@@ -37,6 +38,12 @@ from isaaclab_tasks.utils import setup_preset_cli
 from isaaclab_tasks.utils.hydra import resolve_task_config
 
 import luna_hifi_tasks  # noqa: F401  (registers Luna-* tasks)
+from luna_hifi_tasks.excavator.excavator import (
+    ARM_LEN,
+    CHASSIS_Z,
+    DRUM_RADIUS,
+    MAST_TOP_Z,
+)
 
 TASK = "Luna-Excavator-Excavate-Small"
 
@@ -56,26 +63,17 @@ def _parse(argv):
     p.add_argument("--t_spin", type=float, default=5.0, help="start the drums")
     p.add_argument("--t_drive", type=float, default=7.0, help="start crawling forward")
 
-    # Commands, all in the env's [-1, 1] action units.
+    # How deep the drum should cut, in METRES, rather than a raw boom command.
     #
-    # boom maps to an arm angle through arm_range = (-0.55, 0.80):
-    #   angle = lo + 0.5 * (a + 1) * (hi - lo)
-    # and the arm angle decides how deep the drum sits. On this bed the wheels
-    # rest ON the 0.15 m soil surface, so the drum has a long way to reach
-    # before it touches anything:
-    #
-    #   cmd    angle      drum bottom      cuts
-    #   0.00   +0.125     z = +0.390       nothing, 0.2 m clear of the surface
-    #   0.40   +0.395     z = +0.213       nothing, still above it
-    #   0.60   +0.530     z = +0.131       0.044 m
-    #   0.78   +0.651     z = +0.063       0.112 m   <- default
-    #   0.90   +0.732     z = +0.020       through the bed into the floor slab
-    #
-    # So the useful band is narrow, roughly 0.6 to 0.85. Below it the drum
-    # waves in the air and fill stays at zero for a reason that has nothing to
-    # do with the sensor; above it the drum grinds on the hidden slab.
-    p.add_argument("--boom", type=float, default=0.78,
-                   help="boom command once lowered; useful range ~0.6-0.85 on this bed")
+    # The command that reaches a given depth is not a constant: it depends on
+    # the bed's depth and on whether the machine is standing on the soil or on
+    # the ground beside it. Hardcoding one is how a demo ends up waving the
+    # drum in the air while the operator concludes the fill sensor is broken.
+    # boom_command_for_cut() solves it from the env's own config instead.
+    p.add_argument("--cut", type=float, default=0.07,
+                   help="how deep the drum should cut, metres")
+    p.add_argument("--boom", type=float, default=None,
+                   help="raw boom command, overriding --cut")
     p.add_argument("--drum", type=float, default=1.0, help="drum command once spinning")
     p.add_argument("--drive", type=float, default=0.25, help="forward command once crawling")
 
@@ -86,6 +84,31 @@ def _parse(argv):
     args, hydra_args = setup_preset_cli(p, argv)
     sys.argv = [sys.argv[0]] + hydra_args
     return args
+
+
+def boom_command_for_cut(cfg, cut: float) -> tuple[float, float]:
+    """Boom command in [-1, 1] that puts the drum `cut` metres into the soil.
+
+    Geometry, all heights measured in world z:
+
+        wheel plane   = bed surface if the machine stands on the bed,
+                        otherwise 0 (it is beside the pile, on the ground)
+        drum bottom   = wheel plane + pivot - ARM_LEN*sin(angle) - DRUM_RADIUS
+        target        = bed surface - cut
+
+    Solve for the angle, clamp to the joint's range, then invert the linear
+    action mapping the env applies:  angle = lo + 0.5*(cmd + 1)*(hi - lo).
+    """
+    pivot = CHASSIS_Z + MAST_TOP_Z          # pivot height above the wheel plane
+    wheel_plane = cfg.bed_top if cfg.spawn_on_bed else 0.0
+    target = cfg.bed_top - cut
+
+    sin_t = (wheel_plane + pivot - DRUM_RADIUS - target) / ARM_LEN
+    angle = math.asin(min(max(sin_t, -1.0), 1.0))
+
+    lo, hi = cfg.arm_range
+    angle = min(max(angle, lo), hi)
+    return 2.0 * (angle - lo) / (hi - lo) - 1.0, angle
 
 
 def _ramp(t: float, t0: float, duration: float = 1.5) -> float:
@@ -131,7 +154,16 @@ def main(argv=None) -> int:
         print(f"\n=== bed ===\n  {u.cfg.bed_particles_per_env} particles/env, "
               f"grid {u.cfg.bed_grid_nx} x {u.cfg.bed_grid_ny}, "
               f"surface at z = {u.cfg.bed_top:.3f} m")
-        print(f"  drum capacity {u.cfg.drum_capacity_kg:.1f} kg each\n")
+        print(f"  drum capacity {u.cfg.drum_capacity_kg:.1f} kg each")
+        print(f"  machine stands {'ON the bed' if u.cfg.spawn_on_bed else 'beside the pile'}")
+
+        boom, angle = boom_command_for_cut(u.cfg, args.cut)
+        if args.boom is not None:
+            boom = args.boom
+            print(f"  boom command {boom:+.3f} (given directly, --cut ignored)\n")
+        else:
+            print(f"  to cut {args.cut:.3f} m -> arm {angle:+.3f} rad "
+                  f"-> boom command {boom:+.3f}\n")
 
         obs, _ = env.reset()
         action = torch.zeros(u.num_envs, 4, device=u.device)
@@ -155,7 +187,7 @@ def main(argv=None) -> int:
             action[:, 0] = args.drive * drive
             action[:, 1] = 0.0
             # Boom starts at the cfg's stow angle and ramps to the dig command.
-            action[:, 2] = -1.0 + (args.boom + 1.0) * lower
+            action[:, 2] = -1.0 + (boom + 1.0) * lower
             action[:, 3] = args.drum * spin
 
             obs, rew, term, trunc, _ = env.step(action)

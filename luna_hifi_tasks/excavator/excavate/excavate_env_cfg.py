@@ -201,6 +201,15 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     particles_per_cell: float = MPM_PARTICLES_PER_CELL
     spawn_on_bed: bool = True
 
+    # Sparse-grid active cells per particle. The caps are ABSOLUTE totals over
+    # all envs, and they are the thing that decides whether this fits in VRAM:
+    # too high and the allocation fails as a CUDA 700 illegal-access storm
+    # rather than a clean out-of-memory error. The tricycle's validated config
+    # ran 2,880 particles against 16,384 active cells -- a ratio of 5.7 -- so 8
+    # is slightly generous. Lower it before lowering anything else if the card
+    # will not take it.
+    grid_cap_multiplier: float = 8.0
+
     # Derived in __post_init__ from the four fields above. Declared here so the
     # env can read them off the cfg instead of importing module constants,
     # which is what makes a differently-sized bed a subclass.
@@ -297,11 +306,16 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         self.scene.excavator.init_state.pos = (0.0, 0.0, z)
 
         total_particles = self.bed_particles_per_env * self.max_num_envs
-        active = _next_pow2(3 * total_particles)
+        active = _next_pow2(int(self.grid_cap_multiplier * total_particles))
         print(
             f"[excavate] bed {length:.1f} x {width:.1f} x {self.bed_depth:.2f} m at "
             f"{self.voxel_size:.3f} m voxel -> {self.bed_particles_per_env} particles/env "
-            f"x {self.max_num_envs} max envs = {total_particles}; sparse grid active={active}"
+            f"x {self.max_num_envs} max envs = {total_particles} particles"
+        )
+        print(
+            f"[excavate] sparse grid active={active} leaf={active >> 1} "
+            f"lower={active >> 2} upper={active >> 4}   "
+            f"(tricycle ran 2880 particles / 16384 active on a 6 GB card)"
         )
 
         self.sim.physics = NewtonCfg(
@@ -386,28 +400,38 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
 @configclass
 class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
-    """A laptop-sized bed: same task, ~9.5k particles per env instead of 32k.
+    """A bed that fits a 6 GB laptop, sized against the tricycle's known-good
+    footprint rather than against what looks small on paper.
 
-    The full bed is 8 x 2 x 0.25 m, which is 32,000 particles per env and
-    sparse-grid capacities sized for a cluster card. This one is 4.4 x 1.8 x
-    0.15 m -- still long enough that both drums sit over soil and wide enough
-    to swallow the 1.0 m drum, just shallower and shorter. It exists so the
-    MPM coupling and the drum-fill sensor can be watched on a 6 GB laptop,
-    which is the one check that cannot be made without a simulator.
+    The full bed is 32,000 particles per env with grid caps in the millions --
+    a cluster config. An earlier attempt at "small" was 9,504 particles and
+    65,536 cells, which still filled a 6 GB card and failed as a CUDA 700
+    storm. This one is 1,152 particles and 16,384 active cells, which is
+    exactly the capacity the tricycle validated on that hardware.
 
-    The shallower bed changes where the drum bites. With the wheels resting on
-    the bed surface the arm has to reach a good deal further down before the
-    drum touches soil at all -- around 0.6 rad rather than the 0.2 that would
-    do it on the deep bed. scripts/dig_demo.py accounts for this.
+    Getting there means giving up something, and the honest trade is that the
+    soil is a PILE IN FRONT of the machine rather than a bed under it. The
+    machine sits on the rigid ground plane and only the FRONT drum reaches
+    soil, so this does not exercise the counter-rotating pair. That is fine for
+    what it is for: proving the particle adapter, the coupler mapping and the
+    drum-fill sensor are wired correctly. Both drums digging is a cluster
+    concern, and the full config covers it.
+
+    Because the machine is on the ground and the pile top is only 0.125 m up,
+    the arm angle that bites is quite different from the deep bed's. Let
+    dig_demo.py solve for it from a cut depth instead of hardcoding a command.
     """
 
-    bed_x: tuple[float, float] = (-2.2, 2.2)
-    bed_y: tuple[float, float] = (-0.9, 0.9)
-    bed_depth: float = 0.15
-    spawn_on_bed: bool = True
+    # A pile ahead of the machine: the front drum sweeps x in [1.25, 1.65] at
+    # the working arm angle, so the pile spans that with margin. 1.2 m wide
+    # against a 1.0 m drum.
+    bed_x: tuple[float, float] = (0.9, 2.1)
+    bed_y: tuple[float, float] = (-0.6, 0.6)
+    bed_depth: float = 0.10
+    spawn_on_bed: bool = False
 
-    max_num_envs = 2
-    episode_length_s = 20.0
+    max_num_envs = 1
+    episode_length_s = 30.0
 
     def __post_init__(self) -> None:
         self.scene.num_envs = min(self.scene.num_envs, self.max_num_envs)

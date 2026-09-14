@@ -251,8 +251,14 @@ SCOOP_GAP = 1.6 * MPM_TARGET_VOXEL      # what it takes to flow, not merely to o
 # Where each lip ends up. The channel between them is the difference, so these
 # two numbers ARE the passage width: keep them at least SCOOP_GAP apart over
 # the span where the lips overlap.
-SCOOP_OUTER_TIP_R = 0.34# outer lip tip, well proud of the 0.20 shell
-SCOOP_INNER_TIP_R = 0.04# inner lip tip, well inside the 0.17 bore
+# How far the outer lip stands proud of the shell is NOT free: it is the first
+# thing to reach the ground, and a lip buried in the floor cannot turn. At 0.34
+# it projected 0.148 m and drove 38 mm through the bed floor at a 0.10 m cut,
+# which stalled the drum outright -- not a soil-entry problem at all, the drum
+# simply could not rotate. 0.29 projects 0.098 m, so the same 0.21 m bed takes
+# a 0.112 m cut before the lip touches.
+SCOOP_OUTER_TIP_R = 0.29        # outer lip tip, proud of the 0.20 shell
+SCOOP_INNER_TIP_R = 0.04        # inner lip tip, well inside the 0.17 bore
 # How far round each lip reaches, in MOUTH WIDTHS. Above 1.0 the lip overhangs
 # past the far edge of its own gap, which is the overlap that closes the mouth
 # to anything trying to leave radially.
@@ -413,7 +419,12 @@ def _lip_profile(outer: bool) -> tuple[float, float, float, float]:
     """(span in mouth widths, root radius, tip radius, radius exponent)."""
     if outer:
         return SCOOP_OUTER_SPAN, DRUM_RADIUS, SCOOP_OUTER_TIP_R, SCOOP_OUTER_RISE
-    return SCOOP_INNER_SPAN, DRUM_RADIUS, SCOOP_INNER_TIP_R, SCOOP_INNER_DROP
+    # The inner lip is welded to the INNER face of the shell, at the bore, not
+    # to its outer skin. That is both what the part physically is and worth
+    # 30 mm of channel: the narrowest point of the channel is where the outer
+    # lip passes over this root, so every millimetre the root sits lower is a
+    # millimetre the outer lip does not have to stand proud to make up.
+    return SCOOP_INNER_SPAN, BORE_R, SCOOP_INNER_TIP_R, SCOOP_INNER_DROP
 
 
 def _lip_polar(v: float, outer: bool) -> tuple[float, float]:
@@ -533,35 +544,39 @@ def scoop_channel() -> tuple[float, float]:
     """(narrowest, widest) radial width of the channel between the two lips.
 
     This is the way in and the way out, and the only one. Measured where the
-    lips actually overlap in angle, which is the stretch that decides whether
-    soil can pass at all -- everything outside that stretch is bounded by shell
-    on one side and is not a passage.
+    lips actually overlap in angle, off _lip_polar so it cannot disagree with
+    the geometry that gets built -- an earlier version kept its own copy of the
+    radius profile and silently went on reporting the old channel after the
+    lips were re-rooted.
 
     Centreline to centreline, so the true opening is this minus 2*BLADE_HALF_T,
     and then minus a whole voxel once the MPM coupler has inflated both sides.
     """
     step = 2.0 * math.pi / DRUM_FACETS
-    # Angular offsets from the mouth CENTRE, in the CURL direction.
-    outer = [(-0.5 * step + SCOOP_OUTER_SPAN * step * (i / 200), )
-             for i in range(201)]
-    o = [(-0.5 * step + SCOOP_OUTER_SPAN * step * (i / 200),
-          DRUM_RADIUS + (SCOOP_OUTER_TIP_R - DRUM_RADIUS) * (i / 200) ** SCOOP_OUTER_RISE)
-         for i in range(201)]
-    n = [(0.5 * step - SCOOP_INNER_SPAN * step * (i / 200),
-          DRUM_RADIUS + (SCOOP_INNER_TIP_R - DRUM_RADIUS) * (i / 200) ** SCOOP_INNER_DROP)
-         for i in range(201)]
+    fine = 200
+    # Angular offset of each lip's root from the mouth centre, in the CURL
+    # direction, plus its (offset, radius) samples in that same frame.
+    def samples(outer: bool):
+        root = -0.5 * step if outer else 0.5 * step
+        out = []
+        for i in range(fine + 1):
+            d, r = _lip_polar(i / fine, outer)
+            out.append((root + SCOOP_CURL * d * SCOOP_CURL, r))
+        return out
 
+    o = [(a, r) for a, r in samples(True)]
+    n = [(a, r) for a, r in samples(False)]
     lo, hi = max(o[0][0], n[-1][0]), min(o[-1][0], n[0][0])
     if hi <= lo:
         return 0.0, 0.0                      # the lips do not overlap at all
     widths = []
-    for i in range(201):
-        a = lo + (hi - lo) * i / 200
+    for i in range(fine + 1):
+        a = lo + (hi - lo) * i / fine
         ro = next((r for aa, r in o if aa >= a), None)
         rn = next((r for aa, r in reversed(n) if aa >= a), None)
         if ro is not None and rn is not None:
             widths.append(ro - rn)
-    return min(widths), max(widths)
+    return (min(widths), max(widths)) if widths else (0.0, 0.0)
 
 
 def scoop_mouth_coverage() -> tuple[float, float]:

@@ -206,12 +206,13 @@ def cut_diagnosis(cfg, cut: float) -> list[str]:
 
     out = []
     if shell_z < floor:
-        out.append(f"the drum SHELL would sit {floor - shell_z:.3f} m below the bed floor "
+        out.append(f"!! the drum SHELL would sit {floor - shell_z:.3f} m below the bed floor "
                    f"at z={floor:.3f}: it grinds on the slab, it does not dig")
     elif lip_z < floor:
-        out.append(f"the LIPS would reach {floor - lip_z:.3f} m below the bed floor at "
-                   f"z={floor:.3f}. They stand {proud:.3f} m proud of the shell, so they "
-                   f"hit the slab before the shell does")
+        out.append(f"!! the LIPS would reach {floor - lip_z:.3f} m below the bed floor at "
+                   f"z={floor:.3f}, so they PLOUGH THE SLAB and the drum stalls -- it is "
+                   f"not that soil will not enter, it is that the drum cannot turn. They "
+                   f"stand {proud:.3f} m proud of the shell and hit before it does")
     ceiling = cfg.bed_depth - proud
     if cut > ceiling:
         out.append(f"deepest cut this {cfg.bed_depth:.2f} m bed supports is "

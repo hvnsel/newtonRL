@@ -121,7 +121,8 @@ def check_drum_envelope(m: mujoco.MjModel, fail: list[str]) -> None:
     groups: dict[str, list[float]] = {"shell": [], "lip": [], "cap": []}
     for gid in _body_geoms(m, "drum_front_body"):
         name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, gid)
-        key = "lip" if "lip" in name else "cap" if "cap" in name else "shell"
+        key = ("lip" if ("_out" in name or "_in" in name)
+               else "cap" if "cap" in name else "shell")
         pts = _corners(m, gid)
         groups[key] += list(np.hypot(pts[:, 0], pts[:, 2]))
     for key, radii in groups.items():
@@ -134,13 +135,19 @@ def check_drum_envelope(m: mujoco.MjModel, fail: list[str]) -> None:
     print(f"  lip standing proud of the shell      {blade_hi - X.DRUM_RADIUS:+.4f}")
     print(f"  vane reaching into the cavity        {bore - blade_lo:+.4f}")
 
+    narrow, wide = X.scoop_channel()
+    opening = narrow - 2.0 * X.BLADE_HALF_T
+    print(f"  channel between the two lips  {narrow:.4f} .. {wide:.4f} m centreline")
+    print(f"    -> opening {opening:.4f} m, "
+          f"{opening - X.MPM_TARGET_VOXEL:+.4f} m clear after the coupler margin")
     inside, outside = X.scoop_mouth_coverage()
     step = 360.0 / X.DRUM_FACETS
     # Degrees as well as percent: the fraction is of ONE MOUTH, so halving
     # DRUM_FACETS halves it without a single millimetre of lip moving.
-    print(f"  mouth is {step:.0f} deg wide, entry slot {X.SCOOP_ENTRY * step:.0f} deg")
-    print(f"  covered from inside (curl)   {inside * 100:3.0f}%  = {inside * step:4.1f} deg")
-    print(f"  covered from outside (hood)  {outside * 100:3.0f}%  = {outside * step:4.1f} deg")
+    print(f"  mouth is {step:.0f} deg wide, {X.SCOOP_COUNT} of them "
+          f"{360 // X.SCOOP_COUNT} deg apart")
+    print(f"  covered by the inner lip   {inside * 100:3.0f}%  = {inside * step:4.1f} deg")
+    print(f"  covered by the outer lip   {outside * 100:3.0f}%  = {outside * step:4.1f} deg")
 
     if blade_hi <= X.DRUM_RADIUS:
         fail.append("lips do not stand proud of the shell -- nothing bites first")
@@ -149,17 +156,20 @@ def check_drum_envelope(m: mujoco.MjModel, fail: list[str]) -> None:
             f"lips stop at r={blade_lo:.3f}, outside the bore at {bore:.3f}: they cut "
             "but nothing lifts captured soil, so it falls straight back out"
         )
-    if inside < 0.25:
+    if inside < 0.5:
+        fail.append(f"the inner lip covers only {inside * 100:.0f}% of its mouth: the load "
+                    "can drop straight out. Raise SCOOP_INNER_SPAN or lower SCOOP_INNER_DROP")
+    if outside < 0.5:
+        fail.append(f"the outer lip covers only {outside * 100:.0f}% of its mouth: the load "
+                    "can lift straight out. Raise SCOOP_OUTER_SPAN or lower SCOOP_OUTER_RISE")
+    if narrow <= 0.0:
+        fail.append("the two lips of a mouth never overlap in angle, so there is no channel "
+                    "between them -- just two holes. Raise SCOOP_*_SPAN")
+    elif opening < X.MPM_CLEARANCE:
         fail.append(
-            f"the curl floors only {inside * 100:.0f}% of its mouth, so the pocket is open "
-            "to the same hole the soil came in through and empties through it half a turn "
-            "later. Lower SCOOP_ENTRY or raise SCOOP_WRAP"
-        )
-    if outside < 0.25:
-        fail.append(
-            f"the hood lids only {outside * 100:.0f}% of its mouth: the load can lift "
-            "straight back out radially. Raise SCOOP_HOOD, and check SCOOP_HOOD_DIR is +1 "
-            "-- at -1 the hood spirals away from the mouth instead of folding over it"
+            f"the channel between the lips opens {opening:.4f} m, under the "
+            f"{X.MPM_CLEARANCE:.3f} m the coupler eats at a {X.MPM_TARGET_VOXEL:.3f} m "
+            "voxel. Soil cannot get in OR out"
         )
 
 
@@ -218,7 +228,8 @@ def check_cavity(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:
     # count the lip curling across its own mouth as if it closed it, which is
     # exactly backwards: that overlap is the retention, not an obstruction.
     shell = {g for g in drum_geoms
-             if "lip" not in mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g)}
+             if not any(t in mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g)
+                        for t in ("_out", "_in"))}
     mouths = runs_of([i for i, r in enumerate(sweep(shell)) if is_open(r)])
 
     print(f"  {len(mouths)} mouth(s) in the shell, expected SCOOP_COUNT = {X.SCOOP_COUNT}")
@@ -252,10 +263,11 @@ def check_cavity(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:
 
     # The lip is a chain of boxes approximating a curve. If consecutive boxes
     # stop overlapping, every joint becomes a notch soil escapes through.
-    segs = X._scoop_segments(0.0)
     worst = math.inf
-    for (x0, z0, h0, _), (x1, z1, h1, _) in zip(segs, segs[1:]):
-        worst = min(worst, (h0 + h1) - math.hypot(x1 - x0, z1 - z0))
+    for outer in (True, False):
+        segs = X._lip_segments(0.0, outer)
+        for (x0, z0, h0, _), (x1, z1, h1, _) in zip(segs, segs[1:]):
+            worst = min(worst, (h0 + h1) - math.hypot(x1 - x0, z1 - z0))
     print(f"  lip segments overlap by {worst:+.4f} m at the tightest joint")
     if worst < 0.0:
         fail.append(f"lip segments leave a {-worst:.4f} m notch at a joint")
@@ -278,13 +290,31 @@ def check_passages(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None
     print("\n=== passages into the drum ===")
     gids = _body_geoms(m, "drum_front_body")
     nm = lambda g: mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g)
-    lips = [g for g in gids if "lip" in nm(g)]
+    lips = [g for g in gids if "_out" in nm(g) or "_in" in nm(g)]
     shell = [g for g in gids if "shell" in nm(g)]
     scoop_of = lambda g: nm(g).split("_scoop")[1].split("_")[0]
 
-    pairs = [(a, b) for a in lips for b in shell]
+    # Everything soil has to get past on the way in: the channel between a
+    # mouth's own two lips, each lip against the shell, and one scoop's lip
+    # against the next scoop's. Segments of the SAME lip are skipped -- those
+    # touch by design, being a chain approximating one curve.
+    kind = lambda g: "out" if "_out" in nm(g) else "in"
+    # Segment 0 of each lip is its ROOT, welded to the shell at DRUM_RADIUS. It
+    # overlaps the plate it is rooted to on purpose -- a gap there would be a
+    # hole, not a passage -- so it is excluded, same as lip against end cap.
+    # A lip is welded to the shell plate at its own root edge and peels away
+    # from it, so the whole lip is excluded against THAT plate -- soil cannot
+    # flow between a lip and the plate it grows out of, and a gap there would
+    # be a hole rather than a passage. Every other plate is a real passage.
+    def root_plate(g: int) -> int:
+        i = int(scoop_of(g))
+        curl = int(X.SCOOP_CURL)
+        return (i - curl if kind(g) == "out" else i + curl) % X.DRUM_FACETS
+
+    plate_of = lambda g: int(nm(g).rsplit("shell", 1)[1])
+    pairs = [(a, b) for a in lips for b in shell if plate_of(b) != root_plate(a)]
     pairs += [(a, b) for i, a in enumerate(lips) for b in lips[i + 1:]
-              if scoop_of(a) != scoop_of(b)]
+              if scoop_of(a) != scoop_of(b) or kind(a) != kind(b)]
     measured = sorted((mujoco.mj_geomDistance(m, d, a, b, DISTMAX, None), nm(a), nm(b))
                       for a, b in pairs)
 

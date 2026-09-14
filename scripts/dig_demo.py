@@ -87,11 +87,13 @@ def _parse(argv):
     #
     # The LOADING sign is not a free choice and not a guess: a command of sign k
     # turns the drum toward -k*phi, so in the drum's frame the soil streams
-    # toward +k*phi, and the lip only catches a stream running from its tip
-    # toward its root. DIG_DRUM_SIGN is derived from the lip handedness for
-    # that reason, so mirroring the lip moves this default with it. Run the
-    # other sign and the convex back of the lip meets the stream, which sheds
-    # soil outward -- worth seeing once, and worth not shipping by accident.
+    # toward +k*phi, and the channel between a mouth's two lips only runs
+    # inward one way round. DIG_DRUM_SIGN is derived from the lip handedness so
+    # the two cannot drift apart.
+    #
+    # The other sign is the DUMP, not a mistake: the same channel run backwards
+    # lifts the load out past the outer lip. Worth watching once the drum has
+    # something in it.
     p.add_argument("--drum", type=float, default=0.4 * DIG_DRUM_SIGN,
                    help="drum command once spinning; |cmd| > ~0.5 flings rather than scoops. "
                         f"The loading sign for this lip is {DIG_DRUM_SIGN:+.0f}")
@@ -244,9 +246,9 @@ def main(argv=None) -> int:
               f"lip {abs(rad_s) * BLADE_SWEPT_OUTER_R:.2f} m/s "
               f"(at r = {BLADE_SWEPT_OUTER_R:.3f} m, the lip tip, not the shell)")
         if args.drum * DIG_DRUM_SIGN < 0:
-            print(f"  * this is the NON-loading sign. The lip is shaped for "
-                  f"{DIG_DRUM_SIGN:+.0f}; at {args.drum:+.2f} its convex back meets the "
-                  "soil and sheds it outward. Expect near-zero fill.")
+            print(f"  * this is the DUMP direction. Loading is {DIG_DRUM_SIGN:+.0f}; at "
+                  f"{args.drum:+.2f} the channel runs outward and the drum empties. "
+                  "Expect fill to fall, not rise.")
 
         boom, angle = boom_command_for_cut(u.cfg, args.cut)
         if args.boom is not None:
@@ -329,10 +331,10 @@ def main(argv=None) -> int:
             print("                             NOT env.soil_cohesion=1500: Hydra applies")
             print("                             that after the material is already built")
             print("    --drum 0.25              slower; lip speed throws soil clear")
-            print(f"    --drum {-0.4 * DIG_DRUM_SIGN:+.1f}             presents the convex back of the lip to")
-            print("                             the stream. This should be WORSE -- if it is")
-            print("                             BETTER, SCOOP_CURL is mirrored: flip that one")
-            print("                             constant and DIG_DRUM_SIGN follows it")
+            print(f"    --drum {-0.4 * DIG_DRUM_SIGN:+.1f}             runs the channel backwards: this is the")
+            print("                             DUMP direction and should make fill FALL. If")
+            print("                             it rises instead, SCOOP_CURL is mirrored --")
+            print("                             flip it and DIG_DRUM_SIGN follows")
         env.close()
     return 0 if ok else 1
 

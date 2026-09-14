@@ -85,11 +85,11 @@ def _parse(argv):
     # the drum instead of carrying it in. 0.4 is 0.8 m/s and scoops.
     #
     # POSITIVE is the loading direction, and that is geometry rather than a
-    # guess: a positive command turns the drum toward decreasing phi, which
-    # puts each mouth just ahead of its own blade, and the blade's raked face
-    # has an inward normal component of -sin(SCOOP_RAKE). It pushes its cut
-    # toward the axis and into that mouth. Negative runs the same face
-    # backwards and makes a soil thrower, which is worth seeing once.
+    # guess: a positive command turns the drum toward decreasing phi, so in the
+    # drum's frame the soil streams toward increasing phi -- the direction the
+    # curved lip is shaped to catch. Its tip leads, its concave face deflects
+    # the cut inward, and its curl roofs the mouth behind it. Negative presents
+    # the convex back of the same lip to the stream, which sheds soil outward.
     p.add_argument("--drum", type=float, default=0.4,
                    help="drum command once spinning; |cmd| > ~0.5 flings rather than scoops")
     p.add_argument("--drive", type=float, default=0.25, help="forward command once crawling")
@@ -322,9 +322,10 @@ def main(argv=None) -> int:
             print("                             NOT env.soil_cohesion=1500: Hydra applies")
             print("                             that after the material is already built")
             print("    --drum 0.25              slower; lip speed throws soil clear")
-            print("    --drum -0.4              runs the raked faces backwards. This should")
-            print("                             be WORSE -- if it is better, SCOOP_RAKE has")
-            print("                             the wrong sign and the drum is inside out")
+            print("    --drum -0.4              presents the convex back of the lip to the")
+            print("                             stream. This should be WORSE -- if it is")
+            print("                             better the lip is mirrored, i.e. anchored to")
+            print("                             the wrong edge of its mouth")
         env.close()
     return 0 if ok else 1
 

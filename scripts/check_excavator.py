@@ -11,8 +11,8 @@
 #
 #   mass table        a body with no inertia NaNs the solver
 #   swept envelopes   what the blades actually reach, which is NOT
-#                     BLADE_OUTER_R -- the blade is raked, so that number is a
-#                     chord
+#                     SCOOP_TIP_R -- that is a centreline control point, and a
+#                     box of finite thickness reaches past it
 #   shell continuity  adjacent plates must overlap; a gap is a hole MPM
 #                     particles leak through
 #   cavity probe      ray-cast around the drum axis to count the mouths and
@@ -118,28 +118,36 @@ def check_masses(m: mujoco.MjModel, fail: list[str]) -> None:
 def check_drum_envelope(m: mujoco.MjModel, fail: list[str]) -> None:
     """Swept radii of the drum's parts, measured off the actual geoms."""
     print("\n=== drum envelope (radius from the spin axis, metres) ===")
-    groups: dict[str, list[float]] = {"shell": [], "blade": [], "cap": []}
+    groups: dict[str, list[float]] = {"shell": [], "lip": [], "cap": []}
     for gid in _body_geoms(m, "drum_front_body"):
         name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, gid)
-        key = "blade" if "blade" in name else "cap" if "cap" in name else "shell"
+        key = "lip" if "lip" in name else "cap" if "cap" in name else "shell"
         pts = _corners(m, gid)
         groups[key] += list(np.hypot(pts[:, 0], pts[:, 2]))
     for key, radii in groups.items():
         if radii:
             print(f"  {key:6s} {min(radii):.4f} .. {max(radii):.4f}")
 
-    blade_lo, blade_hi = min(groups["blade"]), max(groups["blade"])
+    blade_lo, blade_hi = min(groups["lip"]), max(groups["lip"])
     bore = X.DRUM_RADIUS - X.DRUM_WALL_T
     print(f"  bore (fill is counted inside this)   {bore:.4f}")
     print(f"  lip standing proud of the shell      {blade_hi - X.DRUM_RADIUS:+.4f}")
     print(f"  vane reaching into the cavity        {bore - blade_lo:+.4f}")
 
+    print(f"  mouth roofed by the curl               {X.scoop_mouth_coverage() * 100:.0f}%")
+
     if blade_hi <= X.DRUM_RADIUS:
-        fail.append("blades do not stand proud of the shell -- nothing bites first")
+        fail.append("lips do not stand proud of the shell -- nothing bites first")
     if blade_lo >= bore:
         fail.append(
-            f"blades stop at r={blade_lo:.3f}, outside the bore at {bore:.3f}: they cut "
+            f"lips stop at r={blade_lo:.3f}, outside the bore at {bore:.3f}: they cut "
             "but nothing lifts captured soil, so it falls straight back out"
+        )
+    if X.scoop_mouth_coverage() < 0.25:
+        fail.append(
+            f"the curl roofs only {X.scoop_mouth_coverage() * 100:.0f}% of its mouth, so "
+            "the pocket is open to the same hole the soil came in through and empties "
+            "through it half a turn later. Raise SCOOP_WRAP or SCOOP_DIVE"
         )
 
 
@@ -195,10 +203,10 @@ def check_cavity(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:
         return dist < 0.0 or dist > X.DRUM_RADIUS + 1e-4
 
     # A mouth is a gap in the SHELL. Probing against every geom instead would
-    # count the blade standing in its own mouth as if it closed it, which it
-    # does not -- soil goes round the blade, which is the point of the rake.
+    # count the lip curling across its own mouth as if it closed it, which is
+    # exactly backwards: that overlap is the retention, not an obstruction.
     shell = {g for g in drum_geoms
-             if "blade" not in mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g)}
+             if "lip" not in mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g)}
     mouths = runs_of([i for i, r in enumerate(sweep(shell)) if is_open(r)])
 
     print(f"  {len(mouths)} mouth(s) in the shell, expected SCOOP_COUNT = {X.SCOOP_COUNT}")
@@ -219,7 +227,7 @@ def check_cavity(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:
     print(f"  open shell arc {aperture} deg of 360 ({aperture / 3.6:.0f}%) "
           f"-- DRUM_FACETS is the knob if the drum turns out to be intake-limited")
 
-    # Everything, including the blades: what is left is the clear cavity.
+    # Everything, including the lips: what is left is the clear cavity.
     profile = sweep(set(drum_geoms))
     clear = runs_of([i for i, r in enumerate(profile) if is_open(r)])
     print(f"  unobstructed line to the axis over {sum(len(r) for r in clear)} deg")
@@ -229,6 +237,16 @@ def check_cavity(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:
     if not inside:
         fail.append("nothing reaches inside the shell: the drum has no lifters, "
                     "so captured soil falls out the next time a mouth swings low")
+
+    # The lip is a chain of boxes approximating a curve. If consecutive boxes
+    # stop overlapping, every joint becomes a notch soil escapes through.
+    segs = X._scoop_segments(0.0)
+    worst = math.inf
+    for (x0, z0, h0, _), (x1, z1, h1, _) in zip(segs, segs[1:]):
+        worst = min(worst, (h0 + h1) - math.hypot(x1 - x0, z1 - z0))
+    print(f"  lip segments overlap by {worst:+.4f} m at the tightest joint")
+    if worst < 0.0:
+        fail.append(f"lip segments leave a {-worst:.4f} m notch at a joint")
 
 
 def check_clearance(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:

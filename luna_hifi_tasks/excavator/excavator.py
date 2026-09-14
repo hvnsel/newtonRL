@@ -48,20 +48,23 @@
 #   in traction.
 # * The drums are hollow: a ring of box segments closed at both ends by cap
 #   discs, with SCOOP_COUNT of the segments left open as scoop mouths. At each
-#   mouth stands a raked blade that runs from well OUTSIDE the shell to well
-#   INSIDE it, so the one part does two jobs. Outside, it is a lip: it bites
-#   before the shell does and its raked face pushes the cut inwards, through
-#   the mouth trailing just ahead of it. Inside, it is a lifter: it sweeps the
-#   cavity floor and carries captured soil up the ascending side, which is the
-#   only reason the drum holds anything at all.
+#   mouth stands a thin CURVED lip. It starts proud of the shell at the mouth's
+#   leading edge, dives inward, and curls back ACROSS the mouth from inside,
+#   carrying on under the shell past the far edge.
 #
-#   That inside half is the whole design. A drum whose blades stop at the shell
-#   is an open can: soil enters at the bottom and falls straight back out the
-#   next time a mouth swings low, and the machine kicks up a lot of regolith
-#   while carrying none. SCOOP_COUNT is 2, at 180 degrees, for the same reason
-#   -- every extra mouth is another chance per revolution for the load to spill,
-#   and two lifters split the cavity into two pockets that can only empty
-#   through their own mouth.
+#   Read it in the drum's frame and the shape explains itself. A positive joint
+#   velocity turns the drum toward decreasing phi, so relative to the drum the
+#   soil streams the other way. The lip is a scoop held into that stream: the
+#   tip cuts, the concave face deflects the cut toward the axis, and the curl
+#   roofs the mouth so what went in is now under a lid. The only way back out
+#   is up the ramp, against the stream.
+#
+#   That overlap is the whole design. A straight blade cuts and lifts, but the
+#   pocket behind it is open to the same hole the soil came through, and half a
+#   turn later it falls back out -- the machine kicks up a lot of regolith and
+#   carries none. SCOOP_COUNT is 2, at 180 degrees, for the same reason: every
+#   extra mouth is another hole, and two lips split the cavity into two pockets
+#   that can only empty through their own roofed slot.
 # * The chassis outweighs both drums roughly 6.6:1 empty. A FULL pair is a
 #   different matter: the bore holds ~155 kg of regolith per drum, so a loaded
 #   machine carries around 63% of its own 492 kg dry mass out on the arms. Arm
@@ -180,33 +183,54 @@ DRUM_FACETS = 12                # angular slots around the circumference
 # bottom of the drum. Two is the fewest that still balances -- one would put
 # the whole cut on one side and shake the arm at drum frequency.
 SCOOP_COUNT = 2
-# Blade rake off radial. The sign matters and is easy to get backwards: the
-# leading face's normal has a radial component of -sin(SCOOP_RAKE), i.e. it
-# points INWARD, so the face pushes its cut toward the axis and into the mouth
-# rather than flinging it off the rim. Rake the other way and the drum becomes
-# a very effective soil thrower.
-SCOOP_RAKE = 0.50
-# Measured ALONG the blade, not radially -- the blade is raked, so these are
-# chords. _blade_reach() converts them to the radii the blade actually sweeps,
-# which is what the yoke has to clear and what decides whether the drum fills:
+
+# --- the scoop lip ---
 #
-#     0.020 .. 0.250 along the blade  ->  0.053 .. 0.246 swept
+# A CURVE, not a flat plate. Work in the drum's own frame and the reason is
+# obvious: a positive joint velocity turns the drum toward DECREASING phi, so
+# in the drum's frame the soil streams the other way, toward increasing phi.
+# The lip is shaped for that stream, like a scoop held into a current.
 #
-# so the lip stands 0.046 m proud of the shell (it was 0.025) and the lifter
-# reaches 0.117 m inside the 0.170 m bore (it was 0.039). The inner number is
-# the one that changed the behaviour. Pulling BLADE_INNER_R back up towards the
-# shell turns the lifters into mere lips and the drum stops holding soil.
-BLADE_INNER_R = 0.02
-BLADE_OUTER_R = 0.25
-BLADE_HALF_T = 0.012
+#   * the TIP sits at the mouth's leading edge, at the lowest angle of the
+#     whole blade, so it is the first thing to meet soil and it stands proud of
+#     the shell to bite before the shell rubs
+#   * from there the lip dives inward and curls BACK over the mouth. Soil
+#     running up the concave face is deflected toward the axis and through the
+#     slot the curl leaves open at the far side
+#   * past the mouth the curl keeps going, under the shell, so the pocket it
+#     encloses opens only through that slot -- and the slot faces INTO the
+#     stream, which is the direction that pushes material in rather than out
+#
+# That overlap is the whole point. A straight blade cuts and lifts, but the
+# cavity behind it is open to the same mouth the soil came through, and on the
+# next half turn it falls back out. Roofing the mouth is what makes it a trap
+# instead of a hole.
+SCOOP_TIP_R = 0.245             # cutting tip; the shell is at DRUM_RADIUS = 0.20
+SCOOP_ROOT_R = 0.075            # inner end of the curl
+SCOOP_WRAP = 1.7                # how far the lip curls, in MOUTH WIDTHS
+# Radius falls as (1 - s)**SCOOP_DIVE along the curl. Above 1 the lip dives
+# inside the shell early and spends most of its length as roof; at 1 it is a
+# straight ramp that is still crossing the shell line halfway over the mouth
+# and roofs almost nothing.
+SCOOP_DIVE = 2.0
+SCOOP_SEGMENTS = 5              # straight boxes approximating the curve
+# Thin. A lip is a cutting edge, not structure, and a thick one wastes the
+# mouth it stands in. Note that at the 5 cm MPM voxel this is nearly invisible
+# to the soil: the coupler inflates every collider by half a voxel per side, so
+# 12 mm and 24 mm of plate both read as roughly 6 cm to the particles. It
+# starts to matter at the 2.5-3 cm voxel the drum wants anyway.
+BLADE_HALF_T = 0.006
 CAP_HALF_T = 0.012
 
 # MPM note: DRUM_WALL_T is 3 cm against the tricycle's 5 cm voxel. The coupler
 # inflates colliders by MPM_COLLIDER_MARGIN (half a voxel each side), so a 3 cm
-# wall reads as ~8 cm to the solver and particles will not tunnel. The lifters
-# are 2 * BLADE_HALF_T = 2.4 cm, which the same margin carries, but the pocket
-# between a lifter and the shell is only about 10 cm deep -- two cells at a
-# 5 cm voxel. That is too coarse to resolve the thing the drum is FOR. Expect
+# wall reads as ~8 cm to the solver and particles will not tunnel. The lips are
+# 2 * BLADE_HALF_T = 1.2 cm, which the same margin carries -- and which is also
+# why making them thinner buys nothing until the voxel drops. The pocket under
+# the curl is about 10 cm deep, two cells at a 5 cm voxel, and the slot into it
+# is narrower still. That is too coarse to resolve the thing the drum is FOR,
+# and it is the reason to expect this shape to read better at 0.03 than at
+# 0.05. Expect
 # to run the drum region at a 2.5-3 cm voxel, and budget the particle count
 # accordingly. This is the single place in the machine where MPM resolution
 # actually binds.
@@ -223,9 +247,10 @@ ARM_CROSS_MASS = 3.5
 ARM_LEG_MASS = 4.0
 DRUM_SEGMENT_MASS = 2.2         # each shell segment
 DRUM_CAP_MASS = 1.2             # each end cap
-# Each blade, at the same plate density as the short lips it replaces: they are
-# 0.23 m long now against 0.095 m, so 1.20 kg scales to 2.9.
-DRUM_BLADE_MASS = 2.90
+# Total for one scoop lip, split between its segments by arc length. Half the
+# old figure because the plate is half as thick over a similar developed
+# length.
+DRUM_BLADE_MASS = 1.50
 
 # --- friction ---
 FRAME_FRICTION = "0.8 0.005 0.0001"
@@ -320,36 +345,107 @@ def _radial_blade(
     )
 
 
-def _blade_reach(
-    inner_r: float, outer_r: float, rake: float, half_t: float
-) -> tuple[float, float]:
-    """The radii a raked blade of finite thickness actually sweeps.
+def _scoop_curve(phi_lead: float) -> list[tuple[float, float]]:
+    """(x, z) control points of one scoop lip, tip first.
 
-    inner_r and outer_r are measured ALONG the blade, which is tilted `rake`
-    off radial, so they are chords rather than radii -- and the blade is a box,
-    so its corners reach further out and closer in than its centreline does.
-    Taking the four corners of the section:
-
-        radial     = mid_r +/- half*cos(rake) +/- half_t*sin(rake)
-        tangential =       -/+ half*sin(rake) +/- half_t*cos(rake)
-
-    Worth having as a function rather than a comment: the swept OUTER radius is
-    what the yoke has to clear, and deriving the yoke from DRUM_RADIUS instead
-    put the cross piece 3.5 cm inside the blades. Nothing reported that --
-    MuJoCo never tests a body against its own parent, and Isaac articulations
-    default to self_collision=False, so both simulators would have run the
-    machine happily with an arm through its own drum.
+    `phi_lead` is the LEADING edge of its mouth -- leading under a positive
+    joint velocity, which turns the drum toward decreasing phi. The tip
+    therefore sits at the blade's lowest angle and meets soil first, and the
+    curl runs back over the mouth behind it.
     """
-    mid_r = 0.5 * (inner_r + outer_r)
-    half = 0.5 * (outer_r - inner_r)
-    c, s = math.cos(rake), math.sin(rake)
-    radii = [
-        math.hypot(mid_r + sl * half * c + st * half_t * s,
-                   -sl * half * s + st * half_t * c)
-        for sl in (-1.0, 1.0)
-        for st in (-1.0, 1.0)
-    ]
+    step = 2.0 * math.pi / DRUM_FACETS
+    pts = []
+    for i in range(SCOOP_SEGMENTS + 1):
+        s = i / SCOOP_SEGMENTS
+        r = SCOOP_ROOT_R + (SCOOP_TIP_R - SCOOP_ROOT_R) * (1.0 - s) ** SCOOP_DIVE
+        a = phi_lead + SCOOP_WRAP * step * s
+        pts.append((r * math.cos(a), r * math.sin(a)))
+    return pts
+
+
+def _scoop_segments(phi_lead: float) -> list[tuple[float, float, float, float]]:
+    """The curve as boxes: (centre_x, centre_z, half_length, euler_y) each.
+
+    One function, used both to write the XML and to measure what the lip
+    sweeps, because those two answers drifting apart is how the yoke ended up
+    inside the blades last time.
+
+    Segments are lengthened by BLADE_HALF_T at each end so consecutive boxes
+    overlap at the corners rather than butting. A curve built from butted
+    chords leaves a notch at every joint on the convex side, and a notch in a
+    scoop lip is a hole soil escapes through.
+    """
+    pts = _scoop_curve(phi_lead)
+    out = []
+    for (x0, z0), (x1, z1) in zip(pts, pts[1:]):
+        dx, dz = x1 - x0, z1 - z0
+        length = math.hypot(dx, dz)
+        out.append((
+            0.5 * (x0 + x1),
+            0.5 * (z0 + z1),
+            0.5 * length + BLADE_HALF_T,
+            math.atan2(-dz, dx),      # local x -> (cos b, 0, -sin b)
+        ))
+    return out
+
+
+def _scoop_swept_radii() -> tuple[float, float]:
+    """Radii the lip actually sweeps, off the box corners.
+
+    Not SCOOP_TIP_R and SCOOP_ROOT_R: those are centreline control points, and
+    a box of finite thickness reaches past them at both ends. The outer figure
+    is what the yoke has to clear.
+    """
+    radii = []
+    for cx, cz, half, b in _scoop_segments(0.0):
+        ux, uz = math.cos(b), -math.sin(b)          # along the segment
+        nx, nz = math.sin(b), math.cos(b)           # across it
+        radii += [
+            math.hypot(cx + sl * half * ux + st * BLADE_HALF_T * nx,
+                       cz + sl * half * uz + st * BLADE_HALF_T * nz)
+            for sl in (-1.0, 1.0)
+            for st in (-1.0, 1.0)
+        ]
     return min(radii), max(radii)
+
+
+def _scoop_xml(prefix: str, phi_lead: float) -> list[str]:
+    """One scoop lip as a chain of thin boxes."""
+    segs = _scoop_segments(phi_lead)
+    total = sum(half for _, _, half, _ in segs)
+    return [
+        f'<geom name="{prefix}_lip{i}" type="box" '
+        f'pos="{cx:.5f} 0 {cz:.5f}" euler="0 {b:.6f} 0" '
+        f'size="{half:.5f} {DRUM_HALF_LEN:.5f} {BLADE_HALF_T:.5f}" '
+        f'mass="{DRUM_BLADE_MASS * half / total:.4f}" '
+        f'rgba="{BLADE_RGBA}" friction="{DRUM_FRICTION}"/>'
+        for i, (cx, cz, half, b) in enumerate(segs)
+    ]
+
+
+def scoop_mouth_coverage() -> float:
+    """Fraction of a mouth's angular span that the lip roofs from inside.
+
+    The lip only retains what it covers: where it is still outside the shell it
+    is a cutting edge, and where it has not reached yet the mouth is simply
+    open. Sampled off the curve rather than derived, because SCOOP_DIVE makes
+    the closed form unpleasant and this is the number that says whether the
+    shape does its job.
+    """
+    step = 2.0 * math.pi / DRUM_FACETS
+    bore = DRUM_RADIUS - DRUM_WALL_T
+    pts = []
+    fine, roofed = 400, 0
+    for i in range(fine + 1):
+        s = i / fine
+        r = SCOOP_ROOT_R + (SCOOP_TIP_R - SCOOP_ROOT_R) * (1.0 - s) ** SCOOP_DIVE
+        pts.append((SCOOP_WRAP * step * s, r))
+    for i in range(fine + 1):
+        a = step * i / fine                      # across one mouth, from phi_lead
+        r = next((rr for aa, rr in pts if aa >= a), None)
+        if r is not None and r < bore:
+            roofed += 1
+    return roofed / (fine + 1)
 
 
 def _wheel(name: str, x: float, y: float, joint: str) -> str:
@@ -391,11 +487,10 @@ def _drum(prefix: str, joint: str) -> str:
     The mouths are spread as evenly as SCOOP_COUNT divides DRUM_FACETS allows;
     at SCOOP_COUNT = 2 that is slots 0 and 6, exactly opposite.
 
-    Each open slot gets one blade, spanning the shell from outside to well
-    inside. A positive joint velocity is the digging direction and rotates the
-    drum toward DECREASING phi, so the blade at phi + step/2 sits just BEHIND
-    its own mouth: it sweeps soil forward and, because of the rake, inward,
-    into the opening travelling directly ahead of it.
+    Each open slot gets one curved lip anchored at the mouth's LEADING edge,
+    phi - step/2, leading under a positive joint velocity (which turns the drum
+    toward decreasing phi). The lip cuts there and curls back across the mouth,
+    roofing it from inside; see the scoop block in the dimensions section.
     """
     step = 2.0 * math.pi / DRUM_FACETS
     mid_r = DRUM_RADIUS - 0.5 * DRUM_WALL_T
@@ -409,22 +504,9 @@ def _drum(prefix: str, joint: str) -> str:
     for i in range(DRUM_FACETS):
         phi = i * step
         if i in open_slots:
-            # Mouth. Blade sits on the leading edge, i.e. the far side in the
-            # direction of increasing phi.
-            parts.append(
-                _radial_blade(
-                    f"{prefix}_blade{i}",
-                    phi + 0.5 * step,
-                    BLADE_INNER_R,
-                    BLADE_OUTER_R,
-                    DRUM_HALF_LEN,
-                    BLADE_HALF_T,
-                    SCOOP_RAKE,
-                    DRUM_BLADE_MASS,
-                    BLADE_RGBA,
-                    DRUM_FRICTION,
-                )
-            )
+            # Mouth: no shell plate, and a curved lip anchored at its leading
+            # edge that curls back over the opening.
+            parts += _scoop_xml(f"{prefix}_scoop{i}", phi - 0.5 * step)
         else:
             parts.append(
                 _tangential_plate(
@@ -458,13 +540,11 @@ def _drum(prefix: str, joint: str) -> str:
 # Derived yoke geometry. Needs the drum dimensions, so it lives below them.
 YOKE_Y = DRUM_HALF_LEN + 2.0 * CAP_HALF_T + YOKE_CLEARANCE + YOKE_HALF_W
 
-# What the blades actually sweep, as opposed to what BLADE_INNER_R and
-# BLADE_OUTER_R say. Exported because both numbers are load-bearing elsewhere:
-# the outer one sets where the yoke may sit, and the inner one is how far the
-# lifters reach into the bore, which is the drum's whole retention mechanism.
-BLADE_SWEPT_INNER_R, BLADE_SWEPT_OUTER_R = _blade_reach(
-    BLADE_INNER_R, BLADE_OUTER_R, SCOOP_RAKE, BLADE_HALF_T
-)
+# What the lips actually sweep, as opposed to what SCOOP_TIP_R and
+# SCOOP_ROOT_R say. Both numbers are load-bearing elsewhere: the outer one sets
+# where the yoke may sit, and the inner one is how far the curl reaches into
+# the bore.
+BLADE_SWEPT_INNER_R, BLADE_SWEPT_OUTER_R = _scoop_swept_radii()
 
 # The cross piece spans the full width of the machine at the drum's height, so
 # it has to clear the circle the BLADES sweep, not the shell's. Deriving it
@@ -646,6 +726,10 @@ def reach() -> dict[str, float]:
         "drum_blade_swept_diameter": 2.0 * BLADE_SWEPT_INNER_R,
         "drum_lip_proud_of_shell": BLADE_SWEPT_OUTER_R - DRUM_RADIUS,
         "drum_lifter_into_bore": (DRUM_RADIUS - DRUM_WALL_T) - BLADE_SWEPT_INNER_R,
+        # How much of the mouth the curl roofs from inside. The lip only
+        # retains what it covers, so this is the number that says whether the
+        # drum is a trap or a hole.
+        "drum_mouth_roofed_fraction": scoop_mouth_coverage(),
         "drum_bore_volume": math.pi * (DRUM_RADIUS - DRUM_WALL_T) ** 2 * (2.0 * DRUM_HALF_LEN),
         # Drum width against the AB/CD track. Deliberately just under 1.0.
         "drum_outer_width": 2.0 * (DRUM_HALF_LEN + 2.0 * CAP_HALF_T),

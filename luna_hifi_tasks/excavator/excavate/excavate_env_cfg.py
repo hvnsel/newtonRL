@@ -210,6 +210,24 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # will not take it.
     grid_cap_multiplier: float = 8.0
 
+    # --- regolith ---
+    #
+    # The yield surface in this MPM formulation is
+    #     tau_max(p) = yield_stress + friction * (p - p_min)
+    # so friction is ~tan(phi) and soil_cohesion IS the cohesion, in Pa. Old
+    # Drucker-Prager alpha numbers do not port across.
+    #
+    # Cohesion is the knob that decides whether the drum CAPTURES soil or just
+    # sprays it. At zero the regolith is dry sand: the blades sweep r = 0.13 to
+    # 0.225 m while fill is counted inside r = 0.17, so anything in that band
+    # gets struck by a blade every rotation and thrown straight back out. Give
+    # it a few hundred Pa and the cut material travels as a clod that rides
+    # into the bore instead. Lunar simulants sit around 0.1-1 kPa.
+    soil_density: float = 1800.0
+    soil_friction: float = 0.84              # tan(40 deg)
+    soil_cohesion: float = 0.0               # yield_stress, Pa
+    soil_yield_pressure: float = 1.0e12      # packed ground, not a sandbox
+
     # Derived in __post_init__ from the four fields above. Declared here so the
     # env can read them off the cfg instead of importing module constants,
     # which is what makes a differently-sized bed a subclass.
@@ -286,9 +304,14 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         self.bed_particles_per_env = particles_per_env(
             lower, upper, self.voxel_size, self.particles_per_cell
         )
-        self.drum_capacity_kg = BORE_VOLUME * self.scene.soil.spawn.material.density
-
         spawn = self.scene.soil.spawn
+        mat = spawn.material
+        mat.density = self.soil_density
+        mat.friction = self.soil_friction
+        mat.yield_stress = self.soil_cohesion
+        mat.yield_pressure = self.soil_yield_pressure
+        self.drum_capacity_kg = BORE_VOLUME * self.soil_density
+
         spawn.lower = lower
         spawn.upper = upper
         spawn.voxel_size = self.voxel_size
@@ -422,13 +445,20 @@ class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
     dig_demo.py solve for it from a cut depth instead of hardcoding a command.
     """
 
-    # A pile ahead of the machine: the front drum sweeps x in [1.25, 1.65] at
-    # the working arm angle, so the pile spans that with margin. 1.2 m wide
-    # against a 1.0 m drum.
-    bed_x: tuple[float, float] = (0.9, 2.1)
-    bed_y: tuple[float, float] = (-0.6, 0.6)
-    bed_depth: float = 0.10
+    # A tight mound ahead of the machine rather than a thin sheet. Depth is
+    # what matters: at 0.10 m only 0.04 m of the drum bore ever sits inside the
+    # soil column, which is a scratch, not a cut. At 0.16 m it is 0.09 m, and
+    # the footprint shrinks to keep the particle count flat.
+    bed_x: tuple[float, float] = (1.1, 2.0)
+    bed_y: tuple[float, float] = (-0.55, 0.55)
+    bed_depth: float = 0.16
     spawn_on_bed: bool = False
+
+    # Cohesive enough that a cut clod survives the trip into the bore. This is
+    # the first thing to sweep if fill stays near zero while particles visibly
+    # move: 0 sprays, ~800 holds together, too much and the drum cannot cut in
+    # at all.
+    soil_cohesion: float = 800.0
 
     max_num_envs = 1
     episode_length_s = 30.0

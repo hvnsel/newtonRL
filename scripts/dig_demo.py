@@ -70,11 +70,16 @@ def _parse(argv):
     # the ground beside it. Hardcoding one is how a demo ends up waving the
     # drum in the air while the operator concludes the fill sensor is broken.
     # boom_command_for_cut() solves it from the env's own config instead.
-    p.add_argument("--cut", type=float, default=0.07,
+    p.add_argument("--cut", type=float, default=0.12,
                    help="how deep the drum should cut, metres")
     p.add_argument("--boom", type=float, default=None,
                    help="raw boom command, overriding --cut")
-    p.add_argument("--drum", type=float, default=1.0, help="drum command once spinning")
+    # 1.0 is 8 rad/s, a 1.6 m/s tip speed, which throws soil clear of the drum
+    # instead of carrying it in. 0.4 is 0.8 m/s and scoops. Try a NEGATIVE
+    # value too: which rotation loads the drum depends on the blade rake, and
+    # flipping the sign is the cheapest experiment available here.
+    p.add_argument("--drum", type=float, default=0.4,
+                   help="drum command once spinning; |cmd| > ~0.6 flings rather than scoops")
     p.add_argument("--drive", type=float, default=0.25, help="forward command once crawling")
 
     add_launcher_args(p)
@@ -156,6 +161,10 @@ def main(argv=None) -> int:
               f"surface at z = {u.cfg.bed_top:.3f} m")
         print(f"  drum capacity {u.cfg.drum_capacity_kg:.1f} kg each")
         print(f"  machine stands {'ON the bed' if u.cfg.spawn_on_bed else 'beside the pile'}")
+        print(f"  soil: density {u.cfg.soil_density:.0f} kg/m3, friction {u.cfg.soil_friction:.2f}, "
+              f"cohesion {u.cfg.soil_cohesion:.0f} Pa")
+        print(f"  drum: {args.drum:+.2f} -> {args.drum * 8.0:+.1f} rad/s -> "
+              f"tip {abs(args.drum) * 8.0 * 0.20:.2f} m/s")
 
         boom, angle = boom_command_for_cut(u.cfg, args.cut)
         if args.boom is not None:
@@ -217,6 +226,12 @@ def main(argv=None) -> int:
             print("   3. the coupler proxy body regex matched nothing, so the drums")
             print("      pass through the particles without disturbing them. Compare")
             print("      the body names above with SOIL_CONTACT_BODIES_REGEX.")
+            print("\n  If particles VISIBLY move but fill stays near zero, none of the")
+            print("  above is wrong -- the drum is failing to carry soil. In order:")
+            print("    env.soil_cohesion=1500   cut material travels as a clod")
+            print("    --drum -0.4              the other rotation may be the loading one")
+            print("    --cut 0.15               get more of the bore under the surface")
+            print("    --drum 0.25              slower still; tip speed throws soil clear")
         env.close()
     return 0 if ok else 1
 

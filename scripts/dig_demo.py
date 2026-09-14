@@ -90,6 +90,16 @@ def _parse(argv):
                    help="drum command once spinning; |cmd| > ~0.5 flings rather than scoops")
     p.add_argument("--drive", type=float, default=0.25, help="forward command once crawling")
 
+    # Soil. These are explicit flags rather than Hydra overrides on purpose.
+    # `env.soil_cohesion=1500` sets the cfg FIELD, but the MPM material was
+    # already built from it in __post_init__, which Hydra runs after -- so the
+    # override changes the number the script prints and not the soil it digs.
+    # These set the field and then re-run apply_soil_material().
+    p.add_argument("--cohesion", type=float, default=None,
+                   help="soil yield_stress in Pa; 0 sprays, ~800 holds a cut together")
+    p.add_argument("--friction", type=float, default=None, help="soil friction, ~tan(phi)")
+    p.add_argument("--density", type=float, default=None, help="soil density, kg/m3")
+
     add_launcher_args(p)
     p.set_defaults(device=None, visualizer=["newton_gl"])
     # resolve_task_config runs Hydra, which re-reads sys.argv, so this script's
@@ -140,6 +150,17 @@ def main(argv=None) -> int:
     env_cfg, _ = resolve_task_config(args.task, "")
     env_cfg.scene.num_envs = args.num_envs
 
+    for flag, field in (("cohesion", "soil_cohesion"),
+                        ("friction", "soil_friction"),
+                        ("density", "soil_density")):
+        value = getattr(args, flag)
+        if value is not None:
+            setattr(env_cfg, field, value)
+    # Unconditional: this both applies the flags above and repairs any Hydra
+    # override that landed on a soil_* field after __post_init__ had already
+    # built the material from it. The env raises if the two still disagree.
+    env_cfg.apply_soil_material()
+
     if not args.no_window:
         from isaaclab_visualizers.newton import NewtonGLVisualizerCfg
 
@@ -169,8 +190,10 @@ def main(argv=None) -> int:
               f"surface at z = {u.cfg.bed_top:.3f} m")
         print(f"  drum capacity {u.cfg.drum_capacity_kg:.1f} kg each")
         print(f"  machine stands {'ON the bed' if u.cfg.spawn_on_bed else 'beside the pile'}")
-        print(f"  soil: density {u.cfg.soil_density:.0f} kg/m3, friction {u.cfg.soil_friction:.2f}, "
-              f"cohesion {u.cfg.soil_cohesion:.0f} Pa")
+        # Off the material the solver was handed, not off the cfg fields.
+        mat = u.cfg.scene.soil.spawn.material
+        print(f"  soil: density {mat.density:.0f} kg/m3, friction {mat.friction:.2f}, "
+              f"cohesion {mat.yield_stress:.0f} Pa")
         rad_s = args.drum * MAX_DRUM_SPEED
         print(f"  drum: {args.drum:+.2f} -> {rad_s:+.1f} rad/s -> "
               f"lip {abs(rad_s) * BLADE_SWEPT_OUTER_R:.2f} m/s "
@@ -250,8 +273,10 @@ def main(argv=None) -> int:
             print("    --cut 0.18               get more of the bore under the surface;")
             print("                             at 0.12 only ~0.09 m of a 0.34 m bore is")
             print("                             below grade, so most of it never sees soil")
-            print("    env.soil_cohesion=1500   cut material travels as a clod instead of")
-            print("                             shearing off the lip and flowing back out")
+            print("    --cohesion 1500          cut material travels as a clod instead of")
+            print("                             shearing off the lip and flowing back out.")
+            print("                             NOT env.soil_cohesion=1500: Hydra applies")
+            print("                             that after the material is already built")
             print("    --drum 0.25              slower; lip speed throws soil clear")
             print("    --drum -0.4              runs the raked faces backwards. This should")
             print("                             be WORSE -- if it is better, SCOOP_RAKE has")

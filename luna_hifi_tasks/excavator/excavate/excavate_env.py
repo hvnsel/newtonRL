@@ -62,12 +62,37 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             ["fill", "success", "stall", "drift", "upright", "idle_drum", "energy", "action_rate", "time"],
             E, dev,
         )
+        # By the time this runs, InteractiveScene has already spawned the soil
+        # from cfg.scene.soil.spawn.material. If a soil_* field was changed
+        # after __post_init__ -- which is exactly what a Hydra override does,
+        # and what `env.soil_cohesion=1500` on the command line looks like --
+        # that change never reached the material, and the run would use the old
+        # soil while reporting the new number. Silent, and indistinguishable
+        # from cohesion simply not mattering.
+        mismatch = cfg.soil_material_mismatch()
+        if mismatch is not None:
+            raise RuntimeError(
+                f"soil cfg fields do not match the spawned MPM material ({mismatch}).\n"
+                "The material is built in ExcavatorExcavateEnvCfg.__post_init__ and Hydra "
+                "applies overrides after it, so anything setting a soil_* field late must "
+                "call cfg.apply_soil_material() before gym.make(). scripts/dig_demo.py and "
+                "scripts/smoke_test.py do this; a custom launcher has to as well."
+            )
+
         print(DIG_OBS.describe())
         print(DIG_CRITIC.describe())
+        mat = cfg.scene.soil.spawn.material
         print(
             f"[excavate] particle mass {self._particle_mass:.4f} kg, "
             f"drum capacity {cfg.drum_capacity_kg:.1f} kg, "
             f"bed grid {cfg.bed_grid_nx} x {cfg.bed_grid_ny} @ {cfg.voxel_size:.3f} m"
+        )
+        # Read back off the material the solver got, not off the cfg fields --
+        # the whole point is that those two can disagree.
+        print(
+            f"[excavate] soil AS SPAWNED: density {mat.density:.0f} kg/m3, "
+            f"friction {mat.friction:.2f}, cohesion (yield_stress) {mat.yield_stress:.0f} Pa, "
+            f"yield_pressure {mat.yield_pressure:.3g} Pa"
         )
 
     # ------------------------------------------------------------------

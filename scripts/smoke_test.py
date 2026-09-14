@@ -61,6 +61,9 @@ def _parse(argv):
         help="Open a Newton GL window. Implies one environment and the smallest "
              "terrain, unless --num_envs / --terrain_rows / --terrain_cols say otherwise.",
     )
+    p.add_argument("--cohesion", type=float, default=None,
+                   help="excavate only; soil yield_stress in Pa. An explicit flag because a "
+                        "Hydra override lands after the MPM material is built from the field")
     p.add_argument("--terrain_rows", type=int, default=None, help="navigate only; rows of sub-terrain")
     p.add_argument("--terrain_cols", type=int, default=None, help="navigate only; cols of sub-terrain")
     add_launcher_args(p)
@@ -97,6 +100,13 @@ def main(argv=None) -> int:
         env_cfg.scene.num_envs = args.num_envs
     elif args.watch:
         env_cfg.scene.num_envs = 1
+
+    if args.cohesion is not None:
+        env_cfg.soil_cohesion = args.cohesion
+    if hasattr(env_cfg, "apply_soil_material"):
+        # Also repairs a Hydra override that landed on a soil_* field after
+        # __post_init__ had already copied it onto the material.
+        env_cfg.apply_soil_material()
 
     gen = getattr(getattr(env_cfg.scene, "terrain", None), "terrain_generator", None)
     if gen is not None:

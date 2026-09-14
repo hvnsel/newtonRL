@@ -301,6 +301,51 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # stability knob. Lower it if the machine chatters on the bed.
     proxy_mass_scale: float = 10.0
 
+    # The soil_* fields are plain numbers on this cfg; the solver reads an
+    # MPMParticleMaterialCfg hanging off the spawner. Copying between them is
+    # its own method because __post_init__ is NOT the last word on those
+    # fields: Hydra applies command-line overrides AFTER __post_init__ has run,
+    # so `env.soil_cohesion=1500` changes the field and nothing downstream of
+    # it. Anything that touches a soil_* field late must call this, and the env
+    # refuses to start if the two disagree.
+    def apply_soil_material(self) -> None:
+        """Copy the soil_* fields onto the MPM material and the derived capacity."""
+        mat = self.scene.soil.spawn.material
+        values = {
+            "density": self.soil_density,
+            "friction": self.soil_friction,
+            "yield_stress": self.soil_cohesion,
+            "yield_pressure": self.soil_yield_pressure,
+        }
+        for name, value in values.items():
+            # A plain setattr on a dataclass instance silently creates an
+            # attribute the solver never reads, so an API rename here would
+            # look exactly like soil parameters having no effect. Check first.
+            if not hasattr(mat, name):
+                raise AttributeError(
+                    f"MPMParticleMaterialCfg has no field {name!r} on this Isaac Lab "
+                    f"build; it has {sorted(vars(mat))}. Setting it anyway would be a "
+                    "silent no-op -- the soil would keep its default and no amount of "
+                    "tuning soil_cohesion would change anything."
+                )
+            setattr(mat, name, value)
+        self.drum_capacity_kg = BORE_VOLUME * self.soil_density
+
+    def soil_material_mismatch(self) -> str | None:
+        """Which soil_* fields no longer match the material, if any."""
+        mat = self.scene.soil.spawn.material
+        bad = [
+            f"{n}: cfg {v:g} vs material {getattr(mat, m):g}"
+            for n, m, v in (
+                ("soil_density", "density", self.soil_density),
+                ("soil_friction", "friction", self.soil_friction),
+                ("soil_cohesion", "yield_stress", self.soil_cohesion),
+                ("soil_yield_pressure", "yield_pressure", self.soil_yield_pressure),
+            )
+            if getattr(mat, m) != v
+        ]
+        return "; ".join(bad) if bad else None
+
     def __post_init__(self) -> None:
         # --- resolve the bed and write it into the scene -------------------
         margin = 0.5 * self.voxel_size
@@ -317,12 +362,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             lower, upper, self.voxel_size, self.particles_per_cell
         )
         spawn = self.scene.soil.spawn
-        mat = spawn.material
-        mat.density = self.soil_density
-        mat.friction = self.soil_friction
-        mat.yield_stress = self.soil_cohesion
-        mat.yield_pressure = self.soil_yield_pressure
-        self.drum_capacity_kg = BORE_VOLUME * self.soil_density
+        self.apply_soil_material()
 
         spawn.lower = lower
         spawn.upper = upper

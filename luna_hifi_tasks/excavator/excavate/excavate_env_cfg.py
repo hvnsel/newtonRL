@@ -43,6 +43,7 @@ from ..excavator_cfg import (
     EXCAVATOR_CFG,
     EXCAVATOR_PRIM_REGEX,
     LUNAR_GRAVITY,
+    FRONT_DRUM_ONLY_REGEX,
     SOIL_CONTACT_BODIES_REGEX,
     SPAWN_Z,
 )
@@ -215,14 +216,31 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     particles_per_cell: float = MPM_PARTICLES_PER_CELL
     spawn_on_bed: bool = True
 
-    # Sparse-grid active cells per particle. The caps are ABSOLUTE totals over
-    # all envs, and they are the thing that decides whether this fits in VRAM:
-    # too high and the allocation fails as a CUDA 700 illegal-access storm
-    # rather than a clean out-of-memory error. The tricycle's validated config
-    # ran 2,880 particles against 16,384 active cells -- a ratio of 5.7 -- so 8
-    # is slightly generous. Lower it before lowering anything else if the card
-    # will not take it.
-    grid_cap_multiplier: float = 8.0
+    # Sparse-grid active cells per particle. ABSOLUTE totals over all envs.
+    #
+    # Read the failure mode correctly, because we had it backwards for most of
+    # this machine's life: overrunning these caps is an ILLEGAL ACCESS -- a CUDA
+    # 700 storm, or a 0xC0000374 heap corruption on Windows -- and it looks
+    # nothing like running out of memory, but it was being treated as though it
+    # were. Every crash was answered by shrinking the bed, which made the
+    # shortfall worse relative to the collider set and guaranteed the next one.
+    #
+    # The grid is cheap. A cell is tens of bytes, so 2^20 of them is well under
+    # 100 MB on a card with six thousand. Being stingy here buys nothing and
+    # costs particles, which are the one thing actually worth spending on.
+    #
+    # 24, not the tricycle's 5.7, because the cells are not all for particles:
+    # the solver activates cells around every coupled collider too, and this
+    # machine brings 104 geoms to the coupling against the tricycle's 8. That
+    # is what a finer voxel multiplies, and what a smaller bed does not shrink.
+    grid_cap_multiplier: float = 24.0
+
+    # Which bodies are coupled to the soil. Narrow it on a preset whose soil
+    # some of them cannot reach: each body brings every one of its geoms, and
+    # the drums are 38 geoms apiece.
+    soil_contact_regex: str = SOIL_CONTACT_BODIES_REGEX
+
+
 
     # --- regolith ---
     #
@@ -398,8 +416,12 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         )
         print(
             f"[excavate] sparse grid active={active} leaf={active >> 1} "
-            f"lower={active >> 2} upper={active >> 4}   "
-            f"(tricycle ran 2880 particles / 16384 active on a 6 GB card)"
+            f"lower={active >> 2} upper={active >> 4}"
+        )
+        print(
+            f"[excavate]   {self.grid_cap_multiplier:.0f} cells per particle, rounded up "
+            f"to a power of two. A cell is tens of bytes: even 2^20 of them is well "
+            f"under 100 MB, so this is a CORRECTNESS bound, not a memory budget."
         )
 
         self.sim.physics = NewtonCfg(
@@ -461,7 +483,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                     CouplerProxyMappingCfg(
                         source=RIGID_ENTRY,
                         destination=MPM_ENTRY,
-                        bodies=[SOIL_CONTACT_BODIES_REGEX],
+                        bodies=[self.soil_contact_regex],
                         mode="lagged",
                         mass_scale=self.proxy_mass_scale,
                         collision_pipeline=None,
@@ -540,49 +562,42 @@ class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
 
 @configclass
 class ExcavatorExcavateMicroEnvCfg(ExcavatorExcavateSmallEnvCfg):
-    """Small enough to run at a 0.03 m voxel, which is the point.
+    """Fine voxel. The name is about the VOXEL, not the bed -- the bed is eight
+    times the Small preset's, because the thing that was limiting it turned out
+    not to be memory at all.
 
-    The Small preset cannot fill the drum and no drum geometry can fix that.
-    The coupler inflates every collider by half a voxel per side, so it eats a
-    whole voxel out of every passage, and particles are spawned one voxel
-    apart. The drum's entry channel opens 0.082 m:
+    Why the voxel. The coupler inflates every collider by half a voxel per
+    side, so it eats a whole voxel out of every passage, and particles are
+    spawned one voxel apart. The drum's entry channel opens 0.082 m:
 
-        voxel 0.05 -> 0.032 m clear = 0.6 particle spacings -> soil bridges
-                      the opening and stops IN the lip, scooped but never in
+        voxel 0.05 -> 0.032 m clear = 0.6 particle spacings -> soil bridges the
+                      opening and stops IN the lip, scooped but never inside
         voxel 0.03 -> 0.052 m clear = 1.7 particle spacings -> it goes in
 
-    That is the whole difference, and it is a resolution limit rather than a
-    shape problem. Watch for it in the readouts: soil visibly carried around on
-    the lips while drum_fill_mass stays near zero is this, because fill is
-    counted inside r = 0.17 m and the lip channel sits outside it.
+    No drum geometry fixes 0.6 of a particle, and several rounds were spent
+    trying before the arithmetic got done.
 
-    The bed pays for it. A finer voxel costs particles as the CUBE, so this one
-    is a pad just under the front drum rather than a strip the machine drives
-    along: 0.35 x 0.80 x 0.24 m gives 2,592 particles against the tricycle's
-    validated 2,880, and grid_cap_multiplier drops to 6 to keep the sparse grid
-    at the 16,384 cells that card is known to take. Both numbers are inside the
-    envelope that already ran here; the 9,504/65,536 attempt is what failed as
-    a CUDA 700 storm.
-
-    Consequences of being a pad: only the front drum ever sees soil, the
-    machine cannot drive far while cutting, and fill tops out well below one
-    drum. None of that matters for the question this preset exists to answer,
-    which is whether soil enters the drum at all.
+    Why the bed is not small. Overrunning the sparse-grid caps raises an
+    ILLEGAL ACCESS -- a CUDA 700 storm, or 0xC0000374 on Windows -- which was
+    read as running out of VRAM and answered by shrinking the bed, every time,
+    which made the shortfall worse relative to a collider set that does not
+    shrink with it. A grid cell is tens of bytes: 524,288 of them is about
+    50 MB on a card with six thousand. The caps were never the memory
+    constraint, so this preset stops pretending they are and spends the card on
+    particles instead -- 12,580 of them, against 1,584 at a coarser voxel.
     """
 
     voxel_size: float = 0.03
 
-    # Under the front drum at dig angle, not under the machine.
-    bed_x: tuple[float, float] = (1.30, 1.65)
-    bed_y: tuple[float, float] = (-0.40, 0.40)
+    # A real strip to cut, clear of the wheels at spawn, spanning the full drum
+    # width so both the cut and the fill are representative.
+    bed_x: tuple[float, float] = (1.05, 2.05)
+    bed_y: tuple[float, float] = (-0.55, 0.55)
     # Deep enough that the lips are not grounding out: they stand 0.108 m proud
-    # of the shell now, so a 0.18 m bed would cap the usable cut at 0.073 m.
-    bed_depth: float = 0.24
+    # of the shell, so a shallow bed caps the usable cut well before the arm
+    # range does.
+    bed_depth: float = 0.28
     spawn_on_bed: bool = False
-
-    # 6, not 8. 2,592 particles x 6 rounds to the 16,384 cells that are known
-    # to fit; x8 would round to 32,768 and this card has already failed there.
-    grid_cap_multiplier: float = 6.0
 
     max_num_envs = 1
     episode_length_s = 30.0

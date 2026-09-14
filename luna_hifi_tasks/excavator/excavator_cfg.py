@@ -72,6 +72,17 @@ EXCAVATOR_PRIM_REGEX = r"/World/envs/env_.*/Excavator"
 SOIL_CONTACT_BODIES_REGEX = (
     r"/World/envs/env_.*/Excavator/Geometry/chassis/.*(wheel_.._body|drum_(front|rear)_body)"
 )
+# Every body listed here brings ALL its geoms into the MPM coupling, and the
+# solver activates grid cells around each one. That is not free and it is not
+# small: the drums carry 38 geoms each and the wheels 7, so the full set is 104
+# colliders against the tricycle's 8 geoms in total. The sparse-grid capacities
+# were hand-tuned for the tricycle, which is why they do not survive this
+# machine unaided.
+#
+# So a preset whose soil the wheels never reach should say so. On a pad in
+# front of the machine only the FRONT drum is ever in contact, and coupling the
+# rest costs cells for nothing.
+FRONT_DRUM_ONLY_REGEX = r"/World/envs/env_.*/Excavator/Geometry/chassis/.*drum_front_body"
 
 # Spawn height: wheels rest on z = 0 when the chassis origin is one wheel
 # radius up. A small clearance stops the solver resolving an initial

@@ -88,7 +88,12 @@ SOIL_MATERIAL = MPMParticleMaterialCfg(
 BORE_RADIUS = DRUM_RADIUS - DRUM_WALL_T
 BORE_HALF_LEN = DRUM_HALF_LEN
 BORE_VOLUME = math.pi * BORE_RADIUS ** 2 * (2.0 * BORE_HALF_LEN)
-DRUM_CAPACITY_KG = BORE_VOLUME * SOIL_MATERIAL.density      # ~155 kg
+# ~155 kg. An UPPER bound twice over: the two lifters displace about 7% of the
+# bore they sweep, and no granular fill packs to 100% of a free volume anyway.
+# It is a normaliser, not a prediction -- fill fraction is only ever compared
+# against itself and against fill_success_fraction, so what matters is that it
+# stays put when the soil density does not.
+DRUM_CAPACITY_KG = BORE_VOLUME * SOIL_MATERIAL.density
 
 DIG_OBS = excavate_obs_spec()
 DIG_CRITIC = critic_state_spec(terrain_cells=NAV_SCAN_CELLS)
@@ -218,11 +223,18 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # Drucker-Prager alpha numbers do not port across.
     #
     # Cohesion is the knob that decides whether the drum CAPTURES soil or just
-    # sprays it. At zero the regolith is dry sand: the blades sweep r = 0.13 to
-    # 0.225 m while fill is counted inside r = 0.17, so anything in that band
-    # gets struck by a blade every rotation and thrown straight back out. Give
-    # it a few hundred Pa and the cut material travels as a clod that rides
-    # into the bore instead. Lunar simulants sit around 0.1-1 kPa.
+    # sprays it. At zero the regolith is dry sand, and sand does not hold the
+    # shape of a cut: it shears off the lip and flows back out of the mouth it
+    # came in through. A few hundred Pa and the cut travels as a clod that the
+    # lifters can carry round. Lunar simulants sit around 0.1-1 kPa.
+    #
+    # The blades sweep r = 0.053 to 0.246 m and fill is counted inside the
+    # r = 0.170 m bore, so the lifters reach 0.117 m into the volume being
+    # measured. That is deliberate -- it is what carries the load up the
+    # ascending side instead of letting it sit at the bottom waiting for a
+    # mouth -- but it also means a NON-cohesive soil gets churned by a lifter
+    # every half turn. Cohesion and lifter depth are the same knob seen from
+    # two ends; if fill oscillates instead of climbing, this is why.
     soil_density: float = 1800.0
     soil_friction: float = 0.84              # tan(40 deg)
     soil_cohesion: float = 0.0               # yield_stress, Pa

@@ -46,17 +46,32 @@
 #   frame. That force cancellation is the entire reason this architecture
 #   exists -- it lets a light machine excavate without needing its own weight
 #   in traction.
-# * The drums are hollow. Each is a ring of box segments with SCOOP_COUNT gaps
-#   left open as scoop mouths, closed at both ends by cap discs, with a raked
-#   blade at the leading edge of each mouth. Soil is cut by the blade, carried
-#   through the mouth, and retained in the cavity. A solid cylinder would push
-#   soil around; it would never fill.
+# * The drums are hollow: a ring of box segments closed at both ends by cap
+#   discs, with SCOOP_COUNT of the segments left open as scoop mouths. At each
+#   mouth stands a raked blade that runs from well OUTSIDE the shell to well
+#   INSIDE it, so the one part does two jobs. Outside, it is a lip: it bites
+#   before the shell does and its raked face pushes the cut inwards, through
+#   the mouth trailing just ahead of it. Inside, it is a lifter: it sweeps the
+#   cavity floor and carries captured soil up the ascending side, which is the
+#   only reason the drum holds anything at all.
+#
+#   That inside half is the whole design. A drum whose blades stop at the shell
+#   is an open can: soil enters at the bottom and falls straight back out the
+#   next time a mouth swings low, and the machine kicks up a lot of regolith
+#   while carrying none. SCOOP_COUNT is 2, at 180 degrees, for the same reason
+#   -- every extra mouth is another chance per revolution for the load to spill,
+#   and two lifters split the cavity into two pockets that can only empty
+#   through their own mouth.
 # * The chassis outweighs both drums roughly 6.6:1 empty. A FULL pair is a
 #   different matter: the bore holds ~155 kg of regolith per drum, so a loaded
-#   machine carries around 64% of its own dry mass out on the arms. Arm hold
-#   torque goes from 230 N-m empty to ~1270 N-m full at earth gravity (205 N-m
-#   at lunar gravity). Size the arm actuator for the loaded case, and expect
-#   the policy to have to care about carrying a full drum.
+#   machine carries around 63% of its own 492 kg dry mass out on the arms. Arm
+#   hold torque goes from 351 N-m empty to 1387 N-m full at earth gravity (58
+#   and 229 N-m at lunar gravity). Size the arm actuator for the loaded case,
+#   and expect the policy to have to care about carrying a full drum.
+#
+#   Those are measured, not estimated: scripts/check_excavator.py reads them
+#   off the model's own mass table, so they follow the geometry instead of
+#   drifting away from it.
 #
 # Wheels are cylinders with grousers, not the spheres the tricycle used. On
 # granular media a smooth wheel simply shears the surface and spins in place,
@@ -95,7 +110,16 @@ WHEEL_Y = 0.5 * TRACK           # +/- 0.575
 # the pivot costs nothing in dig depth or dump height, where pulling the arm
 # limits in to avoid the wheels would cost both. Mounting arms ahead of the
 # axle is also how loaders are built.
-MAST_OFFSET_X = 0.12
+#
+# Raised from 0.12 when the lips grew: a longer lip pushes the yoke's cross
+# piece back down the boom to stay outside the blades' swept circle, which
+# drags the yoke legs inboard with it and straight at the tyres. 0.17 buys most
+# of that back -- swept clearance to the wheels is 0.069 m against 0.092 m
+# before, still twice what scripts/check_excavator.py insists on, and it is the
+# cross piece against a rear grouser at full dig that binds. Raising this
+# further would recover the rest at the cost of overall length, which is not
+# worth it for clearance that is already comfortable.
+MAST_OFFSET_X = 0.17
 PIVOT_X = AXLE_X + MAST_OFFSET_X
 
 CHASSIS_Z = WHEEL_RADIUS        # chassis origin height with wheels on z = 0
@@ -126,7 +150,11 @@ ARM_HALF_H = 0.05
 ARM_HALF_W = 0.07
 YOKE_HALF_W = 0.04
 YOKE_HALF_H = 0.05
-YOKE_CLEARANCE = 0.005          # gap between the end cap and the inner face of a leg
+# Gap between the OUTER face of an end cap and the inner face of a leg. The cap
+# is a disc of half-thickness CAP_HALF_T centred at DRUM_HALF_LEN + CAP_HALF_T,
+# so it reaches DRUM_HALF_LEN + 2*CAP_HALF_T -- counting one cap thickness in
+# YOKE_Y instead of two is what had the legs 7 mm inside the caps.
+YOKE_CLEARANCE = 0.005
 # Positive arm angle pitches the boom DOWN, toward the soil. See the sign note
 # in the module docstring block below the model string.
 #
@@ -147,20 +175,41 @@ DRUM_RADIUS = 0.20
 DRUM_HALF_LEN = 0.475           # ~100 cm wide drum
 DRUM_WALL_T = 0.030             # shell thickness; see the MPM note below
 DRUM_FACETS = 12                # angular slots around the circumference
-SCOOP_COUNT = 3                 # of those slots, this many are left open as mouths
-SCOOP_RAKE = 0.50               # blade rake off radial, rad
-BLADE_INNER_R = 0.13
-BLADE_OUTER_R = 0.225           # stands proud of the shell so it bites first
+# Two mouths, 180 degrees apart (slots 0 and 6). Not three: a mouth is a hole,
+# and every hole is a chance per revolution for the load to fall out of the
+# bottom of the drum. Two is the fewest that still balances -- one would put
+# the whole cut on one side and shake the arm at drum frequency.
+SCOOP_COUNT = 2
+# Blade rake off radial. The sign matters and is easy to get backwards: the
+# leading face's normal has a radial component of -sin(SCOOP_RAKE), i.e. it
+# points INWARD, so the face pushes its cut toward the axis and into the mouth
+# rather than flinging it off the rim. Rake the other way and the drum becomes
+# a very effective soil thrower.
+SCOOP_RAKE = 0.50
+# Measured ALONG the blade, not radially -- the blade is raked, so these are
+# chords. _blade_reach() converts them to the radii the blade actually sweeps,
+# which is what the yoke has to clear and what decides whether the drum fills:
+#
+#     0.020 .. 0.250 along the blade  ->  0.053 .. 0.246 swept
+#
+# so the lip stands 0.046 m proud of the shell (it was 0.025) and the lifter
+# reaches 0.117 m inside the 0.170 m bore (it was 0.039). The inner number is
+# the one that changed the behaviour. Pulling BLADE_INNER_R back up towards the
+# shell turns the lifters into mere lips and the drum stops holding soil.
+BLADE_INNER_R = 0.02
+BLADE_OUTER_R = 0.25
 BLADE_HALF_T = 0.012
 CAP_HALF_T = 0.012
 
 # MPM note: DRUM_WALL_T is 3 cm against the tricycle's 5 cm voxel. The coupler
 # inflates colliders by MPM_COLLIDER_MARGIN (half a voxel each side), so a 3 cm
-# wall reads as ~8 cm to the solver and particles will not tunnel. But the
-# cavity is only 2 * BLADE_INNER_R ~ 26 cm across, i.e. five cells at a 5 cm
-# voxel -- too coarse to resolve filling. Expect to run the drum region at a
-# 2.5-3 cm voxel, and budget the particle count accordingly. This is the single
-# place in the machine where MPM resolution actually binds.
+# wall reads as ~8 cm to the solver and particles will not tunnel. The lifters
+# are 2 * BLADE_HALF_T = 2.4 cm, which the same margin carries, but the pocket
+# between a lifter and the shell is only about 10 cm deep -- two cells at a
+# 5 cm voxel. That is too coarse to resolve the thing the drum is FOR. Expect
+# to run the drum region at a 2.5-3 cm voxel, and budget the particle count
+# accordingly. This is the single place in the machine where MPM resolution
+# actually binds.
 
 # --- masses (kg) ---
 RAIL_MASS = 35.0                # each
@@ -174,7 +223,9 @@ ARM_CROSS_MASS = 3.5
 ARM_LEG_MASS = 4.0
 DRUM_SEGMENT_MASS = 2.2         # each shell segment
 DRUM_CAP_MASS = 1.2             # each end cap
-DRUM_BLADE_MASS = 1.20          # each scoop blade
+# Each blade, at the same plate density as the short lips it replaces: they are
+# 0.23 m long now against 0.095 m, so 1.20 kg scales to 2.9.
+DRUM_BLADE_MASS = 2.90
 
 # --- friction ---
 FRAME_FRICTION = "0.8 0.005 0.0001"
@@ -269,6 +320,38 @@ def _radial_blade(
     )
 
 
+def _blade_reach(
+    inner_r: float, outer_r: float, rake: float, half_t: float
+) -> tuple[float, float]:
+    """The radii a raked blade of finite thickness actually sweeps.
+
+    inner_r and outer_r are measured ALONG the blade, which is tilted `rake`
+    off radial, so they are chords rather than radii -- and the blade is a box,
+    so its corners reach further out and closer in than its centreline does.
+    Taking the four corners of the section:
+
+        radial     = mid_r +/- half*cos(rake) +/- half_t*sin(rake)
+        tangential =       -/+ half*sin(rake) +/- half_t*cos(rake)
+
+    Worth having as a function rather than a comment: the swept OUTER radius is
+    what the yoke has to clear, and deriving the yoke from DRUM_RADIUS instead
+    put the cross piece 3.5 cm inside the blades. Nothing reported that --
+    MuJoCo never tests a body against its own parent, and Isaac articulations
+    default to self_collision=False, so both simulators would have run the
+    machine happily with an arm through its own drum.
+    """
+    mid_r = 0.5 * (inner_r + outer_r)
+    half = 0.5 * (outer_r - inner_r)
+    c, s = math.cos(rake), math.sin(rake)
+    radii = [
+        math.hypot(mid_r + sl * half * c + st * half_t * s,
+                   -sl * half * s + st * half_t * c)
+        for sl in (-1.0, 1.0)
+        for st in (-1.0, 1.0)
+    ]
+    return min(radii), max(radii)
+
+
 def _wheel(name: str, x: float, y: float, joint: str) -> str:
     """A cylinder tyre spinning about y, optionally with radial grousers.
 
@@ -305,9 +388,14 @@ def _wheel(name: str, x: float, y: float, joint: str) -> str:
 def _drum(prefix: str, joint: str) -> str:
     """A hollow bucket drum: shell segments, open scoop mouths, blades, end caps.
 
-    The mouths are spread as evenly as SCOOP_COUNT divides DRUM_FACETS allows.
-    Each open slot gets a blade at its leading edge -- leading with respect to a
-    positive joint velocity, which is the digging direction.
+    The mouths are spread as evenly as SCOOP_COUNT divides DRUM_FACETS allows;
+    at SCOOP_COUNT = 2 that is slots 0 and 6, exactly opposite.
+
+    Each open slot gets one blade, spanning the shell from outside to well
+    inside. A positive joint velocity is the digging direction and rotates the
+    drum toward DECREASING phi, so the blade at phi + step/2 sits just BEHIND
+    its own mouth: it sweeps soil forward and, because of the rake, inward,
+    into the opening travelling directly ahead of it.
     """
     step = 2.0 * math.pi / DRUM_FACETS
     mid_r = DRUM_RADIUS - 0.5 * DRUM_WALL_T
@@ -368,8 +456,22 @@ def _drum(prefix: str, joint: str) -> str:
 
 
 # Derived yoke geometry. Needs the drum dimensions, so it lives below them.
-YOKE_Y = DRUM_HALF_LEN + CAP_HALF_T + YOKE_CLEARANCE + YOKE_HALF_W
-BOOM_LEN = ARM_LEN - DRUM_RADIUS - 0.03     # boom stops clear of the drum envelope
+YOKE_Y = DRUM_HALF_LEN + 2.0 * CAP_HALF_T + YOKE_CLEARANCE + YOKE_HALF_W
+
+# What the blades actually sweep, as opposed to what BLADE_INNER_R and
+# BLADE_OUTER_R say. Exported because both numbers are load-bearing elsewhere:
+# the outer one sets where the yoke may sit, and the inner one is how far the
+# lifters reach into the bore, which is the drum's whole retention mechanism.
+BLADE_SWEPT_INNER_R, BLADE_SWEPT_OUTER_R = _blade_reach(
+    BLADE_INNER_R, BLADE_OUTER_R, SCOOP_RAKE, BLADE_HALF_T
+)
+
+# The cross piece spans the full width of the machine at the drum's height, so
+# it has to clear the circle the BLADES sweep, not the shell's. Deriving it
+# from DRUM_RADIUS is what buried it 3.5 cm inside the old lips; with the long
+# ones it would have been 5 cm.
+YOKE_STANDOFF = 0.025
+BOOM_LEN = ARM_LEN - BLADE_SWEPT_OUTER_R - YOKE_HALF_W - YOKE_STANDOFF
 _LEG_X0 = BOOM_LEN - YOKE_HALF_W            # legs overlap the cross piece slightly
 
 
@@ -525,15 +627,25 @@ def reach() -> dict[str, float]:
     pivot_z = CHASSIS_Z + MAST_TOP_Z
     return {
         "pivot_height": pivot_z,
+        # dig_depth is to the SHELL, because that is what ARM_RANGE[1] is set
+        # against: the limit exists to stop the MOUTHS being buried past the
+        # drum axis. The lips cut deeper than that and are meant to.
         "dig_depth": -(pivot_z - ARM_LEN * math.sin(hi) - DRUM_RADIUS),
+        "lip_dig_depth": -(pivot_z - ARM_LEN * math.sin(hi) - BLADE_SWEPT_OUTER_R),
         "dump_height": pivot_z - ARM_LEN * math.sin(lo) - DRUM_RADIUS,
-        "reach_x": PIVOT_X + ARM_LEN * math.cos(hi) + DRUM_RADIUS,
-        "overall_length": 2.0 * (PIVOT_X + ARM_LEN * math.cos(0.0) + DRUM_RADIUS),
+        # Envelopes, so these take the blades: they are the outermost thing on
+        # the machine and the first to hit anything.
+        "reach_x": PIVOT_X + ARM_LEN * math.cos(hi) + BLADE_SWEPT_OUTER_R,
+        "overall_length": 2.0 * (PIVOT_X + ARM_LEN * math.cos(0.0) + BLADE_SWEPT_OUTER_R),
         "overall_width": TRACK + 2.0 * WHEEL_HALF_W,
-        # Clear bore between the shell walls, and the narrower diameter the
-        # blades sweep. Capacity sits between the two.
+        # Clear bore between the shell walls, then what the blades do to it.
+        # A lip that stands proud bites before the shell; a lifter that reaches
+        # inside carries the load round instead of letting it fall out the next
+        # mouth. Both are the same geom.
         "drum_bore_diameter": 2.0 * (DRUM_RADIUS - DRUM_WALL_T),
-        "drum_blade_swept_diameter": 2.0 * BLADE_INNER_R,
+        "drum_blade_swept_diameter": 2.0 * BLADE_SWEPT_INNER_R,
+        "drum_lip_proud_of_shell": BLADE_SWEPT_OUTER_R - DRUM_RADIUS,
+        "drum_lifter_into_bore": (DRUM_RADIUS - DRUM_WALL_T) - BLADE_SWEPT_INNER_R,
         "drum_bore_volume": math.pi * (DRUM_RADIUS - DRUM_WALL_T) ** 2 * (2.0 * DRUM_HALF_LEN),
         # Drum width against the AB/CD track. Deliberately just under 1.0.
         "drum_outer_width": 2.0 * (DRUM_HALF_LEN + 2.0 * CAP_HALF_T),
@@ -546,8 +658,9 @@ def reach() -> dict[str, float]:
         # re-run the clearance sweep after touching any of them.
         "drum_lateral_overlap": (DRUM_HALF_LEN + 2.0 * CAP_HALF_T) - (WHEEL_Y - WHEEL_HALF_W),
         "wheel_standoff_at_full_dig": (
-            PIVOT_X + ARM_LEN * math.cos(hi) - DRUM_RADIUS
+            PIVOT_X + ARM_LEN * math.cos(hi) - BLADE_SWEPT_OUTER_R
         ) - (AXLE_X + WHEEL_RADIUS),
+        "yoke_standoff_from_blades": ARM_LEN - BLADE_SWEPT_OUTER_R - (BOOM_LEN + YOKE_HALF_W),
     }
 
 

@@ -100,14 +100,14 @@ LUNAR_G = 1.62
 # What lunar gravity actually changes, since it drove the actuator numbers
 # below and is easy to get wrong:
 #
-#   Weight scales, soil strength does NOT. The machine's 483 kg weighs 782 N
-#   here instead of 4738 N, so every traction number falls by 6. But regolith
+#   Weight scales, soil strength does NOT. The machine's 492 kg weighs 797 N
+#   here instead of 4824 N, so every traction number falls by 6. But regolith
 #   cohesion and shear strength are gravity-independent, so the force needed to
 #   cut it is essentially unchanged. Excavation resistance versus available
 #   traction therefore gets about six times worse on the Moon than on Earth.
 #
 #   That is the whole reason this machine counter-rotates its drums. Total
-#   tractive force available is roughly 782 N at mu = 1. A drum cutting a 1 m
+#   tractive force available is roughly 797 N at mu = 1. A drum cutting a 1 m
 #   swath through cohesive regolith can easily exceed that, and a machine that
 #   had to push against its own cut would simply be shoved backwards. With the
 #   two drums turning opposite ways their horizontal reactions cancel through
@@ -119,13 +119,13 @@ LUNAR_G = 1.62
 #   reward rather than being left implicit.
 #
 #   Consequence for actuators: the ARM is not sized by gravity here. Holding a
-#   full drum out horizontally needs only ~210 N-m at lunar gravity (1270 on
+#   full drum out horizontally needs only 229 N-m at lunar gravity (1387 on
 #   Earth), but resisting the vertical component of digging resistance is
 #   unchanged by gravity and is the larger load. The WHEELS, by contrast, are
 #   sized purely by traction, which does fall by six.
 
 # Command limits. Wheel speed is capped well below what the actuator could do:
-# a 483 kg machine on regolith is traction-limited long before it is
+# a 492 kg machine on regolith is traction-limited long before it is
 # torque-limited, and letting the policy command 30 rad/s just teaches it to
 # saturate and spin.
 MAX_WHEEL_SPEED = 5.0       # rad/s  -> 1.5 m/s at r = 0.30
@@ -150,13 +150,13 @@ EXCAVATOR_CFG = ArticulationCfg(
     actuators={
         # Velocity drive: stiffness 0, damping carries the tracking.
         #
-        # Traction-sized, for LUNAR gravity. About 120 kg rests on each wheel,
-        # which at 1.62 m/s^2 is ~196 N of normal force, so at mu = 1.0 the
-        # wheel can deliver ~196 N before it slips -- roughly 59 N-m at a
+        # Traction-sized, for LUNAR gravity. About 123 kg rests on each wheel,
+        # which at 1.62 m/s^2 is ~199 N of normal force, so at mu = 1.0 the
+        # wheel can deliver ~199 N before it slips -- roughly 60 N-m at a
         # 0.30 m radius. 120 gives a 2x margin for dynamic loads and for
         # grousers biting better than mu = 1.
         #
-        # The earth-gravity number would be ~354 N-m. Leaving it there would
+        # The earth-gravity number would be ~362 N-m. Leaving it there would
         # not make the machine stronger, it would just let the policy command
         # torque the ground cannot react against, and the only thing it would
         # learn is to spin the wheels.
@@ -170,11 +170,11 @@ EXCAVATOR_CFG = ArticulationCfg(
         # Position drive.
         #
         # NOT sized by gravity. Holding a full drum out horizontally is only
-        # ~210 N-m at lunar gravity (38 N-m empty), but the arm also has to
+        # 229 N-m at lunar gravity (58 N-m empty), but the arm also has to
         # resist the vertical component of digging resistance, and that is set
         # by soil strength rather than weight, so it does not shrink with
         # gravity. The dig load dominates by a wide margin, which is why this
-        # is 800 rather than the ~400 a 2x gravity margin would suggest.
+        # is 800 rather than the ~460 a 2x gravity margin would suggest.
         #
         # If the arm visibly sags or gets driven up out of the cut, this is the
         # number to raise -- not the drum torque.

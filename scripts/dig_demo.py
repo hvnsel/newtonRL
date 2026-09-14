@@ -40,10 +40,13 @@ from isaaclab_tasks.utils.hydra import resolve_task_config
 import luna_hifi_tasks  # noqa: F401  (registers Luna-* tasks)
 from luna_hifi_tasks.excavator.excavator import (
     ARM_LEN,
+    BLADE_SWEPT_OUTER_R,
     CHASSIS_Z,
     DRUM_RADIUS,
+    DRUM_WALL_T,
     MAST_TOP_Z,
 )
+from luna_hifi_tasks.excavator.excavator_cfg import MAX_DRUM_SPEED
 
 TASK = "Luna-Excavator-Excavate-Small"
 
@@ -74,12 +77,17 @@ def _parse(argv):
                    help="how deep the drum should cut, metres")
     p.add_argument("--boom", type=float, default=None,
                    help="raw boom command, overriding --cut")
-    # 1.0 is 8 rad/s, a 1.6 m/s tip speed, which throws soil clear of the drum
-    # instead of carrying it in. 0.4 is 0.8 m/s and scoops. Try a NEGATIVE
-    # value too: which rotation loads the drum depends on the blade rake, and
-    # flipping the sign is the cheapest experiment available here.
+    # 1.0 is 8 rad/s, a 2.0 m/s speed at the lip, which throws soil clear of
+    # the drum instead of carrying it in. 0.4 is 0.8 m/s and scoops.
+    #
+    # POSITIVE is the loading direction, and that is geometry rather than a
+    # guess: a positive command turns the drum toward decreasing phi, which
+    # puts each mouth just ahead of its own blade, and the blade's raked face
+    # has an inward normal component of -sin(SCOOP_RAKE). It pushes its cut
+    # toward the axis and into that mouth. Negative runs the same face
+    # backwards and makes a soil thrower, which is worth seeing once.
     p.add_argument("--drum", type=float, default=0.4,
-                   help="drum command once spinning; |cmd| > ~0.6 flings rather than scoops")
+                   help="drum command once spinning; |cmd| > ~0.5 flings rather than scoops")
     p.add_argument("--drive", type=float, default=0.25, help="forward command once crawling")
 
     add_launcher_args(p)
@@ -163,16 +171,27 @@ def main(argv=None) -> int:
         print(f"  machine stands {'ON the bed' if u.cfg.spawn_on_bed else 'beside the pile'}")
         print(f"  soil: density {u.cfg.soil_density:.0f} kg/m3, friction {u.cfg.soil_friction:.2f}, "
               f"cohesion {u.cfg.soil_cohesion:.0f} Pa")
-        print(f"  drum: {args.drum:+.2f} -> {args.drum * 8.0:+.1f} rad/s -> "
-              f"tip {abs(args.drum) * 8.0 * 0.20:.2f} m/s")
+        rad_s = args.drum * MAX_DRUM_SPEED
+        print(f"  drum: {args.drum:+.2f} -> {rad_s:+.1f} rad/s -> "
+              f"lip {abs(rad_s) * BLADE_SWEPT_OUTER_R:.2f} m/s "
+              f"(at r = {BLADE_SWEPT_OUTER_R:.3f} m, the blade tip, not the shell)")
 
         boom, angle = boom_command_for_cut(u.cfg, args.cut)
         if args.boom is not None:
             boom = args.boom
             print(f"  boom command {boom:+.3f} (given directly, --cut ignored)\n")
         else:
+            # --cut is measured to the SHELL. The lips stand proud of it, so
+            # they bite deeper than the number asked for, and the bore -- which
+            # is what fill is counted inside -- sits shallower than both. That
+            # last one is the number to watch: it is what decides how much of
+            # the drum is actually in soil.
+            proud = BLADE_SWEPT_OUTER_R - DRUM_RADIUS
             print(f"  to cut {args.cut:.3f} m -> arm {angle:+.3f} rad "
-                  f"-> boom command {boom:+.3f}\n")
+                  f"-> boom command {boom:+.3f}")
+            print(f"  lips reach {args.cut + proud:.3f} m down, "
+                  f"bore bottom {args.cut - DRUM_WALL_T:.3f} m below grade "
+                  f"of a {2.0 * (DRUM_RADIUS - DRUM_WALL_T):.2f} m bore\n")
 
         obs, _ = env.reset()
         action = torch.zeros(u.num_envs, 4, device=u.device)
@@ -228,10 +247,15 @@ def main(argv=None) -> int:
             print("      the body names above with SOIL_CONTACT_BODIES_REGEX.")
             print("\n  If particles VISIBLY move but fill stays near zero, none of the")
             print("  above is wrong -- the drum is failing to carry soil. In order:")
-            print("    env.soil_cohesion=1500   cut material travels as a clod")
-            print("    --drum -0.4              the other rotation may be the loading one")
-            print("    --cut 0.15               get more of the bore under the surface")
-            print("    --drum 0.25              slower still; tip speed throws soil clear")
+            print("    --cut 0.18               get more of the bore under the surface;")
+            print("                             at 0.12 only ~0.09 m of a 0.34 m bore is")
+            print("                             below grade, so most of it never sees soil")
+            print("    env.soil_cohesion=1500   cut material travels as a clod instead of")
+            print("                             shearing off the lip and flowing back out")
+            print("    --drum 0.25              slower; lip speed throws soil clear")
+            print("    --drum -0.4              runs the raked faces backwards. This should")
+            print("                             be WORSE -- if it is better, SCOOP_RAKE has")
+            print("                             the wrong sign and the drum is inside out")
         env.close()
     return 0 if ok else 1
 

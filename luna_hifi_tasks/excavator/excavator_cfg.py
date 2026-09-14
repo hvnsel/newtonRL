@@ -37,10 +37,21 @@ from .excavator import (
 # README's "Convert the tricycle asset" section with the paths swapped:
 #
 #   isaaclab -p -c "from luna_hifi_tasks.excavator.excavator import write_mjcf; print(write_mjcf())"
-#   isaaclab -p scripts/tools/convert_mjcf.py <that path> <repo>/assets/excavator/excavator.usd
+#   isaaclab -p scripts/tools/convert_mjcf.py <that path> <repo>/assets/excavator.usd
 #
-# The converter writes assets/excavator/excavator.usda (subfolder, .usda), not
-# the path you hand it. Redo it whenever excavator.py changes.
+# Note the output argument: <repo>/assets/excavator.usd, NOT
+# <repo>/assets/excavator/excavator.usd. The converter discards the filename
+# you give it and keeps only the directory -- MjcfConverter forces
+# usd_file_name to "<input stem>/<input stem>.usda" and sets usd_dir to
+# dirname(output). So the file actually lands at
+#
+#     <dirname of your output arg>/excavator/excavator.usda
+#
+# which is where EXCAVATOR_USD_PATH below points. Passing the nested path puts
+# it one level too deep and the spawn fails with FileNotFoundError. The stem
+# comes from the MJCF filename, so it is excavator.usda either way.
+#
+# Redo this whenever excavator.py changes.
 ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 EXCAVATOR_USD_PATH = ASSETS_DIR / "excavator" / "excavator.usda"
 

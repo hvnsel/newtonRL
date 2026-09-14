@@ -133,6 +133,40 @@ MAX_YAW_SPEED = 3.0         # rad/s differential added across the two sides
 MAX_DRUM_SPEED = 8.0        # rad/s
 
 
+def usd_status() -> str | None:
+    """None if the converted asset is present and not older than its source.
+
+    Otherwise a message naming the fix. Worth checking before a scene is built
+    rather than after: the failure is a FileNotFoundError thirty frames deep
+    inside InteractiveScene, which reads like a broken environment rather than
+    a missing build step.
+
+    A STALE asset is the worse case of the two and has no exception at all --
+    the run simply uses the previous drum, so a geometry change looks like it
+    did nothing. assets/excavator/ is generated and untracked while
+    assets/config.yaml and assets/.asset_hash are tracked and rewritten by the
+    converter, so an ordinary stash or checkout can leave the two disagreeing.
+    """
+    source = Path(__file__).with_name("excavator.py")
+    rebuild = (
+        "  rebuild it (from the Isaac Lab directory):\n"
+        '    isaaclab -p -c "from luna_hifi_tasks.excavator.excavator import write_mjcf;'
+        ' print(write_mjcf())"\n'
+        f"    rm -rf {ASSETS_DIR / 'excavator'}\n"
+        f"    isaaclab -p scripts/tools/convert_mjcf.py <that path> {ASSETS_DIR / 'excavator.usd'}\n"
+        "  note the output path: assets/excavator.usd, not assets/excavator/excavator.usd"
+    )
+    if not EXCAVATOR_USD_PATH.exists():
+        return f"the excavator asset is missing:\n    {EXCAVATOR_USD_PATH}\n{rebuild}"
+    if source.exists() and source.stat().st_mtime > EXCAVATOR_USD_PATH.stat().st_mtime:
+        return (
+            f"excavator.py is NEWER than the converted asset, so this run would use the\n"
+            f"  previous drum and any geometry change would look like it did nothing:\n"
+            f"    {EXCAVATOR_USD_PATH}\n{rebuild}"
+        )
+    return None
+
+
 EXCAVATOR_CFG = ArticulationCfg(
     prim_path="{ENV_REGEX_NS}/Excavator",
     spawn=sim_utils.UsdFileCfg(usd_path=str(EXCAVATOR_USD_PATH)),

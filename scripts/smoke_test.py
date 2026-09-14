@@ -89,6 +89,16 @@ def main(argv=None) -> int:
     args = _parse(argv)
     torch.manual_seed(0)
 
+    # Before anything spawns: a missing or stale asset otherwise surfaces as a
+    # FileNotFoundError deep inside InteractiveScene, or -- worse -- as a
+    # perfectly clean run of the PREVIOUS drum.
+    from luna_hifi_tasks.excavator.excavator_cfg import usd_status
+
+    problem = usd_status()
+    if problem is not None:
+        print(f"\n[asset] {problem}\n")
+        return 2
+
     # sys.argv now holds only the Hydra remainder, so plain Hydra overrides
     # work here too, e.g.  env.scene.num_envs=4  (no leading dashes).
     env_cfg, _ = resolve_task_config(args.task, "")

@@ -241,6 +241,28 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # the drums are 38 geoms apiece.
     soil_contact_regex: str = SOIL_CONTACT_BODIES_REGEX
 
+    # Rigid-solver buffers, per env. FIXED SIZE, and overrunning one is an
+    # illegal memory access -- a CUDA 700 storm, or 0xC0000374 on Windows --
+    # not a clean error, which is what makes it so hard to place.
+    #
+    # These were 200/96, inherited from the tricycle and then LOWERED, on a
+    # machine with fifteen times the geometry. The tricycle has 8 geoms and
+    # gave itself 128 contact slots; this excavator has 119, of which 104 are
+    # coupled to the soil, and had 96. Contacts scale with colliders AND with
+    # how much soil is touching them, which is why the crash tracked the
+    # particle count and looked for all the world like a memory limit.
+    #
+    # This is also the honest answer to "why can a standalone Warp MPM sample
+    # run tens of thousands of particles when we cannot": a standalone sample
+    # has no rigid solver, so it has no njmax and no nconmax. These buffers
+    # only exist because a rigid solver is coupled in, and they are what we
+    # were overflowing.
+    #
+    # A contact is a couple of hundred bytes. 8192 of them is about 1.6 MB, so
+    # there is no reason to be tight here.
+    rigid_njmax: int = 4096
+    rigid_nconmax: int = 8192
+
     # Active cells per LEAF NODE, as a right shift: 7 is one leaf per 128
     # cells, four times the theoretical minimum for 8^3 blocks. Lower it (more
     # leaves) only if the solver runs out of tree, and expect every step to
@@ -446,6 +468,11 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             f"lower={lower} upper={upper}"
         )
         print(
+            f"[excavate] rigid solver njmax={self.rigid_njmax} "
+            f"nconmax={self.rigid_nconmax} (fixed-size; overrunning either is an "
+            f"illegal access, not an error)"
+        )
+        print(
             f"[excavate]   {self.grid_cap_multiplier:.0f} cells/particle; a leaf covers "
             f"{1 << self.grid_leaf_shift} of them and is the thing that actually costs "
             f"memory -- roughly {leaf * 512 * 48 / 1e6:.0f} MB of grid here."
@@ -459,8 +486,8 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                         solver_cfg=MJWarpSolverCfg(
                             use_mujoco_contacts=False,
                             integrator="implicitfast",
-                            njmax=200,
-                            nconmax=96,
+                            njmax=self.rigid_njmax,
+                            nconmax=self.rigid_nconmax,
                         ),
                         bodies=[EXCAVATOR_PRIM_REGEX],
                         include_static_shapes=True,
@@ -608,15 +635,14 @@ class ExcavatorExcavateMicroEnvCfg(ExcavatorExcavateSmallEnvCfg):
 
     voxel_size: float = 0.03
 
-    # Sized under BOTH candidate limits, because which one is real is still
-    # open: 3,000 particles is below the 3,168 that ran, and cap 2 puts the
-    # grid at 8,192 cells against the 32,768 that ran. If this dies too then
-    # neither quantity is the constraint and the search moves elsewhere.
-    bed_x: tuple[float, float] = (1.20, 1.80)
-    bed_y: tuple[float, float] = (-0.45, 0.45)
-    bed_depth: float = 0.15
+    # A strip worth cutting. Kept modest rather than minimal: the contact
+    # buffers were the thing being overrun, not the particle count, but that
+    # was established by reading the config rather than by a run, so this is
+    # the first size to try and not the last.
+    bed_x: tuple[float, float] = (1.05, 1.95)
+    bed_y: tuple[float, float] = (-0.50, 0.50)
+    bed_depth: float = 0.21
     spawn_on_bed: bool = False
-    grid_cap_multiplier: float = 2.0
 
     max_num_envs = 1
     episode_length_s = 30.0

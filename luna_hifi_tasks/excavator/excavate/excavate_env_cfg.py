@@ -64,34 +64,16 @@ MPM_COLLIDER_MARGIN = 0.5 * VOXEL_SIZE
 MPM_PARTICLES_PER_CELL = 1.0
 MPM_VISUAL_COLOR = (0.62, 0.55, 0.45)
 
-# Bed, in the env frame. The machine spawns at the origin ON the bed, facing
-# +x, so both drums start over soil: the front one meets fresh regolith as it
-# drives forward and the rear one trails through the trench. Long enough for
-# a full drum at the drive speed the actuators allow, wider than the 1.35 m
-# machine, deeper than the 0.19 m cut.
-BED_X = (-3.0, 5.0)
-BED_Y = (-1.0, 1.0)
-BED_DEPTH = 0.25
-BED_LOWER = (BED_X[0], BED_Y[0], MPM_COLLIDER_MARGIN)
-BED_UPPER = (BED_X[1], BED_Y[1], MPM_COLLIDER_MARGIN + BED_DEPTH)
-BED_TOP = MPM_COLLIDER_MARGIN + BED_DEPTH
-BED_LEN = BED_X[1] - BED_X[0]
-BED_WID = BED_Y[1] - BED_Y[0]
-
-# Height grid the particle scans are rasterised onto: the bed's own footprint
-# at the MPM voxel size. Empty cells read the slab top (z = 0) -- the floor an
-# excavated cell bottoms out on -- so dug ground and untouched ground never
-# look alike.
-BED_GRID_LOWER = (BED_X[0], BED_Y[0])
-BED_GRID_CELL = VOXEL_SIZE
-BED_GRID_NX = int(math.ceil(BED_LEN / VOXEL_SIZE))
-BED_GRID_NY = int(math.ceil(BED_WID / VOXEL_SIZE))
+# The bed is DERIVED, not constant. Its extent lives on the env cfg as
+# bed_x / bed_y / bed_depth, and __post_init__ rewrites the scene from those.
+# Everything downstream -- the particle count, the sparse-grid capacities, the
+# height grid the scans rasterise onto, the hidden floor slab, the spawn height
+# -- follows from them, which is what makes a smaller bed a subclass rather
+# than a fork of this file.
+#
+# Empty height-grid cells read BED_FLOOR_Z, the top of the slab an excavated
+# cell bottoms out on, so dug ground and untouched ground never look alike.
 BED_FLOOR_Z = 0.0
-
-# Hidden kinematic slab giving the MPM entry a floor. The MPM entry only sees
-# bodies listed on its CouplerEntryCfg, not the global ground plane.
-MPM_GROUND_SIZE = (BED_LEN + 1.0, BED_WID + 1.0, 0.10)
-MPM_GROUND_POSITION = (0.5 * (BED_X[0] + BED_X[1]), 0.0, -0.05)
 
 # Validated regolith parameters from the tricycle. friction ~ tan(phi),
 # yield_stress is cohesion in Pa (left at the default 0 -- the main knob to
@@ -112,15 +94,12 @@ DIG_OBS = excavate_obs_spec()
 DIG_CRITIC = critic_state_spec(terrain_cells=NAV_SCAN_CELLS)
 
 
-def _particles_per_env() -> int:
+def particles_per_env(lower, upper, voxel: float, per_cell: float) -> int:
     """Same arithmetic as the MPM spawner: per-axis ceil of extent/voxel."""
     n = 1
-    for lo, hi in zip(BED_LOWER, BED_UPPER):
-        n *= max(int(math.ceil(MPM_PARTICLES_PER_CELL * (hi - lo) / VOXEL_SIZE)), 1)
+    for lo, hi in zip(lower, upper):
+        n *= max(int(math.ceil(per_cell * (hi - lo) / voxel)), 1)
     return n
-
-
-PARTICLES_PER_ENV = _particles_per_env()
 
 
 def _next_pow2(n: int) -> int:
@@ -131,12 +110,14 @@ def _next_pow2(n: int) -> int:
 # Scene
 # ---------------------------------------------------------------------------
 
+# Placeholder extents. __post_init__ overwrites lower/upper/voxel_size from the
+# cfg fields before anything spawns, so these values are never the ones used.
 SOIL_CFG = MPMObjectCfg(
     prim_path="{ENV_REGEX_NS}/Soil",
     init_state=MPMObjectCfg.InitialStateCfg(),
     spawn=MPMGridCfg(
-        lower=BED_LOWER,
-        upper=BED_UPPER,
+        lower=(-1.0, -1.0, MPM_COLLIDER_MARGIN),
+        upper=(1.0, 1.0, MPM_COLLIDER_MARGIN + 0.25),
         voxel_size=VOXEL_SIZE,
         particles_per_cell=MPM_PARTICLES_PER_CELL,
         particle_placement="cell_center",
@@ -148,11 +129,15 @@ SOIL_CFG = MPMObjectCfg(
 
 
 def _mpm_ground() -> RigidObjectCfg:
+    """Hidden kinematic slab giving the MPM entry a floor. The MPM entry only
+    sees bodies listed on its CouplerEntryCfg, not the global ground plane, so
+    without this the particles fall forever. Size and position are rewritten in
+    __post_init__ to match the bed."""
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/MPMGround",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=MPM_GROUND_POSITION),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -0.05)),
         spawn=sim_utils.CuboidCfg(
-            size=MPM_GROUND_SIZE,
+            size=(4.0, 3.0, 0.10),
             rigid_props=UsdPhysicsRigidBodyCfg(rigid_body_enabled=True, kinematic_enabled=True),
             collision_props=NewtonCollisionPropertiesCfg(
                 collision_enabled=True,
@@ -163,13 +148,6 @@ def _mpm_ground() -> RigidObjectCfg:
             visible=False,
         ),
     )
-
-
-# Spawn on TOP of the bed, not inside it: the shared cfg puts the wheels on
-# z = 0, which here is a quarter metre of regolith.
-EXCAVATOR_ON_BED_CFG = EXCAVATOR_CFG.replace(
-    init_state=EXCAVATOR_CFG.init_state.replace(pos=(0.0, 0.0, SPAWN_Z + BED_TOP)),
-)
 
 
 @configclass
@@ -184,7 +162,7 @@ class ExcavateSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.DomeLightCfg(color=(0.8, 0.8, 0.8), intensity=2500.0),
     )
 
-    excavator: ArticulationCfg = EXCAVATOR_ON_BED_CFG
+    excavator: ArticulationCfg = EXCAVATOR_CFG
     mpm_ground: RigidObjectCfg = _mpm_ground()
     soil: MPMObjectCfg = SOIL_CFG
 
@@ -210,6 +188,28 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         env_spacing=12.0,               # beds are 8 m long; keep origins apart
         replicate_physics=True,
     )
+
+    # --- bed, in the env frame ---
+    #
+    # The machine spawns at the origin facing +x. With spawn_on_bed the wheels
+    # rest on the bed surface and both drums start over soil: the front one
+    # meets fresh regolith as it drives, the rear trails through the trench.
+    bed_x: tuple[float, float] = (-3.0, 5.0)
+    bed_y: tuple[float, float] = (-1.0, 1.0)
+    bed_depth: float = 0.25
+    voxel_size: float = VOXEL_SIZE
+    particles_per_cell: float = MPM_PARTICLES_PER_CELL
+    spawn_on_bed: bool = True
+
+    # Derived in __post_init__ from the four fields above. Declared here so the
+    # env can read them off the cfg instead of importing module constants,
+    # which is what makes a differently-sized bed a subclass.
+    bed_top: float = 0.0
+    bed_grid_lower: tuple[float, float] = (0.0, 0.0)
+    bed_grid_nx: int = 0
+    bed_grid_ny: int = 0
+    bed_particles_per_env: int = 0
+    drum_capacity_kg: float = DRUM_CAPACITY_KG
 
     # The sparse-grid capacities below are ABSOLUTE totals across all envs and
     # do not scale with --num_envs (Hydra applies that after __post_init__).
@@ -263,11 +263,45 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     proxy_mass_scale: float = 10.0
 
     def __post_init__(self) -> None:
-        total_particles = PARTICLES_PER_ENV * self.max_num_envs
+        # --- resolve the bed and write it into the scene -------------------
+        margin = 0.5 * self.voxel_size
+        lower = (self.bed_x[0], self.bed_y[0], margin)
+        upper = (self.bed_x[1], self.bed_y[1], margin + self.bed_depth)
+        length = self.bed_x[1] - self.bed_x[0]
+        width = self.bed_y[1] - self.bed_y[0]
+
+        self.bed_top = margin + self.bed_depth
+        self.bed_grid_lower = (self.bed_x[0], self.bed_y[0])
+        self.bed_grid_nx = int(math.ceil(length / self.voxel_size))
+        self.bed_grid_ny = int(math.ceil(width / self.voxel_size))
+        self.bed_particles_per_env = particles_per_env(
+            lower, upper, self.voxel_size, self.particles_per_cell
+        )
+        self.drum_capacity_kg = BORE_VOLUME * self.scene.soil.spawn.material.density
+
+        spawn = self.scene.soil.spawn
+        spawn.lower = lower
+        spawn.upper = upper
+        spawn.voxel_size = self.voxel_size
+        spawn.particles_per_cell = self.particles_per_cell
+
+        slab = self.scene.mpm_ground
+        slab.spawn.size = (length + 1.0, width + 1.0, 0.10)
+        slab.spawn.collision_props.contact_margin = margin
+        slab.init_state.pos = (0.5 * (self.bed_x[0] + self.bed_x[1]), 0.0, -0.05)
+
+        # Wheels rest on z = 0 in the shared asset cfg. On the bed that is a
+        # quarter metre of regolith, so lift the machine clear of it; with a
+        # pile in front of the machine instead, leave it on the ground plane.
+        z = SPAWN_Z + (self.bed_top if self.spawn_on_bed else 0.0)
+        self.scene.excavator.init_state.pos = (0.0, 0.0, z)
+
+        total_particles = self.bed_particles_per_env * self.max_num_envs
         active = _next_pow2(3 * total_particles)
         print(
-            f"[excavate] {PARTICLES_PER_ENV} particles/env x {self.max_num_envs} max envs "
-            f"= {total_particles}; sparse grid active={active}"
+            f"[excavate] bed {length:.1f} x {width:.1f} x {self.bed_depth:.2f} m at "
+            f"{self.voxel_size:.3f} m voxel -> {self.bed_particles_per_env} particles/env "
+            f"x {self.max_num_envs} max envs = {total_particles}; sparse grid active={active}"
         )
 
         self.sim.physics = NewtonCfg(
@@ -348,3 +382,34 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                 lookat=(1.0, 0.0, 0.0),
             )
         ]
+
+
+@configclass
+class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
+    """A laptop-sized bed: same task, ~9.5k particles per env instead of 32k.
+
+    The full bed is 8 x 2 x 0.25 m, which is 32,000 particles per env and
+    sparse-grid capacities sized for a cluster card. This one is 4.4 x 1.8 x
+    0.15 m -- still long enough that both drums sit over soil and wide enough
+    to swallow the 1.0 m drum, just shallower and shorter. It exists so the
+    MPM coupling and the drum-fill sensor can be watched on a 6 GB laptop,
+    which is the one check that cannot be made without a simulator.
+
+    The shallower bed changes where the drum bites. With the wheels resting on
+    the bed surface the arm has to reach a good deal further down before the
+    drum touches soil at all -- around 0.6 rad rather than the 0.2 that would
+    do it on the deep bed. scripts/dig_demo.py accounts for this.
+    """
+
+    bed_x: tuple[float, float] = (-2.2, 2.2)
+    bed_y: tuple[float, float] = (-0.9, 0.9)
+    bed_depth: float = 0.15
+    spawn_on_bed: bool = True
+
+    max_num_envs = 2
+    episode_length_s = 20.0
+
+    def __post_init__(self) -> None:
+        self.scene.num_envs = min(self.scene.num_envs, self.max_num_envs)
+        self.scene.env_spacing = 8.0
+        super().__post_init__()

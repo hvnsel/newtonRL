@@ -28,15 +28,10 @@ from ..mdp.sensors import drum_fill_mass, mpm_grid_particle_mass, mpm_particle_s
 from ..mdp.terrain import dig_scan_pattern, nav_scan_pattern, scan_from_heightfield
 from .excavate_env_cfg import (
     BED_FLOOR_Z,
-    BED_GRID_CELL,
-    BED_GRID_LOWER,
-    BED_GRID_NX,
-    BED_GRID_NY,
     BORE_HALF_LEN,
     BORE_RADIUS,
     DIG_CRITIC,
     DIG_OBS,
-    DRUM_CAPACITY_KG,
     ExcavatorExcavateEnvCfg,
 )
 
@@ -69,7 +64,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         )
         print(DIG_OBS.describe())
         print(DIG_CRITIC.describe())
-        print(f"[excavate] particle mass {self._particle_mass:.4f} kg, drum capacity {DRUM_CAPACITY_KG:.1f} kg")
+        print(
+            f"[excavate] particle mass {self._particle_mass:.4f} kg, "
+            f"drum capacity {cfg.drum_capacity_kg:.1f} kg, "
+            f"bed grid {cfg.bed_grid_nx} x {cfg.bed_grid_ny} @ {cfg.voxel_size:.3f} m"
+        )
 
     # ------------------------------------------------------------------
 
@@ -112,26 +111,28 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         return out
 
     def _bed_heightmap(self, pos: torch.Tensor, env: torch.Tensor) -> torch.Tensor:
+        c = self.cfg
         return soil_heightmap(
             pos, env, self.scene.env_origins,
-            BED_GRID_LOWER, BED_GRID_CELL, BED_GRID_NX, BED_GRID_NY, BED_FLOOR_Z,
+            c.bed_grid_lower, c.voxel_size, c.bed_grid_nx, c.bed_grid_ny, BED_FLOOR_Z,
         )
 
     def _scans(self, bed: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """(actor scan at the front drum, critic scan around the chassis).
         One rasterisation, sampled twice."""
+        c = self.cfg
         d = self.robot.data
         quat = d.root_quat_w.torch
         dpos, _ = self._drum_poses()
         front = dpos[:, 0]
         actor = scan_from_heightfield(
             bed, front, quat, self._dig_pattern, self.scene.env_origins,
-            BED_GRID_LOWER, BED_GRID_CELL, front[:, 2], clip=self.cfg.scan_clip,
+            c.bed_grid_lower, c.voxel_size, front[:, 2], clip=c.scan_clip,
         )
         chassis = d.root_pos_w.torch
         critic = scan_from_heightfield(
             bed, chassis, quat, self._nav_pattern, self.scene.env_origins,
-            BED_GRID_LOWER, BED_GRID_CELL, chassis[:, 2], clip=self.cfg.scan_clip,
+            c.bed_grid_lower, c.voxel_size, chassis[:, 2], clip=c.scan_clip,
         )
         return actor, critic
 
@@ -143,7 +144,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         p = self._proprio()
         pos, env = self._particles()
         actor_scan, critic_scan = self._scans(self._bed_heightmap(pos, env))
-        fill_frac = self._fill_kg / DRUM_CAPACITY_KG
+        fill_frac = self._fill_kg / self.cfg.drum_capacity_kg
 
         policy = DIG_OBS.assemble({
             "base_lin_vel": p["base_lin_vel"],
@@ -184,7 +185,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         pos, env = self._particles()
         self._fill_kg = self._compute_fill(pos, env)
         fill_delta = R.fill_delta_reward(self._fill_kg, self._fill_prev_kg)
-        fill_frac = self._fill_kg / DRUM_CAPACITY_KG
+        fill_frac = self._fill_kg / c.drum_capacity_kg
         if c.fill_success_mode == "all":
             self._success = R.drums_full(fill_frac, c.fill_success_fraction)
         else:
@@ -196,7 +197,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         all_tau = d.applied_torque.torch
 
         reward = (
-            c.w_fill * L.add("fill", fill_delta / (2.0 * DRUM_CAPACITY_KG))
+            c.w_fill * L.add("fill", fill_delta / (2.0 * c.drum_capacity_kg))
             + c.w_success * L.add("success", self._success.float())
             - c.w_stall * L.add("stall", R.stall_penalty(wheel_cmd_rad, p["base_lin_vel"][:, 0], WHEEL_RADIUS))
             - c.w_drift * L.add("drift", R.drift_penalty(p["base_lin_vel"], self._forward_cmd))

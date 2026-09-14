@@ -145,25 +145,36 @@ def boom_command_for_cut(cfg, cut: float) -> tuple[float, float]:
     return 2.0 * (angle - lo) / (hi - lo) - 1.0, angle
 
 
-def carried_in_lips(u) -> torch.Tensor:
-    """(E, 2) kg of soil riding in the lip channel but NOT inside the bore.
+def soil_shells(u) -> tuple[torch.Tensor, torch.Tensor]:
+    """(in the shell wall band, outside the drum) kg per drum, front and rear.
 
-    The difference between two of the same measurement: mass inside the lips'
-    swept radius, minus mass inside the bore. It exists because those two
-    states look identical in the viewer and completely different in the
-    reward. Soil scooped up, carried round on the lips and never getting past
-    the entry channel reads as zero fill -- the same as a drum that never
-    touched anything -- and the only way to tell them apart is to count the
-    particles in between.
+    Three radial bands, because one number cannot tell the interesting states
+    apart:
+
+        r < 0.170   the BORE. This is fill, and the only thing that counts.
+        0.170-0.200 inside the shell wall: soil that got past the lips but not
+                    properly in. Genuinely "stuck in the lip".
+        0.200-0.308 OUTSIDE the drum altogether -- the soil the drum happens to
+                    be buried in. It rises whenever the drum is in the ground
+                    and means nothing at all.
+
+    An earlier version reported the outer two bands as one number and called it
+    "carried in the lips". It was dominated by the third, so it read as 70 kg
+    of captured soil when the truth was a buried drum and an empty one.
     """
     pos, env = u._particles()
     dpos, dquat = u._drum_poses()
-    wide = torch.stack([
-        drum_fill_mass(pos, env, u._particle_mass, dpos[:, i], dquat[:, i],
-                       BLADE_SWEPT_OUTER_R, BORE_HALF_LEN, u.num_envs)
-        for i in range(2)
-    ], dim=-1)
-    return (wide - u._fill_kg).clamp(min=0.0)
+
+    def within(radius: float) -> torch.Tensor:
+        return torch.stack([
+            drum_fill_mass(pos, env, u._particle_mass, dpos[:, i], dquat[:, i],
+                           radius, BORE_HALF_LEN, u.num_envs)
+            for i in range(2)
+        ], dim=-1)
+
+    shell = (within(DRUM_RADIUS) - u._fill_kg).clamp(min=0.0)
+    outside = (within(BLADE_SWEPT_OUTER_R) - within(DRUM_RADIUS)).clamp(min=0.0)
+    return shell, outside
 
 
 def cut_diagnosis(cfg, cut: float) -> list[str]:
@@ -334,27 +345,36 @@ def main(argv=None) -> int:
             if i % int(0.5 / dt) == 0:
                 arm = float(u.robot.data.joint_pos.torch[0, u._arm_ids[0]])
                 fill = u._fill_kg[0]
-                lip = carried_in_lips(u)[0]
-                peak_lip = torch.maximum(peak_lip, carried_in_lips(u))
+                wall, out = soil_shells(u)
+                peak_lip = torch.maximum(peak_lip, wall)
                 print(f"  t={t:5.1f}s  arm={arm:+.3f} rad  "
-                      f"in bore=[{fill[0]:6.2f}, {fill[1]:6.2f}] kg  "
-                      f"in lips=[{lip[0]:6.2f}, {lip[1]:6.2f}] kg  "
-                      f"reward={float(rew[0]):+7.3f}")
+                      f"bore=[{fill[0]:6.2f},{fill[1]:6.2f}]  "
+                      f"wall=[{wall[0][0]:5.2f},{wall[0][1]:5.2f}]  "
+                      f"buried-in={out[0][0]:6.1f}  "
+                      f"rew={float(rew[0]):+6.3f}")
             if bool(term.any()) or bool(trunc.any()):
                 print(f"  t={t:5.1f}s  episode ended (terminated={bool(term.any())}, "
                       f"truncated={bool(trunc.any())}) -- bed and machine reset")
 
         print("\n=== result ===")
         print(f"  peak fill per drum, per env (kg):\n{peak}")
-        print(f"  peak carried IN THE LIPS but never inside (kg):\n{peak_lip}")
-        if float(peak_lip.max()) > 1.0 and float(peak.max()) < 1.0:
-            print("\n  Soil is being scooped and then held in the lip channel without")
-            print("  ever getting inside. That is a RESOLUTION limit, not a shape one:")
-            print("  the coupler inflates every collider by half a voxel per side, so")
-            print("  it eats a whole voxel out of the entry channel, and particles are")
-            print("  spawned one voxel apart. Run the task that fixes it:")
-            print("     --task Luna-Excavator-Excavate-Micro")
-            print("  which is the same machine at a 0.03 m voxel on a smaller bed.")
+        print(f"  peak in the shell wall band, never reaching the bore (kg):\n{peak_lip}")
+        if float(peak.max()) < 1.0:
+            voxel = u.cfg.voxel_size
+            clear = 0.0819 - voxel
+            print(f"\n  Fill never moved. The entry channel opens 0.0819 m and the coupler")
+            print(f"  eats a whole voxel of it, leaving {clear:.4f} m clear -- "
+                  f"{clear / voxel:.1f} particle")
+            print("  spacings. Granular material ARCHES across an orifice narrower than")
+            print("  about four to six grains: the grains jam against each other and the")
+            print("  flow simply stops, however hard it is pushed. That is a property of")
+            print("  the material, not of the drum, and no lip geometry defeats it.")
+            print(f"\n  At this voxel the channel is {clear / voxel:.1f} grains wide. Options, cheapest first:")
+            print(f"    env.voxel_size=0.02   -> {(0.0819 - 0.02) / 0.02:.1f} grains. More particles, but the")
+            print("                             contact buffers are no longer the limit")
+            print("    --cohesion 0           -> cohesive material arches MORE readily")
+            print("    --drum +0.4            -> if fill RISES, DIG_DRUM_SIGN is inverted")
+            print("                             and we have been running the dump direction")
         ok = bool((peak.sum(dim=-1) > 1.0).all())
         print(("  PASS  " if ok else "  FAIL  ") +
               "drum fill rose while the drums were in the bed")

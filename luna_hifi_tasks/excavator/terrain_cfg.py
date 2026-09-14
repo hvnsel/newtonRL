@@ -85,6 +85,10 @@ EXCAVATION_TERRAINS_CFG = TerrainGeneratorCfg(
     border_width=4.0,
     num_rows=6,
     num_cols=8,
+    # Rows are difficulty levels, which is what makes max_init_terrain_level and
+    # the importer's level promotion mean anything. Without this, `difficulty`
+    # is sampled at random per cell and the rows carry no ordering.
+    curriculum=True,
     horizontal_scale=0.1,
     vertical_scale=0.005,
     slope_threshold=0.75,

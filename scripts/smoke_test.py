@@ -5,6 +5,10 @@
 #   isaaclab -p scripts/smoke_test.py --task Luna-Excavator-Navigate --num_envs 8
 #   isaaclab -p scripts/smoke_test.py --task Luna-Excavator-Excavate --num_envs 2
 #
+# Add --watch to open a Newton GL window and follow one machine:
+#
+#   isaaclab -p scripts/smoke_test.py --task Luna-Excavator-Navigate --watch --steps 3000
+#
 # It builds the env exactly the way `isaaclab zero_agent` does, steps it a few
 # hundred times, and asserts the things that fail SILENTLY in training:
 #
@@ -46,6 +50,14 @@ def _parse(argv):
     p.add_argument("--task", required=True, help="Luna-Excavator-Navigate or Luna-Excavator-Excavate")
     p.add_argument("--num_envs", type=int, default=None)
     p.add_argument("--steps", type=int, default=300)
+    p.add_argument(
+        "--watch",
+        action="store_true",
+        help="Open a Newton GL window. Implies one environment and the smallest "
+             "terrain, unless --num_envs / --terrain_rows / --terrain_cols say otherwise.",
+    )
+    p.add_argument("--terrain_rows", type=int, default=None, help="navigate only; rows of sub-terrain")
+    p.add_argument("--terrain_cols", type=int, default=None, help="navigate only; cols of sub-terrain")
     add_launcher_args(p)
     return p.parse_args(argv)
 
@@ -61,8 +73,49 @@ def main(argv=None) -> int:
     torch.manual_seed(0)
 
     env_cfg, _ = resolve_task_config(args.task, "")
+
+    # This script uses plain argparse, not the Hydra CLI, so `--env.*` overrides
+    # do NOT reach it. Anything adjustable has to be an explicit flag and get
+    # applied to the config object here.
     if args.num_envs is not None:
         env_cfg.scene.num_envs = args.num_envs
+    elif args.watch:
+        env_cfg.scene.num_envs = 1
+
+    gen = getattr(getattr(env_cfg.scene, "terrain", None), "terrain_generator", None)
+    if gen is not None:
+        rows = args.terrain_rows if args.terrain_rows is not None else (1 if args.watch else None)
+        cols = args.terrain_cols if args.terrain_cols is not None else (1 if args.watch else None)
+        if rows is not None:
+            gen.num_rows = rows
+        if cols is not None:
+            gen.num_cols = cols
+        # max_init_terrain_level is clamped to num_rows - 1 internally, but keep
+        # the config self-consistent so it reads honestly in the log.
+        env_cfg.scene.terrain.max_init_terrain_level = min(
+            env_cfg.scene.terrain.max_init_terrain_level, gen.num_rows - 1
+        )
+        print(f"[smoke] terrain {gen.num_rows} x {gen.num_cols} sub-terrains of {gen.size} m")
+
+    if args.watch:
+        # visualizer_cfgs defaults to an empty list and the --visualizer flag
+        # only filters what the config already declares, so a viewer has to be
+        # added here. play_mode() would do it, but nothing calls play_mode on
+        # this path.
+        from isaaclab_visualizers.newton import NewtonGLVisualizerCfg
+
+        show_particles = "Excavate" in args.task
+        env_cfg.sim.visualizer_cfgs = [
+            NewtonGLVisualizerCfg(
+                show_particles=show_particles,
+                particle_color=(0.62, 0.55, 0.45) if show_particles else None,
+                eye=(7.0, 7.0, 4.5),
+                lookat=(0.0, 0.0, 0.5),
+            )
+        ]
+        print("[smoke] watch mode: Newton GL window, "
+              f"{env_cfg.scene.num_envs} env, particles={show_particles}")
+
     args.device = env_cfg.sim.device
     env_cfg.validate()
 

@@ -149,7 +149,7 @@ machine rather than the installed one:
 
 ```powershell
 Get-ChildItem C:\Users\hanse -Directory -Recurse -Depth 3 -ErrorAction SilentlyContinue |
-  Where-Object { Test-Path (Join-Path $_.FullName "scripts\dig_demo.py") } |
+  Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "scripts\dig_demo.py") } |
   Select-Object -ExpandProperty FullName
 ```
 

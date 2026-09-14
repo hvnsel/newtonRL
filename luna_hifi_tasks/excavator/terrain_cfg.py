@@ -21,7 +21,7 @@ import numpy as np
 from isaaclab.terrains import TerrainGeneratorCfg
 from isaaclab.terrains.height_field.hf_terrains_cfg import HfTerrainBaseCfg
 from isaaclab.terrains.height_field.utils import height_field_to_mesh
-from isaaclab.utils import configclass
+from isaaclab.utils.configclass import configclass
 
 from .mdp.terrain import excavation_height_field_np
 

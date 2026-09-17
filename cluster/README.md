@@ -15,6 +15,43 @@ also ignore `XDG_CACHE_HOME` and write to fixed paths under `$HOME`.
 job. Skip it and the quota fills partway through a container pull, where it
 looks like a corrupt download rather than a full disk.
 
+## 0b. Cloning a private repo onto the cluster
+
+`hvnsel/newtonRL` is private, so the clone asks for credentials. Use a
+**deploy key**: read-only, scoped to this one repository, and nothing else in
+the account is exposed if the cluster filesystem is ever read by someone else.
+A personal SSH key or a PAT would hand over everything you own.
+
+```bash
+ssh-keygen -t ed25519 -C "pace-$USER-newtonRL" -f ~/.ssh/newtonrl_deploy -N ""
+cat ~/.ssh/newtonrl_deploy.pub
+```
+
+Paste that public key at **github.com/hvnsel/newtonRL -> Settings -> Deploy
+keys -> Add deploy key**, and leave "Allow write access" UNCHECKED. Then tell
+ssh to use it for GitHub:
+
+```bash
+cat >> ~/.ssh/config <<'CFG'
+Host github.com
+  HostName ssh.github.com
+  Port 443
+  User git
+  IdentityFile ~/.ssh/newtonrl_deploy
+  IdentitiesOnly yes
+CFG
+chmod 600 ~/.ssh/config
+ssh -T git@github.com        # expect "Hi hvnsel/newtonRL! You've successfully authenticated"
+git clone git@github.com:hvnsel/newtonRL.git
+```
+
+Port 443 rather than 22 on purpose: clusters commonly firewall outbound SSH,
+and `ssh.github.com:443` is GitHub's supported way round it. If port 22 works
+for you it is fine too -- drop the `HostName`/`Port` lines.
+
+A read-only key means pushing from the cluster will not work, which is the
+intent. Develop elsewhere, pull here.
+
 ## 1. Find out what the site actually offers
 
 ```bash

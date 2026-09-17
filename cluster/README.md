@@ -33,6 +33,26 @@ salloc -A gts-jmcnabb3 -N1 --gres=gpu:1 -t0:20:00
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
 ```
 
+## 0. Two things that bite on first login
+
+**Paste one line at a time.** The login shell does not always strip bracketed
+paste escapes, so a multi-line paste arrives as `$'\E[200~mkdir': command not
+found` and the remaining lines run as arguments to whatever survived. It is
+worth seeing once because the failure is disguised: a mangled `git clone` line
+reappears URL-encoded inside a password prompt.
+
+**Send git's prompts to the terminal, not to a GUI.** PACE sets `SSH_ASKPASS`
+to a GTK helper, which over SSH fails with `cannot open display` and then git
+cannot ask for credentials at all:
+
+```bash
+unset SSH_ASKPASS SSH_ASKPASS_REQUIRE
+export GIT_TERMINAL_PROMPT=1
+```
+
+Put those two lines in `~/.bashrc` -- they will otherwise catch you on every
+fresh login, including inside batch jobs.
+
 ## 2. Lay it out
 
 ```bash

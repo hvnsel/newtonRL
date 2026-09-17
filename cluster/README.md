@@ -55,12 +55,36 @@ fresh login, including inside batch jobs.
 
 ## 2. Lay it out
 
+Group project storage is shared, and its top level is usually not
+group-writable -- `mkdir` there returns "Permission denied" until the PI
+creates you a subdirectory. That is not a blocker: everything here runs from
+scratch, which is 15 TB and yours. `pace_env.sh` detects it and falls back
+automatically, saying which it chose.
+
 ```bash
-mkdir -p /storage/project/r-jmcnabb3-0/luna
-cd /storage/project/r-jmcnabb3-0/luna
+mkdir -p /storage/scratch1/5/$USER/luna
+cd /storage/scratch1/5/$USER/luna
 git clone <this repo> newtonRL
 source newtonRL/cluster/pace_env.sh
 ```
+
+Worth asking the PI for project space anyway, for one reason: scratch is purged
+on an access-time policy, and many filesystems mount `noatime`/`relatime`, so
+merely reading a file may not keep it alive. The repo is 3 MB and re-clones in
+seconds. The **container image is the thing to protect** -- it is tens of GB and
+the expensive one to rebuild. Until there is project space for it, either
+re-touch it periodically or accept that a pull may be needed after a quiet spell.
+
+To find out whether you have project access at all:
+
+```bash
+ls -ld /storage/project/r-jmcnabb3-0
+ls -l  /storage/project/r-jmcnabb3-0 | head
+id
+```
+
+If the directory is group-owned by a group you are in and shows `drwxrws---`,
+you can write to it; if it shows `drwxr-x---`, you need the PI.
 
 ## 3. The container
 

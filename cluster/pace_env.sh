@@ -20,12 +20,29 @@
 #                be annoyed but not ruined to lose. Move finished runs to
 #                project before the purge window.
 
-# --- adjust these two if you lay things out differently -------------------
-export LUNA_PROJECT="${LUNA_PROJECT:-/storage/project/r-jmcnabb3-0/luna}"
+# --- adjust these if you lay things out differently -----------------------
 export LUNA_SCRATCH="${LUNA_SCRATCH:-/storage/scratch1/5/$USER/luna}"
+LUNA_PROJECT_WANT="${LUNA_PROJECT_WANT:-/storage/project/r-jmcnabb3-0/luna}"
 # -------------------------------------------------------------------------
 
-mkdir -p "$LUNA_PROJECT" "$LUNA_SCRATCH"/{cache,tmp,logs,runs}
+mkdir -p "$LUNA_SCRATCH"/{cache,tmp,logs,runs}
+
+# Group project storage is shared and its top level is often not group-writable
+# -- creating a directory there needs the PI, or a per-user subdirectory that
+# already exists. Rather than fail, fall back to scratch and say so: everything
+# here works from scratch, it is simply not permanent.
+if [ -z "${LUNA_PROJECT:-}" ]; then
+  if mkdir -p "$LUNA_PROJECT_WANT" 2>/dev/null && [ -w "$LUNA_PROJECT_WANT" ]; then
+    export LUNA_PROJECT="$LUNA_PROJECT_WANT"
+    LUNA_PROJECT_NOTE="group project storage (persistent)"
+  else
+    export LUNA_PROJECT="$LUNA_SCRATCH/persist"
+    mkdir -p "$LUNA_PROJECT"
+    LUNA_PROJECT_NOTE="SCRATCH fallback -- $LUNA_PROJECT_WANT is not writable by you"
+  fi
+else
+  LUNA_PROJECT_NOTE="set explicitly"
+fi
 
 # Apptainer: the image build and its scratch space. A pull unpacks layers
 # before it assembles the .sif, so TMPDIR needs room for roughly twice the
@@ -60,5 +77,18 @@ export LUNA_REPO="${LUNA_REPO:-$LUNA_PROJECT/newtonRL}"
 export LUNA_SIF="${LUNA_SIF:-$LUNA_PROJECT/isaaclab.sif}"
 
 echo "[pace_env] project $LUNA_PROJECT"
+echo "[pace_env]   ^ $LUNA_PROJECT_NOTE"
 echo "[pace_env] scratch $LUNA_SCRATCH"
 echo "[pace_env] caches redirected off \$HOME (20 GB quota)"
+case "$LUNA_PROJECT_NOTE" in
+  SCRATCH*)
+    echo "[pace_env]"
+    echo "[pace_env] NOTE: scratch is purged on an access-time policy, and many"
+    echo "[pace_env] filesystems are mounted noatime/relatime, so merely READING a"
+    echo "[pace_env] file may not keep it alive. The container image is the thing"
+    echo "[pace_env] worth protecting -- it is the expensive one to rebuild."
+    echo "[pace_env] Ask the PI for a writable subdirectory under"
+    echo "[pace_env]   $LUNA_PROJECT_WANT"
+    echo "[pace_env] or re-touch the image periodically."
+    ;;
+esac

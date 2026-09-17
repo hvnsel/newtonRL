@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+import time
 
 import gymnasium as gym
 import torch
@@ -338,6 +339,12 @@ def main(argv=None) -> int:
 
         obs, _ = env.reset()
         action = torch.zeros(u.num_envs, 4, device=u.device)
+        # Throughput, because every training estimate for this task is
+        # (env-steps needed) / (env-steps per second) and the second term is
+        # the one nobody has. Wall clock over the whole run, so it includes
+        # the MPM solve, the coupler and the reward -- which is what a trainer
+        # actually pays for.
+        t_start = time.perf_counter()
 
         peak = torch.zeros(u.num_envs, 2, device=u.device)
         peak_lip = torch.zeros(u.num_envs, 2, device=u.device)
@@ -378,6 +385,14 @@ def main(argv=None) -> int:
             if bool(term.any()) or bool(trunc.any()):
                 print(f"  t={t:5.1f}s  episode ended (terminated={bool(term.any())}, "
                       f"truncated={bool(trunc.any())}) -- bed and machine reset")
+
+        wall = time.perf_counter() - t_start
+        sps = steps * u.num_envs / max(wall, 1e-9)
+        print("\n=== throughput ===")
+        print(f"  {steps} steps x {u.num_envs} env in {wall:.1f} s "
+              f"-> {sps:,.0f} env-steps/s at {u.cfg.bed_particles_per_env:,} particles")
+        print(f"  scripts/train_budget.py --sps {sps:.0f} --envs {u.num_envs}  "
+              f"turns this into GPU hours")
 
         print("\n=== result ===")
         print(f"  peak fill per drum, per env (kg):\n{peak}")

@@ -381,6 +381,43 @@ bash cluster/run_in_container.sh \
 `--voxel_size` is exposed there too, which is the same knob that decides
 whether soil can enter the excavator drum at all.
 
+### Measured: 48,000 particles on a Quadro RTX 6000
+
+```
+[INFO]: Isaac Lab Newton granular MPM demo ready. Spawned 48000 particles.
+Finalize builder      2.1 s
+Initialize solver     7.9 s
+CUDA graph capture   40.2 s   <- one-time, not per-step
+```
+
+Against about 7,000 on a laptop, on the **second-weakest RT card in the
+fleet**. Read it carefully though: the two numbers do not measure the same
+thing. The laptop ceiling was `nconmax` in the *rigid* solver overrunning on
+a 119-geom excavator, not MPM capacity; this demo has a wedge and a ground
+plane, so it measures MPM headroom with the rigid side nearly empty. What it
+establishes is that 48k particles is unremarkable for this stack, which was
+exactly what was in doubt. Where the excavator actually lands needs its own
+measurement.
+
+### Rendering headless works, via EGL
+
+```
+[WARNING] [NewtonVisualizer] No display found (DISPLAY is unset); the Newton
+viewer runs headless via EGL and no window will open.
+```
+
+That is the answer to "can we see what the sim is doing on a cluster": the
+Newton viewer already runs without an X server, a display or a forwarded
+port. It simply is not being asked to save anything. Frame capture is
+therefore a question of which visualizer backend to ask and how, not of
+whether the node can render -- which is the failure mode that would have
+needed the PI, a partition change or a ticket.
+
+Two lines of noise unique to this demo, both harmless: a `FutureWarning`
+about Newton shape colour replacement being a deprecated workaround, and
+`Not using Hub` followed by a successful fallback to the CloudFront asset
+mirror, which is Omniverse fetching demo assets over plain HTTPS.
+
 Anything that starts Kit also wants writable cache directories, and the image
 is read-only, so bind scratch and point the Omniverse cache variables at it --
 `pace_env.sh` sets them.

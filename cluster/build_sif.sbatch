@@ -3,7 +3,7 @@
 #SBATCH -J isaaclab-sif
 #SBATCH -N 1 -n 8
 #SBATCH --mem=48G
-#SBATCH -t 8:00:00
+#SBATCH -t 12:00:00
 #SBATCH -o %x-%j.out
 #SBATCH -e %x-%j.out
 #
@@ -59,11 +59,18 @@ if LOCAL=$(pick_local); then
   BUILD="$LOCAL/isaaclab.sif"
   mkdir -p "$APPTAINER_TMPDIR"
 else
-  echo "!! no node-local disk with ${NEED_GB}G. Falling back to scratch, which"
-  echo "!! is the slow path -- 8 hours may not be enough. If this times out,"
-  echo "!! rerun with --sandbox instead (see the note at the end of this file)."
+  # NOT squashfs-to-scratch. That is the path that quoted 22 hours, and
+  # spending a night to rediscover it is worse than not trying. A SANDBOX
+  # skips mksquashfs entirely -- it is just the layer extraction, which
+  # already completes in about fifteen minutes -- so it converts "probably
+  # times out" into "works, with a caveat".
+  echo "!! no node-local disk with ${NEED_GB}G free."
+  echo "!! Building a SANDBOX on scratch instead of a compressed image:"
+  echo "!!   mksquashfs to Lustre is the 22-hour path and will not finish."
+  echo "!!   A sandbox runs fine and starts faster; the cost is a few hundred"
+  echo "!!   thousand small files against a 1,000,000 file quota."
   export APPTAINER_TMPDIR="/storage/scratch1/5/$USER/luna/tmp"
-  BUILD="$DEST"
+  SANDBOX="/storage/scratch1/5/$USER/luna/isaaclab"
   mkdir -p "$APPTAINER_TMPDIR"
 fi
 
@@ -73,6 +80,19 @@ echo "build  $BUILD"
 df -h "$(dirname "$BUILD")" "$APPTAINER_CACHEDIR"
 
 start=$SECONDS
+if [ -n "${SANDBOX:-}" ]; then
+  apptainer build --force --sandbox "$SANDBOX" "$IMAGE"
+  rc=$?
+  echo "=== sandbox build exited $rc after $(( (SECONDS-start)/60 )) min ==="
+  if [ $rc -eq 0 ]; then
+    echo "files used on scratch now:"
+    pace-quota 2>/dev/null | grep -i scratch || du -sh "$SANDBOX"
+    echo "=== done. Use it exactly like a .sif:"
+    echo "      apptainer exec --nv $SANDBOX python -c 'import isaaclab'"
+  fi
+  exit $rc
+fi
+
 apptainer pull --force "$BUILD" "$IMAGE"
 rc=$?
 echo "=== pull exited $rc after $(( (SECONDS-start)/60 )) min ==="
@@ -87,11 +107,8 @@ fi
 ls -lh "$DEST"
 echo "=== done. Verify with: apptainer exec $DEST python -c 'import isaaclab' ==="
 
-# If this times out even on local disk, the escape hatch is a SANDBOX: a plain
-# directory instead of a compressed image, which skips mksquashfs entirely.
-#
-#   apptainer build --sandbox "$LOCAL/isaaclab" "$IMAGE"
-#
-# It runs fine and starts faster. The cost is hundreds of thousands of small
-# files, against a scratch file-count quota of 1,000,000 -- so keep it on local
-# disk if you can, and check `pace-quota` afterwards if you cannot.
+# On walltime: 12 hours is a CEILING, not a reservation. Slurm charges for
+# what a job actually uses, so asking for more costs nothing but queue
+# priority. On the local-disk path this exits in well under an hour; the
+# generous limit exists so that a slow node cannot turn a working build into a
+# timeout.

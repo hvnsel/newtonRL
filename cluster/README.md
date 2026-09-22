@@ -314,6 +314,20 @@ and looks like a broken container. It is not.
 Prefer `isaaclab.sh -p`: it wires up the extension paths and environment that a
 bare interpreter does not.
 
+It warns that it is **deprecated and removed in Isaac Lab 3.1**, in favour of
+`uv run isaaclab`. It still resolves the right interpreter today, so this is a
+shelf life rather than a problem -- but anything written against it needs
+revisiting at the 3.1 bump, and `run_in_container.sh` is the single place that
+has to change.
+
+The demo scripts also moved in the 3.x layout, so paths copied from 2.x docs
+(`/workspace/isaaclab/scripts/reinforcement_learning/rsl_rl/train.py`) are not
+there. Find them rather than guess:
+
+```bash
+apptainer exec "$LUNA_SIF" bash -lc 'find /workspace -name "train.py" -path "*rl*"'
+```
+
 Anything that starts Kit also wants writable cache directories, and the image
 is read-only, so bind scratch and point the Omniverse cache variables at it --
 `pace_env.sh` sets them.

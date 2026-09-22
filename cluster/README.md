@@ -418,6 +418,65 @@ about Newton shape colour replacement being a deprecated workaround, and
 `Not using Hub` followed by a successful fallback to the CloudFront asset
 mirror, which is Omniverse fetching demo assets over plain HTTPS.
 
+### Copy the .sif to node-local disk before running anything
+
+A run that failed on an **argparse error** still took **5m09s**. None of that
+was the simulation -- it was Apptainer reading a 12 GB image over Lustre, and
+it is paid on every single launch.
+
+```bash
+cp "$LUNA_SIF" /tmp/isaaclab.sif && export SIF=/tmp/isaaclab.sif
+```
+
+One minute once, and every later command starts in seconds. This is the same
+property that made the image *build* take 22 hours on scratch and 47 minutes
+on `/tmp`: Lustre is built for large sequential I/O and punishes everything
+else. The copy dies with the node; the scratch original does not.
+
+### The valid `--viz` values
+
+From `isaaclab/app/app_launcher.py`:
+
+```
+kit, newton_gl, newton_rtx, rerun, viser, none
+```
+
+`none` is how you turn rendering off -- an empty string is rejected, and
+`newton` is a deprecated alias for `newton_gl`. The MPM demos default to
+`newton_gl`.
+
+### Getting frames out: `patch_demo_frames.py`
+
+3.x ships a video recorder at `isaaclab/envs/utils/video_recorder.py`, but it
+is built by the *environment* base class and driven by `env.step()`. The
+demos construct a `SimulationContext` directly and never make an env, so the
+recorder never exists and the demos have no `--video`. That is why no
+combination of flags produces a file.
+
+They do not need one. The recorder's own frame source is
+`visualizer.render_rgb_array()`, every rendering visualizer exposes it, and
+the demo loop already calls `sim.render()`:
+
+```bash
+apptainer exec "$SIF" cat \
+  /workspace/isaaclab/scripts/demos/mpm/newton_mpm_granular.py \
+  > "$LUNA_SCRATCH/mpm_frames.py"
+python3 cluster/patch_demo_frames.py "$LUNA_SCRATCH/mpm_frames.py"
+
+FRAME_DIR=$LUNA_SCRATCH/frames FRAME_EVERY=1 \
+  apptainer exec --nv -B "$LUNA_SCRATCH:$LUNA_SCRATCH" ... "$SIF" \
+  /workspace/isaaclab/isaaclab.sh -p "$LUNA_SCRATCH/mpm_frames.py" \
+  --max_steps 400 --device cuda:0 --viz newton_gl
+```
+
+Rendering every step is what makes a short run look like a hang, so raise
+`FRAME_EVERY` while iterating and drop it to 1 only for the take you keep.
+
+If frames come out **black** under `--viz kit`, that is documented in the
+recorder itself: the Kit Replicator path needs `cubric` to propagate Newton
+Fabric transforms to RTX, and without it the capture silently yields black.
+Use `newton_gl` or `newton_rtx` instead, which capture directly.
+
 Anything that starts Kit also wants writable cache directories, and the image
 is read-only, so bind scratch and point the Omniverse cache variables at it --
 `pace_env.sh` sets them.

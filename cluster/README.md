@@ -9,6 +9,65 @@ That ordering is also the cheaper one: the dependency stack is the part that
 takes a day to get right, and it can be validated with a single standalone
 file.
 
+## Day 0: the 30-minute tentative test
+
+Before any of the below. The question is only *"can we get an Isaac Sim
+environment running on PACE and see pictures come out of it"*, and answering it
+touches nothing shared and commits to nothing.
+
+Nothing needs to be copied from your machine. Paste files in with `cat >`.
+Everything lands in your own scratch, which no one else can see, and
+`rm -rf` undoes all of it.
+
+**1. Is something already provided?** Cheapest possible check -- PACE may ship
+Isaac Sim or a container for it, which saves a 20 GB pull:
+
+```bash
+module avail 2>&1 | grep -iE "isaac|omniverse|apptainer|singularity"
+ls /storage/coda1/shared 2>/dev/null | head
+```
+
+**2. Get a GPU for half an hour.** Interactive, so you see errors as they
+happen, and it costs a fraction of a credit:
+
+```bash
+salloc -A gts-jmcnabb3 -N1 --gres=gpu:1 -t0:30:00
+nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
+```
+
+That driver version is the one number that can veto an Isaac Sim image, and it
+is invisible from the login node.
+
+**3. Get the container.** In the job, after `source pace_env.sh`.
+
+**4. Does the stack work?** `newton_smoke.py`, layered so a failure says which
+layer.
+
+**5. Do frames come out?** Isaac Lab ships its own demos, so no scene code
+needs writing:
+
+```bash
+apptainer exec --nv -B "$LUNA_SCRATCH" "$LUNA_SIF" \
+  python /workspace/isaaclab/scripts/reinforcement_learning/rsl_rl/train.py \
+    --task Isaac-Cartpole-v0 --headless --video --video_length 200 \
+    --max_iterations 5
+```
+
+`--headless --video` renders offscreen and writes an mp4 under the run's log
+directory. Pull it back with `scp` from your own machine and watch it. That is
+the whole "can we see what the sim is doing on a cluster" question answered,
+with a task that ships in the box.
+
+WebRTC streaming is the nicer version of this and worth asking about at the
+meeting -- but frames-to-disk needs no open ports, no firewall exceptions and
+nobody's permission, so it is the right thing to have working first.
+
+**Nothing here is a commitment.** No repo on the cluster, no credentials, no
+shared directories touched, no long jobs queued. If the meeting sends things a
+different way, `rm -rf /storage/scratch1/5/$USER/luna` and it never happened.
+
+---
+
 ## The storage rule that governs everything
 
 | | size | persists? | use for |

@@ -233,15 +233,17 @@ GPU node reports exactly what a CPU node reports -- `cuda available: False`,
 and layer 6 dying on "Found no NVIDIA driver on your system" -- which reads as
 a broken image rather than a missing flag.
 
-### What the image actually contains (measured 2026-09-22, CPU node)
+### All six layers pass (measured 2026-09-22, `gpu-rtx6000`, driver 575.57.08)
 
 | layer | result |
 |---|---|
-| torch | 2.11.0+cu128 |
-| warp | 1.16.0, CUDA Toolkit 12.9 |
+| torch | 2.11.0+cu128, `cuda available: True` |
+| GPU | Quadro RTX 6000, sm_75, 25.2 GB |
+| warp | 1.16.0, CUDA Toolkit 12.9 / Driver 12.9, `cuda:0` with mempool |
 | isaaclab | **17.0.2** -- the 3.x line, so Newton is in |
 | `isaaclab_newton` | `MPMObjectCfg`, `MPMSolverCfg`, `NewtonCfg`, `MJWarpSolverCfg`, `MPMParticleMaterialCfg` |
 | `isaaclab_contrib.coupling` | `CouplerProxyCfg`, `CouplerEntryCfg` |
+| headless Kit | starts, 110.3.0, ~131 s cold |
 
 Layers 4 and 5 were the two open questions and both are answered: the NGC
 image ships `isaaclab_contrib` as well as `isaaclab_newton`, so **nothing has
@@ -251,6 +253,50 @@ dependency stack.
 Its Python is 3.12.13 and the container reports `Linux ... el9_6`, so the
 libraries are the image's, not the host's -- the only thing that comes from
 PACE is the driver, via `--nv`.
+
+### Log lines on a successful start that look like failures
+
+A clean Kit launch in this container prints all of these. None of them mean
+anything is wrong, and between them they account for the first two minutes:
+
+- `OmniHub: Hub failed to launch ... retry_reason` x40. Omniverse's asset-CDN
+  client, with no Hub in the image and no Nucleus server to reach. It backs
+  off and gives up, and Kit continues.
+- `Extensions config 'extension.toml' doesn't exist .../luna/tmp` -- Kit
+  scanned the working directory for extension folders and found the `tmp/`
+  and `cache/` that `pace_env.sh` creates.
+- `File already exists in database: grpc/health/v1/health.proto` -- protobuf
+  double-registration, present in every Isaac Sim run.
+- `failed to open the default display. Can't verify X Server version` --
+  headless, as asked.
+- `error calling pthread_setaffinity_np` -- the perf monitor wanting CPU
+  pinning that Slurm's cgroup will not give it.
+
+Two more are real, but non-fatal, and **only appear when the caches are not
+bound**:
+
+```
+[Error] [omni.datastore] Failed to acquire exclusive lock to data store (256>=256)
+[Error] [omni.datastore] Failed to create local file data store at '/isaac-sim/kit/cache/DerivedDataCache'
+[Error] [omni.kit.app.plugin] failed to open file '/isaac-sim/kit/data/Kit/IsaacLab/3.0/user.config.json'
+```
+
+Both paths are **inside the read-only squashfs**. Kit shrugs and runs without
+a cache, which means every single launch recompiles its shaders and pays the
+full cold start. `run_in_container.sh` binds writable scratch over them.
+
+### Running anything: `run_in_container.sh`
+
+```bash
+source cluster/pace_env.sh
+bash cluster/run_in_container.sh newton_smoke.py
+```
+
+It supplies `--nv`, the bundled interpreter, and the cache binds -- the three
+things that are easy to omit and that each fail without naming themselves.
+Note that Warp respects `XDG_CACHE_HOME` but only if it is exported *before*
+`apptainer`: a run without `pace_env.sh` puts the Warp kernel cache in
+`$HOME/.cache/warp`, where it grows without bound against a 20 GB quota.
 
 ### Inside the image
 

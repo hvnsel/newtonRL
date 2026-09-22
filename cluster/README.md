@@ -48,7 +48,8 @@ needs writing:
 
 ```bash
 apptainer exec --nv -B "$LUNA_SCRATCH" "$LUNA_SIF" \
-  python /workspace/isaaclab/scripts/reinforcement_learning/rsl_rl/train.py \
+  /workspace/isaaclab/isaaclab.sh -p \
+    /workspace/isaaclab/scripts/reinforcement_learning/rsl_rl/train.py \
     --task Isaac-Cartpole-v0 --headless --video --video_length 200 \
     --max_iterations 5
 ```
@@ -208,7 +209,8 @@ Access label.
 Copy the one file over and run it in the container.
 
 ```bash
-apptainer exec --nv -B "$LUNA_SCRATCH" "$LUNA_SIF" python newton_smoke.py
+apptainer exec --nv -B "$LUNA_SCRATCH" "$LUNA_SIF" \
+  /workspace/isaaclab/isaaclab.sh -p newton_smoke.py
 ```
 
 It checks six layers and keeps going where it can, because "isaaclab imports
@@ -225,6 +227,30 @@ are different problems with different fixes:
 
 Run it on a **GPU node**, not the login node. Layers 1-5 will pass on a login
 node and tell you nothing about the thing most likely to be wrong.
+
+`--nv` is what bind-mounts the host driver into the container. Without it a
+GPU node reports exactly what a CPU node reports -- `cuda available: False`,
+and layer 6 dying on "Found no NVIDIA driver on your system" -- which reads as
+a broken image rather than a missing flag.
+
+### What the image actually contains (measured 2026-09-22, CPU node)
+
+| layer | result |
+|---|---|
+| torch | 2.11.0+cu128 |
+| warp | 1.16.0, CUDA Toolkit 12.9 |
+| isaaclab | **17.0.2** -- the 3.x line, so Newton is in |
+| `isaaclab_newton` | `MPMObjectCfg`, `MPMSolverCfg`, `NewtonCfg`, `MJWarpSolverCfg`, `MPMParticleMaterialCfg` |
+| `isaaclab_contrib.coupling` | `CouplerProxyCfg`, `CouplerEntryCfg` |
+
+Layers 4 and 5 were the two open questions and both are answered: the NGC
+image ships `isaaclab_contrib` as well as `isaaclab_newton`, so **nothing has
+to be pip-installed into an overlay**. The container as pulled is the whole
+dependency stack.
+
+Its Python is 3.12.13 and the container reports `Linux ... el9_6`, so the
+libraries are the image's, not the host's -- the only thing that comes from
+PACE is the driver, via `--nv`.
 
 ### Inside the image
 

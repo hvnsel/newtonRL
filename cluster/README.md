@@ -351,6 +351,36 @@ Note `scripts/reinforcement_learning/` exists but contains no `train.py`: the
 RL entry point was renamed in 3.x as well as moved, so check the directory
 rather than porting a 2.x command line.
 
+### `--headless` no longer exists
+
+This is the 3.x change that breaks every command line copied from a 2.x doc,
+including the `--headless --video` recipe for pulling frames. AppLauncher now
+takes:
+
+```
+--visualizer VIS, --viz VIS   CSV of backends: kit, newton, rerun, viser
+--experience FILE             resolved FROM the visualizer when left empty
+```
+
+Headless is the default, reached by *not* naming a visualizer rather than by
+asking for headlessness. `--enable_cameras` and `--video` are gone with it, so
+frame capture is no longer a launcher flag -- it is whatever the chosen
+visualizer backend does. `rerun` and `viser` are the two to investigate; viser
+is a web server and so needs SSH port forwarding, which makes it the more
+awkward of the two on a cluster.
+
+The MPM demos take `--max_steps N`, which bounds a run without a visualizer
+and makes them usable as a timed throughput benchmark:
+
+```bash
+bash cluster/run_in_container.sh \
+  /workspace/isaaclab/scripts/demos/mpm/newton_mpm_granular.py \
+  --max_steps 200 --collider wedge --device cuda:0
+```
+
+`--voxel_size` is exposed there too, which is the same knob that decides
+whether soil can enter the excavator drum at all.
+
 Anything that starts Kit also wants writable cache directories, and the image
 is read-only, so bind scratch and point the Omniverse cache variables at it --
 `pace_env.sh` sets them.

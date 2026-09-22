@@ -123,6 +123,34 @@ salloc -A gts-jmcnabb3 -N1 --gres=gpu:1 -t0:20:00
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
 ```
 
+### What PACE actually has (measured 2026-09-22)
+
+| partition | GPU | VRAM | RT cores? | nodes x GPUs |
+|---|---|---|---|---|
+| `gpu-v100` | V100 | 16 GB | **no** (Volta) | 40x2 |
+| `gpu-rtx6000` | RTX 6000 | 24 GB | yes (Turing) | 30x4 |
+| `gpu-a100` | A100 | 40-80 GB | **no** | 12x2, 1x8 |
+| `gpu-l40s` | L40S | 48 GB | yes (Ada) | 10x8 |
+| `gpu-h100` | H100 | 80 GB | **no** | 4x8 |
+| `gpu-h200` | H200 | 141 GB | **no** | 12x8 |
+| `gpu-rtxpro-blackwell` | RTX PRO 6000 | 96 GB | yes (Blackwell) | 3x8 |
+
+Driver 575.57.08, QOS `inferno`.
+
+A bare `--gres=gpu:1` lands on `gpu-v100`, which is the one partition whose GPU
+has **no RT cores**. Isaac Sim's documented requirement is an RTX-class GPU, so
+rendering is the part at risk there -- headless physics is not.
+
+Split the work:
+
+- **rendering, video, anything visual** -> `gpu-l40s`, the part NVIDIA actually
+  targets for Omniverse. `gpu-rtx6000` is the fallback and is less contended.
+- **headless MPM training** -> `gpu-h200` or `gpu-a100` for memory and compute.
+
+```bash
+salloc -A gts-jmcnabb3 -p gpu-l40s -N1 --gres=gpu:l40s:1 -t0:30:00
+```
+
 ## 2. Environment
 
 ```bash
@@ -138,22 +166,31 @@ Isaac Lab is run from a container on clusters: a native install wants write
 access to paths a shared filesystem will not give you, and pins a driver you do
 not control.
 
+Confirmed on PACE: `apptainer` lives at `/usr/bin/apptainer` on **compute
+nodes only** -- it is absent from login nodes and there is no module for it, so
+`module avail` and `command -v` on a login node both come back empty and look
+like a definitive no. It is not.
+
+The image is `nvcr.io/nvidia/isaac-lab:3.0.0-rc1` (NGC, 15.2 GB compressed,
+3.0 line so it carries Newton). It is marked Early Access, so it needs NGC
+credentials:
+
 ```bash
-apptainer pull "$LUNA_SIF" docker://nvcr.io/nvidia/isaac-lab:<TAG>
+# key from ngc.nvidia.com -> Setup -> Generate API Key
+apptainer remote login --username '$oauthtoken' docker://nvcr.io
+apptainer pull "$LUNA_SIF" docker://nvcr.io/nvidia/isaac-lab:3.0.0-rc1
 ```
 
-Two things to settle first, both by checking rather than assuming:
+**Pull on a CPU node.** A 15 GB download plus unpack takes far longer than it
+takes to establish anything, and there is no reason to hold a GPU while it
+happens:
 
-- **the tag.** It must be an Isaac Lab **3.x with the Newton backend**. Newton
-  does not exist on 2.x, and layer 4 of the smoke test below is exactly the
-  check for this.
-- **NGC auth.** Some NVIDIA images need a key:
-  `apptainer remote login --username '$oauthtoken' docker://nvcr.io`
+```bash
+salloc -A gts-jmcnabb3 -N1 -t2:00:00        # no --gres
+```
 
-If no published tag carries Newton, the fallback is an Apptainer definition
-file starting from the Isaac Sim base image with Isaac Lab's develop branch
-installed on top. More work, but it is the honest answer if the tag does not
-exist -- and worth finding out before building anything around it.
+`APPTAINER_TMPDIR` needs room for roughly twice the final image while layers
+are assembled, which is why `pace_env.sh` puts it on scratch.
 
 ## 4. Prove the stack works
 

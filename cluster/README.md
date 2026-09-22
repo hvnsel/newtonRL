@@ -325,8 +325,31 @@ The demo scripts also moved in the 3.x layout, so paths copied from 2.x docs
 there. Find them rather than guess:
 
 ```bash
-apptainer exec "$LUNA_SIF" bash -lc 'find /workspace -name "train.py" -path "*rl*"'
+apptainer exec "$LUNA_SIF" bash -lc 'ls /workspace/isaaclab/scripts'
 ```
+
+### The demos worth running: `scripts/demos/mpm/`
+
+The 3.x image ships MPM demos, which are a far better proof than a cartpole
+because they exercise the exact subsystem the excavator stands on:
+
+```
+scripts/demos/mpm/newton_mpm_granular.py         granular MPM -- the soil
+scripts/demos/mpm/newton_mpm_twoway_coupling.py  rigid <-> MPM -- drum in soil
+scripts/demos/mpm/snowball_smash.py
+scripts/demos/mpm/teapot_fill.py
+scripts/demos/newton_viewer_dominoes.py
+scripts/demos/newton_viewer_block_and_tackle.py
+```
+
+Running those answers "does the granular physics we need work on this
+cluster", not merely "does Isaac Sim start". They are NVIDIA's own code, so a
+failure in them is a site or image problem and never ours -- which makes them
+the right first thing to run on any new node type.
+
+Note `scripts/reinforcement_learning/` exists but contains no `train.py`: the
+RL entry point was renamed in 3.x as well as moved, so check the directory
+rather than porting a 2.x command line.
 
 Anything that starts Kit also wants writable cache directories, and the image
 is read-only, so bind scratch and point the Omniverse cache variables at it --

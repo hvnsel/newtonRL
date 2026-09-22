@@ -26,6 +26,10 @@ set -u
 IMAGE="docker://nvcr.io/nvidia/isaac-lab:3.0.0-rc1"
 DEST="/storage/scratch1/5/$USER/luna/isaaclab.sif"
 NEED_GB=70          # unpacked rootfs and the .sif have to coexist
+#
+# Measured on PACE Phoenix 2026-09-22: node-local disk is /tmp, and the build
+# took 47 minutes there against the 22 hours mksquashfs was quoting when
+# writing to Lustre scratch. Final image 12 GB.
 
 # The layer cache stays on scratch: it is 15 GB, it is already populated, and
 # keeping it means a retry never re-downloads.

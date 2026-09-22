@@ -190,7 +190,17 @@ salloc -A gts-jmcnabb3 -N1 -t2:00:00        # no --gres
 ```
 
 `APPTAINER_TMPDIR` needs room for roughly twice the final image while layers
-are assembled, which is why `pace_env.sh` puts it on scratch.
+are assembled.
+
+**Build on node-local disk, not on scratch.** `mksquashfs` writes many small
+blocks and Lustre is built for large sequential I/O; writing the image straight
+to scratch quoted **22 hours**. On Phoenix the node-local disk is `/tmp`, and
+the same build there took **47 minutes** for a **12 GB** image, which then
+moves to scratch as one sequential copy. `build_sif.sbatch` does this, finds
+the local disk itself, and runs unattended.
+
+No NGC credentials were needed: `3.0.0-rc1` pulls anonymously despite the Early
+Access label.
 
 ## 4. Prove the stack works
 

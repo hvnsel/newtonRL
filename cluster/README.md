@@ -226,6 +226,26 @@ are different problems with different fixes:
 Run it on a **GPU node**, not the login node. Layers 1-5 will pass on a login
 node and tell you nothing about the thing most likely to be wrong.
 
+### Inside the image
+
+There is no `python` on `PATH` -- Isaac Sim bundles its own interpreter, so
+`apptainer exec image.sif python foo.py` fails with "executable file not found"
+and looks like a broken container. It is not.
+
+```
+/workspace/isaaclab            Isaac Lab root
+/workspace/isaaclab/isaaclab.sh -p   <- the Linux twin of isaaclab.bat -p
+/isaac-sim/python.sh                 <- Isaac Sim's own launcher
+/isaac-sim/kit/python/bin/python3    <- the bare interpreter, env not set up
+```
+
+Prefer `isaaclab.sh -p`: it wires up the extension paths and environment that a
+bare interpreter does not.
+
+Anything that starts Kit also wants writable cache directories, and the image
+is read-only, so bind scratch and point the Omniverse cache variables at it --
+`pace_env.sh` sets them.
+
 ## 5. Only then, the training code
 
 ```bash

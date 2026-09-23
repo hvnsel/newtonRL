@@ -4,10 +4,9 @@
 # rectangular frame, and a counter-rotating excavation drum on a pitching arm
 # at each end.
 #
-# Same contract as tricycle.py: this file is NOT read at training time.
-# Training loads the converted USD in assets/excavator/. The MJCF here is the
-# *source* of that USD -- whenever you change it, re-run the converter (README,
-# "Convert the tricycle asset", with the paths swapped) so the USD matches.
+# This file is NOT read at training time. Training loads the converted USD in
+# assets/excavator/, and this MJCF is its source: re-run the converter after
+# every change here.
 #
 # Plan view (+x forward, +z up). A,B are the front corners, C,D the rear:
 #
@@ -34,66 +33,42 @@
 #                      (O)                       (O)     <- wheels
 #           ~~~~~~~~~~~~~~~~~ soil ~~~~~~~~~~~~~~~~~~~~
 #
-# Why it is shaped this way
-# -------------------------
+# Layout
+# ------
 # * Skid steer, no steering joints. Four hinges, left pair and right pair
-#   commanded together. One less mechanism to model and it is what real drum
-#   excavators do.
-# * The rear assembly is the front assembly rotated 180 degrees about z. That
-#   is not just tidiness: it makes the rear drum's spin axis point along world
-#   -y, so *identical* joint commands counter-rotate the two drums. Both drums
-#   dig at +1, and their horizontal digging reactions cancel through the
-#   frame. That force cancellation is the entire reason this architecture
-#   exists -- it lets a light machine excavate without needing its own weight
-#   in traction.
+#   commanded together.
+# * The rear assembly is the front assembly rotated 180 degrees about z, which
+#   points the rear drum's spin axis along world -y, so identical joint
+#   commands counter-rotate the two drums. Both dig at +1 and their horizontal
+#   digging reactions cancel through the frame, which is what lets a light
+#   machine excavate without its own weight in traction.
 # * The drums are hollow: a ring of box segments closed at both ends by cap
-#   discs, with SCOOP_COUNT of the segments left open as scoop mouths. At each
-#   mouth carries a PAIR of thin curved lips, rooted at opposite edges and
-#   overlapping each other across the gap at different radii: one climbing
-#   outside the shell circle, one dropping inside it. The way in is the CHANNEL
-#   BETWEEN THEM, and it is the only way in or out.
+#   discs, with SCOOP_COUNT segments left open as mouths. Each mouth carries a
+#   PAIR of thin curved lips, rooted at opposite edges and overlapping across
+#   the gap at different radii -- one climbing outside the shell circle, one
+#   dropping inside it. The channel between them is the only way in or out,
+#   0.094 m wide.
 #
-#   Read it in the drum's frame and the shape explains itself. A joint velocity
-#   of sign k turns the drum toward -k*phi, so relative to the drum the soil
-#   streams toward +k*phi. The lip is a scoop held into that stream: the tip
-#   cuts, the concave face deflects the cut toward the axis, and the curl roofs
-#   the mouth so what went in is now under a lid. The only way back out is up
-#   the ramp, against the stream. Which k does that is SCOOP_CURL, and
-#   DIG_DRUM_SIGN is derived from it so the two cannot disagree.
+#   A joint velocity of sign k turns the drum toward -k*phi, so relative to the
+#   drum the soil streams toward +k*phi. The lip tip cuts, its concave face
+#   deflects the cut toward the axis, and the curl roofs the mouth; leaving
+#   means climbing the ramp against the stream. SCOOP_CURL picks k and
+#   DIG_DRUM_SIGN is derived from it.
 #
-#   A pair is the whole point, and a single lip cannot do this however it is
-#   shaped: one lip leaves a gap on EITHER side of itself, both of which are
+#   The pair makes the drum a one-way valve. At DIG_DRUM_SIGN soil travels the
+#   channel inward; the other way round the same channel runs backwards and
+#   dumps the load. A single lip leaves a gap on either side of itself, both
 #   ways out, and neither wide enough to be a way in once the MPM coupler has
-#   eaten half a voxel off each side. Two lips leave one passage whose width is
-#   set directly by how far apart they run -- 0.094 m here, against the 0.009 m
-#   pinch the single-lip version left, which sealed the drum outright.
+#   taken half a voxel off each side -- the single-lip version pinched to
+#   0.009 m and sealed the drum.
+# * The chassis outweighs both drums 6.6:1 empty. The bore holds ~155 kg of
+#   regolith per drum, so a loaded machine carries ~63% of its 492 kg dry mass
+#   out on the arms, and arm hold torque goes from 351 N-m empty to 1387 N-m
+#   full at earth gravity (58 and 229 N-m at lunar). scripts/check_excavator.py
+#   reads these off the model's own mass table.
 #
-#   It also makes the drum a ONE-WAY VALVE, which no single lip can be. Run it
-#   at DIG_DRUM_SIGN and soil travels the channel inward; run it the other way
-#   and the same channel runs backwards and DUMPS the load. Under load, leaving
-#   means climbing back over the inner lip against the stream.
-#
-#   That overlap is the whole design. A straight blade cuts and lifts, but the
-#   pocket behind it is open to the same hole the soil came through, and half a
-#   turn later it falls back out -- the machine kicks up a lot of regolith and
-#   carries none. SCOOP_COUNT is 2, at 180 degrees, for the same reason: every
-#   extra mouth is another hole, and two lips split the cavity into two pockets
-#   that can only empty through their own roofed slot.
-# * The chassis outweighs both drums roughly 6.6:1 empty. A FULL pair is a
-#   different matter: the bore holds ~155 kg of regolith per drum, so a loaded
-#   machine carries around 63% of its own 492 kg dry mass out on the arms. Arm
-#   hold torque goes from 351 N-m empty to 1387 N-m full at earth gravity (58
-#   and 229 N-m at lunar gravity). Size the arm actuator for the loaded case,
-#   and expect the policy to have to care about carrying a full drum.
-#
-#   Those are measured, not estimated: scripts/check_excavator.py reads them
-#   off the model's own mass table, so they follow the geometry instead of
-#   drifting away from it.
-#
-# Wheels are cylinders with grousers, not the spheres the tricycle used. On
-# granular media a smooth wheel simply shears the surface and spins in place,
-# so grousers are load-bearing physics here, not decoration. They cost
-# colliders: set WHEEL_GROUSERS = 0 to fall back to bare cylinders.
+# Wheels are cylinders with grousers: a smooth wheel shears granular surface
+# and spins in place. WHEEL_GROUSERS = 0 falls back to bare cylinders.
 #
 # Every body carrying a joint has a geom with mass, so MuJoCo derives real
 # inertia for all of them. A body with zero inertia produces NaNs in the solver.
@@ -120,22 +95,13 @@ TRACK = 1.15                    # left wheel centre to right wheel centre, along
 AXLE_X = 0.5 * WHEELBASE        # +/- 0.70
 WHEEL_Y = 0.5 * TRACK           # +/- 0.575
 
-# The arm pivot sits AHEAD of the axle, not on it. With a full-width drum the
-# assembly would otherwise swing back into the front wheels at full dig: the
-# drum ends and the yoke legs both pass through the wheel band in y, so the
-# only thing keeping them apart is separation in x. Buying that separation at
-# the pivot costs nothing in dig depth or dump height, where pulling the arm
-# limits in to avoid the wheels would cost both. Mounting arms ahead of the
-# axle is also how loaders are built.
-#
-# Raised from 0.12 when the lips grew: a longer lip pushes the yoke's cross
-# piece back down the boom to stay outside the blades' swept circle, which
-# drags the yoke legs inboard with it and straight at the tyres. 0.17 buys most
-# of that back -- swept clearance to the wheels is 0.069 m against 0.092 m
-# before, still twice what scripts/check_excavator.py insists on, and it is the
-# cross piece against a rear grouser at full dig that binds. Raising this
-# further would recover the rest at the cost of overall length, which is not
-# worth it for clearance that is already comfortable.
+# The arm pivot sits ahead of the axle. The drum ends and the yoke legs both
+# pass through the wheel band in y, so separation in x is the only thing
+# keeping them off the front wheels at full dig. Longer lips push the yoke's
+# cross piece back down the boom to clear the blades' swept circle, dragging
+# the legs inboard, so this grows with them: swept clearance to the wheels is
+# 0.069 m here, and the binding pair is the cross piece against a rear grouser
+# at full dig.
 MAST_OFFSET_X = 0.22
 PIVOT_X = AXLE_X + MAST_OFFSET_X
 
@@ -157,49 +123,37 @@ MAST_TOP_Z = 0.20               # arm pivot height in the chassis frame
 MAST_HALF = (0.05, 0.09, 0.13)  # x half-size is extended to span MAST_OFFSET_X
 
 # --- arm ---
-# The arm is a YOKE, not a single boom. A centre boom running out to the drum
-# axis would sit inside the drum cavity: it would block the mouths and occupy
-# the volume we are trying to fill with soil. So the boom stops short of the
-# drum, and two legs pass outboard of the end caps to pick up the axle. This is
-# also how real drum excavators are built, for the same reason.
-ARM_LEN = 0.76# pivot to drum axis
+# The arm is a yoke: a centre boom out to the drum axis would sit inside the
+# cavity and block the mouths, so the boom stops short and two legs pass
+# outboard of the end caps to pick up the axle.
+ARM_LEN = 0.76                  # pivot to drum axis
 ARM_HALF_H = 0.05
 ARM_HALF_W = 0.07
 YOKE_HALF_W = 0.04
 YOKE_HALF_H = 0.05
-# Gap between the OUTER face of an end cap and the inner face of a leg. The cap
+# Gap between the outer face of an end cap and the inner face of a leg. The cap
 # is a disc of half-thickness CAP_HALF_T centred at DRUM_HALF_LEN + CAP_HALF_T,
-# so it reaches DRUM_HALF_LEN + 2*CAP_HALF_T -- counting one cap thickness in
-# YOKE_Y instead of two is what had the legs 7 mm inside the caps.
+# so it reaches DRUM_HALF_LEN + 2*CAP_HALF_T.
 YOKE_CLEARANCE = 0.005
-# Positive arm angle pitches the boom DOWN, toward the soil. See the sign note
-# in the module docstring block below the model string.
+# Positive arm angle pitches the boom down, toward the soil.
 #
-# The down limit is tied to ARM_LEN, not chosen independently: a longer boom
-# reaches deeper at the same angle, and past roughly one drum radius of
-# burial the drum is submerged beyond its own axis, where the mouths are
-# fighting the whole overburden and it stalls instead of cutting. 0.80 rad
-# keeps the cut at ~0.19 m, just under DRUM_RADIUS. Lengthen the boom again
-# and this limit has to come down to match.
+# The down limit tracks ARM_LEN: a longer boom reaches deeper at the same
+# angle, and past about one drum radius of burial the mouths fight the whole
+# overburden and stall. 0.80 rad keeps the cut at ~0.19 m, just under
+# DRUM_RADIUS.
 ARM_RANGE = (-0.55, 0.80)       # -31.5 deg (stowed high) .. +45.8 deg (full dig)
 
 # --- drum ---
 DRUM_RADIUS = 0.20
-# Nearly a full-width drum: 2*(DRUM_HALF_LEN + 2*CAP_HALF_T) = 1.00 m against a
-# 1.15 m track, so it cuts an almost machine-wide swath but still stops short of
-# the wheels. Widening it further starts eating the wheel clearance that
-# MAST_OFFSET_X buys back.
+# 2*(DRUM_HALF_LEN + 2*CAP_HALF_T) = 1.00 m against a 1.15 m track: an almost
+# machine-wide swath that still stops short of the wheels.
 DRUM_HALF_LEN = 0.475           # ~100 cm wide drum
 DRUM_WALL_T = 0.030             # shell thickness; see the MPM note below
-# Nine 40-degree facets, so three mouths land exactly 120 degrees apart at
-# slots 0, 3 and 6, and six shell plates fill the rest. Nine keeps the shell
-# reasonably round -- its corners sit at 0.211 against a 0.20 nominal radius --
-# where the six-facet ring this replaces was a visible hexagon at 0.227.
+# Nine 40-degree facets: three mouths land 120 degrees apart at slots 0, 3 and
+# 6 and six shell plates fill the rest. Shell corners sit at 0.211 against a
+# 0.20 nominal radius.
 DRUM_FACETS = 9                 # angular slots around the circumference
-# Three mouths, 120 degrees apart (slots 0, 3 and 6 of nine). Three, not two,
-# because each mouth now carries TWO lips and the pair is what does the work --
-# there is no longer a reason to be stingy with holes.
-SCOOP_COUNT = 3
+SCOOP_COUNT = 3                 # mouths, at slots 0, 3 and 6
 
 # --- the lips ---
 #
@@ -219,44 +173,34 @@ SCOOP_COUNT = 3
 #               past the     INSIDE the shell circle and reaching RIGHT
 #               right edge
 #
-# The way in is the CHANNEL BETWEEN THEM. That is the whole point, and it is
-# what the single-lip version got wrong: one lip leaves a gap on either side of
-# itself, both of which are ways out, and neither of which is wide enough to be
-# a way in once the coupler has eaten half a voxel off each side. A pair leaves
-# one passage whose width is set directly by how far apart the two lips run.
-#
-# It also makes the drum a ONE-WAY VALVE, which no single lip can be:
+# The way in is the channel between them, and its width is set by how far apart
+# the two lips run. The pair makes the drum a one-way valve:
 #
 #   loading   soil streams along the channel from the outer tip, past the
 #             inner tip, and into the drum
 #   dumping   reverse the drum and the same channel runs backwards, the inner
 #             lip lifting the load out past the outer one
 #
-# and to leave under load it would have to climb back over the inner lip
-# against the stream. SCOOP_CURL sets which rotation is which, and
-# DIG_DRUM_SIGN is derived from it below.
+# Leaving under load means climbing back over the inner lip against the
+# stream. SCOOP_CURL sets which rotation is which and DIG_DRUM_SIGN follows.
 SCOOP_CURL = 1.0
 
-# Every gap here is floored by the SOLVER, not by the steel. The MPM coupler
-# inflates every collider by half a voxel PER SIDE, so a geometric gap of g
-# reads as g - voxel to the particles: at the 0.05 m voxel a 4 cm slot is not a
-# tight slot, it is a WALL. An earlier lip left a 9 mm pinch and the drum was
-# sealed shut -- it cut, it threw regolith about, and took none of it, with
-# nothing at run time to say so. check_excavator.py now measures every passage
-# against these.
+# Every gap here is floored by the solver, not the steel. The MPM coupler
+# inflates every collider by half a voxel per side, so a geometric gap of g
+# reads as g - voxel to the particles: at a 0.05 m voxel a 4 cm slot is a wall.
+# check_excavator.py measures every passage against these.
 MPM_TARGET_VOXEL = 0.05
 MPM_CLEARANCE = MPM_TARGET_VOXEL        # below this a passage is simply closed
 SCOOP_GAP = 1.6 * MPM_TARGET_VOXEL      # what it takes to flow, not merely to open
 
-# Where each lip ends up. The channel between them is the difference, so these
-# two numbers ARE the passage width: keep them at least SCOOP_GAP apart over
-# the span where the lips overlap.
-# How far the outer lip stands proud of the shell is NOT free: it is the first
-# thing to reach the ground, and a lip buried in the floor cannot turn. At 0.34
-# it projected 0.148 m and drove 38 mm through the bed floor at a 0.10 m cut,
-# which stalled the drum outright -- not a soil-entry problem at all, the drum
-# simply could not rotate. 0.29 projects 0.098 m, so the same 0.21 m bed takes
-# a 0.112 m cut before the lip touches.
+# The channel is the difference between these two, so they are the passage
+# width: keep them at least SCOOP_GAP apart over the span where the lips
+# overlap.
+#
+# The outer lip is also the first thing to reach the ground, and a lip buried
+# in the floor cannot turn. 0.29 projects 0.098 m past the shell, so a 0.21 m
+# bed takes a 0.112 m cut before it touches; 0.34 projected 0.148 m and drove
+# through the bed floor at a 0.10 m cut.
 SCOOP_OUTER_TIP_R = 0.29        # outer lip tip, proud of the 0.20 shell
 SCOOP_INNER_TIP_R = 0.04        # inner lip tip, well inside the 0.17 bore
 # How far round each lip reaches, in MOUTH WIDTHS. Above 1.0 the lip overhangs
@@ -265,39 +209,26 @@ SCOOP_INNER_TIP_R = 0.04        # inner lip tip, well inside the 0.17 bore
 SCOOP_OUTER_SPAN = 1.15
 SCOOP_INNER_SPAN = 1.15
 # Radius goes as a power of the distance along the lip. 1.0 is a straight
-# spiral -- radius rising evenly with angle, constant curvature, no corner
-# anywhere along it.
-#
-# It was 0.45, which leaves the root almost radially and then runs flat. That
-# puts a near right-angle elbow where the lip meets the shell, and granular
-# material packs into a re-entrant corner like that and stops: soil was
-# visibly collecting in the bend and riding round with the drum instead of
-# travelling the channel. A gentler curve on its own NARROWS the channel
-# (0.094 -> 0.087), so the tips move apart to pay for it.
+# spiral: radius rising evenly with angle, constant curvature, no corner. An
+# exponent below 1 leaves the root almost radially and then runs flat, putting
+# a re-entrant elbow where the lip meets the shell that granular material packs
+# into and stops. A gentler curve also narrows the channel, so the tips move
+# apart to pay for it.
 SCOOP_OUTER_RISE = 1.0
 SCOOP_INNER_DROP = 1.0
 SCOOP_SEGMENTS = 5              # straight boxes per lip
 
-# Thin. A lip is a cutting edge, not structure, and a thick one wastes the
-# mouth it stands in. Note that at the 5 cm MPM voxel this is nearly invisible
-# to the soil: the coupler inflates every collider by half a voxel per side, so
-# 12 mm and 24 mm of plate both read as roughly 6 cm to the particles. It
-# starts to matter at the 2.5-3 cm voxel the drum wants anyway.
+# A lip is a cutting edge, not structure. At a 5 cm voxel the thickness is
+# nearly invisible to the soil -- 12 mm and 24 mm of plate both read as roughly
+# 6 cm once the coupler has inflated them -- and starts to matter at 2.5-3 cm.
 BLADE_HALF_T = 0.006
 CAP_HALF_T = 0.012
 
-# MPM note: DRUM_WALL_T is 3 cm against the tricycle's 5 cm voxel. The coupler
-# inflates colliders by MPM_COLLIDER_MARGIN (half a voxel each side), so a 3 cm
-# wall reads as ~8 cm to the solver and particles will not tunnel. The lips are
-# 2 * BLADE_HALF_T = 1.2 cm, which the same margin carries -- and which is also
-# why making them thinner buys nothing until the voxel drops. The pocket under
-# the curl is about 10 cm deep, two cells at a 5 cm voxel, and the slot into it
-# is narrower still. That is too coarse to resolve the thing the drum is FOR,
-# and it is the reason to expect this shape to read better at 0.03 than at
-# 0.05. Expect
-# to run the drum region at a 2.5-3 cm voxel, and budget the particle count
-# accordingly. This is the single place in the machine where MPM resolution
-# actually binds.
+# At a 5 cm voxel the coupler inflates a 3 cm wall to ~8 cm, so particles do
+# not tunnel, and it carries the 1.2 cm lips too. The pocket under the curl is
+# about 10 cm deep -- two cells -- and the slot into it is narrower still, so
+# the drum reads better at a 2.5-3 cm voxel. This is where MPM resolution
+# binds.
 
 # --- masses (kg) ---
 RAIL_MASS = 35.0                # each
@@ -309,14 +240,10 @@ GROUSER_MASS = 0.35             # each
 ARM_BOOM_MASS = 6.0             # each arm: boom + cross + two legs = 17.5 kg
 ARM_CROSS_MASS = 3.5
 ARM_LEG_MASS = 4.0
-# Each shell segment, and it is PER SEGMENT, so it tracks DRUM_FACETS: six
-# 40-degree plates carry the same steel as ten 30-degree ones would have, less
-# the extra mouth area. 2.9 keeps the shell near 18 kg across that change.
+# Per segment, so it tracks DRUM_FACETS. 2.9 keeps the shell near 18 kg.
 DRUM_SEGMENT_MASS = 2.9
 DRUM_CAP_MASS = 1.2             # each end cap
-# Total for one scoop lip, split between its segments by arc length. Half the
-# old figure because the plate is half as thick over a similar developed
-# length.
+# Total for one scoop lip, split between its segments by arc length.
 DRUM_BLADE_MASS = 1.50
 
 # --- friction ---
@@ -704,22 +631,11 @@ YOKE_Y = DRUM_HALF_LEN + 2.0 * CAP_HALF_T + YOKE_CLEARANCE + YOKE_HALF_W
 # the bore.
 BLADE_SWEPT_INNER_R, BLADE_SWEPT_OUTER_R = _scoop_swept_radii()
 
-# Which sign of drum command LOADS the drum. Derived from SCOOP_CURL rather
-# than written down, because the two are one fact:
-#
-#   a joint velocity of sign k turns the drum toward -k*phi, so in the drum's
-#   frame the soil streams toward +k*phi. Entering means travelling along the
-#   channel from the OUTER lip's tip to the INNER lip's tip, and by
-#   construction those sit on the +CURL and -CURL sides -- so the stream has to
-#   run toward -CURL, and loading needs k = -SCOOP_CURL.
-#
-#   The other sign is not a mistake now, it is the DUMP. That is new: with a
-#   single lip, reversing the drum just made a soil thrower.
-#
-# Mirror the lip and this follows automatically. Getting it wrong does not
-# break anything visibly -- the drum still turns, still throws regolith about,
-# and simply never fills, which is the single hardest failure in this project
-# to tell apart from a policy that has not learned yet.
+# Which sign of drum command loads the drum, derived from SCOOP_CURL so the
+# two cannot disagree. A joint velocity of sign k turns the drum toward -k*phi,
+# so the soil streams toward +k*phi in the drum's frame. Entering runs the
+# channel from the outer lip's tip to the inner lip's, which sit on the +CURL
+# and -CURL sides, so loading needs k = -SCOOP_CURL. The other sign dumps.
 DIG_DRUM_SIGN = -SCOOP_CURL
 
 # The cross piece spans the full width of the machine at the drum's height, so
@@ -823,9 +739,7 @@ _ARMS_XML = "\n      ".join(
 # Model
 #
 # No <default class="..."> blocks: every geom spells out its own friction and
-# rgba. The Isaac MJCF->USD converter is the fragile link in this pipeline and
-# class inheritance is exactly the kind of thing it silently drops. Verbose XML
-# is cheap; a silently unfrictioned wheel is not.
+# rgba, because the MJCF->USD converter drops class inheritance silently.
 # ---------------------------------------------------------------------------
 
 EXCAVATOR_MJCF = f"""
@@ -865,15 +779,12 @@ EXCAVATOR_MJCF = f"""
 #               dump height.
 #
 #   drums       a joint velocity of sign DIG_DRUM_SIGN digs, on both ends.
-#               That sign is derived from SCOOP_CURL, the lip handedness -- see
-#               the note by its definition -- and is currently -1, so the
-#               digging command is NEGATIVE. It is the same sign on both drums
-#               either way, and that is what matters structurally: because the
-#               rear assembly is rotated 180 deg about z, one sign gives
-#               opposite world-frame rotation at the two ends, so the drums
-#               counter-rotate and their digging reactions cancel through the
-#               frame. Commanding them with opposite signs makes the reactions
-#               ADD and will try to drive the machine out of its own cut.
+#               Derived from SCOOP_CURL and currently -1, so the digging
+#               command is negative. It is the SAME sign on both drums: the
+#               rear assembly is rotated 180 deg about z, so one sign gives
+#               opposite world-frame rotation at the two ends and the digging
+#               reactions cancel through the frame. Opposite signs make them
+#               add and drive the machine out of its own cut.
 #
 # A natural low-level action vector is therefore 6-wide:
 #   [left_wheels, right_wheels, arm_front, arm_rear, drum_front, drum_rear]
@@ -920,12 +831,10 @@ def reach() -> dict[str, float]:
         # Drum width against the AB/CD track. Deliberately just under 1.0.
         "drum_outer_width": 2.0 * (DRUM_HALF_LEN + 2.0 * CAP_HALF_T),
         "drum_width_over_track": 2.0 * (DRUM_HALF_LEN + 2.0 * CAP_HALF_T) / TRACK,
-        # The drum is WIDER than the gap between the wheels, so these two
-        # overlap in y. Nothing separates them but x, which is what
-        # MAST_OFFSET_X exists to provide -- swept min gap is 0.092 m at full
-        # dig (front cross piece vs front tyre). Widening the drum, shortening
-        # MAST_OFFSET_X or raising ARM_RANGE[1] all eat into that directly, so
-        # re-run the clearance sweep after touching any of them.
+        # The drum is wider than the gap between the wheels, so the two
+        # overlap in y and only x separates them. Swept min gap is 0.092 m at
+        # full dig, front cross piece against front tyre. Drum width,
+        # MAST_OFFSET_X and ARM_RANGE[1] all move it.
         "drum_lateral_overlap": (DRUM_HALF_LEN + 2.0 * CAP_HALF_T) - (WHEEL_Y - WHEEL_HALF_W),
         "wheel_standoff_at_full_dig": (
             PIVOT_X + ARM_LEN * math.cos(hi) - BLADE_SWEPT_OUTER_R

@@ -1,37 +1,25 @@
-# scripts/smoke_test.py
+# scripts/run_task.py
 #
-# Run this before the first training job, on a machine with Isaac Lab:
+# Build and step an excavator task with no policy.
 #
-#   isaaclab -p scripts/smoke_test.py --task Luna-Excavator-Navigate --num_envs 8
-#   isaaclab -p scripts/smoke_test.py --task Luna-Excavator-Excavate --num_envs 2
+#   isaaclab -p scripts/run_task.py --task Luna-Excavator-Navigate --num_envs 8
+#   isaaclab -p scripts/run_task.py --task Luna-Excavator-Excavate --num_envs 2
+#   isaaclab -p scripts/run_task.py --task Luna-Excavator-Navigate --watch --steps 3000
 #
-# Add --watch to open a Newton GL window and follow one machine:
+# Hydra overrides take Hydra syntax, no leading dashes:
 #
-#   isaaclab -p scripts/smoke_test.py --task Luna-Excavator-Navigate --watch --steps 3000
+#   isaaclab -p scripts/run_task.py --task Luna-Excavator-Navigate env.scene.num_envs=4
 #
-# Hydra overrides also work, in Hydra syntax (no leading dashes):
+# Asserts, over the run:
 #
-#   isaaclab -p scripts/smoke_test.py --task Luna-Excavator-Navigate env.scene.num_envs=4
+#   observation widths match their declared specs
+#   every observation is finite
+#   the terrain scan is not constant
+#   drum fill rises on the MPM tier with the drums buried and spinning
+#   projected gravity z is near -1 after settling
 #
-# It builds the env exactly the way `isaaclab zero_agent` does, steps it a few
-# hundred times, and asserts the things that fail SILENTLY in training:
-#
-#   * observation widths match their declared specs (a mismatch here would
-#     raise in assembly anyway; this just makes it the first thing you see)
-#   * every observation is finite
-#   * the terrain scan is not a constant (a constant scan means the ray caster
-#     is not hitting the ground, or the particle rasteriser sees no particles)
-#   * on the MPM tier, drum fill RISES when the arms are lowered and the drums
-#     spin over the bed. If it stays at zero, the particle adapter is reading
-#     the wrong thing, and a training run would look exactly like a policy
-#     that never learns to dig
-#   * the machine is upright after settling (projected gravity z near -1). If
-#     it reads +1 the spawn quaternion is in the wrong order (see the note at
-#     the bottom of excavator_cfg.py)
-#
-# It also prints the articulation's body and joint names and every prim path
-# that matched the coupler / ray-caster regexes, so the assumptions about how
-# the MJCF converter nests bodies can be checked in one look.
+# Prints the articulation's body and joint names, and every prim path matched
+# by the coupler and ray-caster regexes.
 
 from __future__ import annotations
 
@@ -51,7 +39,7 @@ import luna_hifi_tasks  # noqa: F401  (registers Luna-* tasks)
 
 
 def _parse(argv):
-    p = argparse.ArgumentParser(description="Excavator environment smoke test.")
+    p = argparse.ArgumentParser(description="Build and step an excavator task with no policy.")
     p.add_argument("--task", required=True, help="Luna-Excavator-Navigate or Luna-Excavator-Excavate")
     p.add_argument("--num_envs", type=int, default=None)
     p.add_argument("--steps", type=int, default=300)

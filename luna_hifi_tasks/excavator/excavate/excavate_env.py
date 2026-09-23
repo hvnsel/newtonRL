@@ -76,7 +76,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
                 "The material is built in ExcavatorExcavateEnvCfg.__post_init__ and Hydra "
                 "applies overrides after it, so anything setting a soil_* field late must "
                 "call cfg.apply_soil_material() before gym.make(). scripts/dig_demo.py and "
-                "scripts/smoke_test.py do this; a custom launcher has to as well."
+                "scripts/run_task.py do this; a custom launcher has to as well."
             )
 
         print(DIG_OBS.describe())

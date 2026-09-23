@@ -122,57 +122,42 @@ whenever `tricycle.py` changes.
 ### Rebuild the excavator asset (whenever `excavator.py` changes)
 
 `excavator.py` is the source; `assets\excavator\excavator.usda` is what
-training loads. They only agree if you re-run this, and nothing warns you when
-they don't — the old USD just keeps loading.
+training loads. Nothing warns you when they disagree -- the old USD keeps
+loading.
 
-Do NOT hardcode the repo path. There is more than one `luna_hifi*` checkout on
-this machine and the tricycle's lives somewhere else; converting into the wrong
-one writes a USD that nothing loads while the env keeps reading the stale asset
-from the right one. Derive it from the installed package instead, which is by
-construction the same root `EXCAVATOR_USD_PATH` resolves against:
+Derive the repo root from the installed package rather than hardcoding it, so
+it is the same root `EXCAVATOR_USD_PATH` resolves against. `find_spec` locates
+the package without executing it, so this needs neither Isaac Lab nor Kit:
 
 ```powershell
-# Plain python, NOT isaaclab.bat: the launcher writes an "[INFO] Using Python:"
-# line on another stream that lands unpredictably in the captured output, so
-# any positional Select-Object on it eventually picks up the INFO line instead
-# of the answer. And find_spec LOCATES the package without executing it, so
-# this needs neither Isaac Lab nor a Kit app.
+# Plain python, not isaaclab.bat: the launcher writes an "[INFO] Using Python:"
+# line on another stream that lands unpredictably in captured output.
 $REPO = (python -c "import importlib.util, os; print(os.path.dirname(os.path.dirname(importlib.util.find_spec('luna_hifi_tasks').origin)))").Trim()
 
-$REPO                                    # sanity: is this the newtonRL checkout?
-git -C $REPO remote -v                   # sanity: does it point at hvnsel/newtonRL?
-Test-Path $REPO\scripts\dig_demo.py      # sanity: must be True
-```
-
-If the package is not installed, or you want to find every checkout on the
-machine rather than the installed one:
-
-```powershell
-Get-ChildItem C:\Users\hanse -Directory -Recurse -Depth 3 -ErrorAction SilentlyContinue |
-  Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "scripts\dig_demo.py") } |
-  Select-Object -ExpandProperty FullName
+$REPO
+git -C $REPO remote -v
+Test-Path $REPO\scripts\dig_demo.py      # must be True
 ```
 
 Then:
 
 ```powershell
-# 1. Check the geometry BEFORE converting. Needs MuJoCo, not Isaac Lab.
-#    3.13+: older builds return 0.0 from mj_geomDistance for every pair, so
-#    every clearance reads 0.0000 and the script "fails" a model that is fine.
-#    It now probes for that and skips those checks rather than lying, but the
-#    checks are worth having.
+# 1. Check the geometry before converting. Needs MuJoCo, not Isaac Lab.
+#    Below 3.13, mj_geomDistance returns 0.0 for every pair and every
+#    clearance reads 0.0000. The script probes for that and skips rather
+#    than reporting a false failure.
 .\isaaclab.bat -p -m pip install -U "mujoco>=3.13"
 .\isaaclab.bat -p $REPO\scripts\check_excavator.py
 
 # 2. Write the MJCF.
 .\isaaclab.bat -p -c "from luna_hifi_tasks.excavator.excavator import write_mjcf; print(write_mjcf())"
 
-# 3. Delete the old output first. The converter appends _1 rather than
-#    overwriting, and the env then loads the STALE asset from the old folder.
+# 3. Delete the old output. The converter appends _1 rather than overwriting,
+#    and the env then loads the stale asset from the old folder.
 Remove-Item -Recurse -Force $REPO\assets\excavator -ErrorAction SilentlyContinue
 
-# 4. Convert. Note the output path: assets\excavator.usd, NOT
-#    assets\excavator\excavator.usd -- the converter keeps only the directory
+# 4. Convert. The output path is assets\excavator.usd, NOT
+#    assets\excavator\excavator.usd: the converter keeps only the directory
 #    and forces <stem>\<stem>.usda, so the nested path lands a level too deep
 #    and the spawn fails with FileNotFoundError.
 .\isaaclab.bat -p scripts\tools\convert_mjcf.py $env:TEMP\luna_hifi_assets\excavator.xml $REPO\assets\excavator.usd
@@ -181,13 +166,10 @@ Remove-Item -Recurse -Force $REPO\assets\excavator -ErrorAction SilentlyContinue
 .\isaaclab.bat -p $REPO\scripts\dig_demo.py
 ```
 
-`check_excavator.py` is step 1 for a reason. It catches the class of fault that
-survives conversion and then never gets reported: MuJoCo does not test a body
-against its own parent, and Isaac articulations default to
-`self_collision=False`, so an arm passing through its own drum runs perfectly
-happily in both and only shows up as a policy that will not learn. It measures
-swept envelopes off the geoms, ray-probes the drum cavity, and sweeps the arms
-through `ARM_RANGE` against the wheels and frame.
+`check_excavator.py` is step 1 because MuJoCo does not test a body against its
+own parent and Isaac articulations default to `self_collision=False`, so an arm
+passing through its own drum runs happily in both and surfaces only as a policy
+that will not learn.
 
 ---
 

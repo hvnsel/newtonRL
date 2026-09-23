@@ -4,30 +4,22 @@
     apptainer exec "$SIF" cat \
       /workspace/isaaclab/scripts/demos/mpm/newton_mpm_granular.py \
       > "$LUNA_SCRATCH/mpm_frames.py"
-    python3 cluster/patch_demo_frames.py "$LUNA_SCRATCH/mpm_frames.py"
-
-Why a patch and not a flag: Isaac Lab 3.x DOES ship a video recorder
-(`isaaclab/envs/utils/video_recorder.py`), but it is instantiated by the
-environment base class and driven by `env.step()`. The demos build a
-`SimulationContext` directly and never construct an env, so the recorder is
-never created and the demos have no `--video`.
-
-They do not need one. Every visualizer that can produce pixels exposes
-`render_rgb_array()`, which is the same method the recorder calls, and the
-demo loop already calls `sim.render()`. So frame capture is five lines in the
-right place rather than a rewrite.
-
-Run the patched copy with a visualizer that can render:
+    python3 patch_demo_frames.py "$LUNA_SCRATCH/mpm_frames.py"
 
     FRAME_DIR=$LUNA_SCRATCH/frames FRAME_EVERY=1 \
       apptainer exec --nv ... "$SIF" \
       /workspace/isaaclab/isaaclab.sh -p "$LUNA_SCRATCH/mpm_frames.py" \
       --max_steps 400 --device cuda:0 --viz newton_gl
 
-FRAME_EVERY=1 captures every step; the demos run at dt=1/100, so 400 steps is
-four seconds of simulated time, which at 30 fps plays back as a thirteen
-second slow-motion clip. Rendering every step is genuinely slow -- it is what
-makes a short run look like a hang -- so capture sparsely while iterating.
+Isaac Lab 3.x ships a video recorder, but the environment base class builds it
+and env.step() drives it; the demos construct a SimulationContext directly and
+never make an environment, so the demos have no --video. The recorder's frame
+source, visualizer.render_rgb_array(), is exposed on every rendering
+visualizer, and the demo loop already calls sim.render().
+
+FRAME_EVERY=1 captures every step. The demos run at dt=1/100, so 400 steps is
+four seconds of simulated time, a thirteen second clip at 30 fps. Rendering
+every step is slow enough to look like a hang.
 """
 
 from __future__ import annotations

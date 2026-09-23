@@ -374,8 +374,6 @@ def main(argv=None) -> int:
         print("\n=== throughput ===")
         print(f"  {steps} steps x {u.num_envs} env in {wall:.1f} s "
               f"-> {sps:,.0f} env-steps/s at {u.cfg.bed_particles_per_env:,} particles")
-        print(f"  scripts/train_budget.py --sps {sps:.0f} --envs {u.num_envs}  "
-              f"turns this into GPU hours")
 
         print("\n=== result ===")
         print(f"  peak fill per drum, per env (kg):\n{peak}")

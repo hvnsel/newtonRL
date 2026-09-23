@@ -125,3 +125,45 @@ scp "hzhang993@login-phoenix.pace.gatech.edu:/storage/scratch1/5/hzhang993/luna/
 ```
 
 ---
+
+---
+
+## Reference
+
+Measured on PACE Phoenix, 2026-09-22, `gpu-rtx6000`, driver 575.57.08.
+
+| | |
+|---|---|
+| image | `nvcr.io/nvidia/isaac-lab:3.0.0-rc1`, 12 GB `.sif`, pulls anonymously |
+| build | 47 min on `/tmp`; 22 h quoted on Lustre |
+| isaaclab | 17.0.2 |
+| torch / warp | 2.11.0+cu128 / 1.16.0, CUDA 12.9 |
+| `isaaclab_newton` | present -- MPM and MJWarp solver configs |
+| `isaaclab_contrib.coupling` | present -- `CouplerProxyCfg`, `CouplerEntryCfg` |
+| particles | 48,000 in `newton_mpm_granular.py` |
+| Kit cold start | ~131 s |
+| rendering | headless via EGL |
+
+The 48,000 is MPM headroom with almost no rigid bodies in the scene. The
+excavator's own ceiling is set by the rigid solver's contact buffers and has
+not been measured on this hardware.
+
+### Things that are true and not discoverable
+
+- **Apptainer is on compute nodes only**, at `/usr/bin/apptainer`. On a login
+  node `module avail`, `module spider` and `command -v` all come back empty.
+- **`$HOME` is 20 GB** and Omniverse and Warp write to fixed paths under it,
+  ignoring `XDG_CACHE_HOME`. A full quota surfaces as a corrupt download.
+- **`--nv` is mandatory.** Without it a GPU node reports `cuda available:
+  False` and Kit dies on "Found no NVIDIA driver".
+- **There is no `python` on `PATH`** in the image. Use
+  `/workspace/isaaclab/isaaclab.sh -p`, which warns that it is deprecated in
+  favour of `uv run isaaclab` from 3.1.
+- **`--headless` does not exist in 3.x.** `--viz` takes `kit`, `newton_gl`,
+  `newton_rtx`, `rerun`, `viser` or `none`; headless is the default and `none`
+  is the off switch. `--video` and `--enable_cameras` are gone with it.
+- **Kit's caches live inside the read-only image.** Unbound, every launch
+  recompiles its shaders and logs `Failed to acquire exclusive lock to data
+  store`.
+- Only `gpu-rtx6000`, `gpu-l40s` and `gpu-rtxpro-blackwell` have RT cores. A
+  bare `--gres=gpu:1` lands on `gpu-v100`, which does not.

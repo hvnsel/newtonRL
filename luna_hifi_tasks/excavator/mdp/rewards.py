@@ -1,17 +1,12 @@
 # rewards.py
 #
-# Every reward and termination term as a standalone pure function of tensors.
-# Each returns (num_envs,) and nothing here reads an env object.
+# Every reward and termination term as a pure function of tensors. Each
+# returns (num_envs,) and nothing here reads an env object; the env sums them.
 #
-# Reward bugs are the class you cannot find by reading an env: a sign error or
-# a wrong frame does not crash, it produces a policy that trains smoothly
-# toward the wrong thing. Keeping each term a function of plain tensors means
-# each can be pinned by a two-line test, and the env just sums them.
-#
-# Conventions used throughout:
-#   * "penalty" functions return NON-NEGATIVE values; the env subtracts them
-#     with a weight. A penalty that can go negative is a reward in disguise
-#     and will be exploited.
+# Conventions:
+#   * "penalty" functions return NON-NEGATIVE values and the env subtracts
+#     them with a weight. A penalty that can go negative is a reward in
+#     disguise and will be exploited.
 #   * body frame: +x forward, +y left, +z up. projected_gravity_b is a unit
 #     vector, so upright reads (0, 0, -1) at any gravity.
 

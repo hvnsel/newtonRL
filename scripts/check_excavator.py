@@ -5,25 +5,23 @@
 #   pip install mujoco
 #   python scripts/check_excavator.py
 #
-# Everything about this machine that can be wrong QUIETLY is checked here,
-# because the next place these numbers show up is a converted USD inside a
-# physics solver where a 2 cm interpenetration looks like an unstable policy.
+# The next place these numbers show up is a converted USD inside a physics
+# solver, where a 2 cm interpenetration presents as an unstable policy.
 #
 #   mass table        a body with no inertia NaNs the solver
-#   swept envelopes   what the blades actually reach, which is NOT
-#                     SCOOP_TIP_R -- that is a centreline control point, and a
-#                     box of finite thickness reaches past it
+#   swept envelopes   what the blades reach. Not SCOOP_TIP_R, which is a
+#                     centreline control point a box of finite thickness
+#                     reaches past.
 #   shell continuity  adjacent plates must overlap; a gap is a hole MPM
 #                     particles leak through
 #   cavity probe      ray-cast around the drum axis to count the mouths and
-#                     confirm where they sit. This is the check that catches a
-#                     boom or a yoke sitting inside the cavity we are trying to
-#                     fill with soil.
-#   clearance sweep   arm swept through ARM_RANGE against the wheels and frame.
-#                     MuJoCo never tests a body against its own parent and
-#                     Isaac articulations default to self-collision off, so
-#                     NOTHING in either simulator will report an arm passing
-#                     through a drum. This does.
+#                     locate them, which catches a boom or yoke inside the
+#                     cavity
+#   clearance sweep   arm swept through ARM_RANGE against the wheels and
+#                     frame. MuJoCo never tests a body against its own parent
+#                     and Isaac articulations default to self-collision off,
+#                     so neither simulator reports an arm passing through a
+#                     drum.
 #
 # Exit status is 1 if any check fails.
 
@@ -330,13 +328,9 @@ def check_passages(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None
     # against the next scoop's. Segments of the SAME lip are skipped -- those
     # touch by design, being a chain approximating one curve.
     kind = lambda g: "out" if "_out" in nm(g) else "in"
-    # Segment 0 of each lip is its ROOT, welded to the shell at DRUM_RADIUS. It
-    # overlaps the plate it is rooted to on purpose -- a gap there would be a
-    # hole, not a passage -- so it is excluded, same as lip against end cap.
     # A lip is welded to the shell plate at its own root edge and peels away
-    # from it, so the whole lip is excluded against THAT plate -- soil cannot
-    # flow between a lip and the plate it grows out of, and a gap there would
-    # be a hole rather than a passage. Every other plate is a real passage.
+    # from it, so the whole lip is excluded against that plate. Every other
+    # plate is a real passage.
     def root_plate(g: int) -> int:
         i = int(scoop_of(g))
         curl = int(X.SCOOP_CURL)

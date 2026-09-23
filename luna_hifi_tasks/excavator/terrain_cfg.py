@@ -3,16 +3,13 @@
 # The rigid-tier terrain: procedurally generated ground that looks like this
 # machine has already worked it over, as an Isaac Lab TerrainGeneratorCfg.
 #
-# This is what navigation trains on. The generator builds every sub-terrain as
-# a trimesh once at startup, TerrainImporter lays them out in a rows x cols
-# grid and assigns environments to cells, and the Newton backend collides with
-# the mesh (the core velocity env runs this exact path under newton_mjwarp).
-# The RayCaster in the navigate scene then scans that mesh. Rows are curriculum
-# levels: the importer starts envs at low rows and moves them up as they
-# succeed, and `difficulty` in our height-field function scales feature
-# amplitude with the row.
+# The generator builds every sub-terrain as a trimesh once at startup,
+# TerrainImporter lays them out in a rows x cols grid and assigns environments
+# to cells, and the Newton backend collides with the mesh. The RayCaster in the
+# navigate scene scans it.
 #
-# Isaac-dependent, so not unit-tested here; the numpy function it wraps is.
+# Rows are curriculum levels: the importer starts envs low and moves them up as
+# they succeed, and `difficulty` scales feature amplitude with the row.
 
 from __future__ import annotations
 

@@ -2,13 +2,11 @@
 #
 # Fill both drums from an MPM regolith bed. Actions are [forward, yaw, boom,
 # drum]; boom and drum are single commands applied to both ends, which is the
-# counter-rotating, reaction-cancelling dig the machine was built for and, at
-# lunar gravity, the only way it can dig at all (see excavator_cfg.py).
+# counter-rotating, reaction-cancelling dig.
 #
-# The reward is captured soil, measured directly: mass of particles inside
-# each drum's bore, in the drum's own frame. Not a target-heightmap match --
-# that is the planner's objective one level up, and at the skill level it is
-# both too sparse to learn from and welds the skill to a site plan.
+# The reward is captured soil: mass of particles inside each drum's bore, in
+# the drum's own frame. A target-heightmap match is the planner's objective
+# one level up.
 #
 # Step order in DirectRLEnv: _pre_physics_step -> _apply_action (x decimation)
 # -> _get_dones -> _get_rewards -> _reset_idx -> _get_observations. Fill is
@@ -62,13 +60,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             ["fill", "success", "stall", "drift", "upright", "idle_drum", "energy", "action_rate", "time"],
             E, dev,
         )
-        # By the time this runs, InteractiveScene has already spawned the soil
-        # from cfg.scene.soil.spawn.material. If a soil_* field was changed
-        # after __post_init__ -- which is exactly what a Hydra override does,
-        # and what `env.soil_cohesion=1500` on the command line looks like --
-        # that change never reached the material, and the run would use the old
-        # soil while reporting the new number. Silent, and indistinguishable
-        # from cohesion simply not mattering.
+        # InteractiveScene has already spawned the soil from
+        # cfg.scene.soil.spawn.material. A soil_* field changed after
+        # __post_init__ -- which is what a Hydra override does -- never reached
+        # that material, so the run would use the old soil while reporting the
+        # new number.
         mismatch = cfg.soil_material_mismatch()
         if mismatch is not None:
             raise RuntimeError(

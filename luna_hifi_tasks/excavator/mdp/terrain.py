@@ -9,16 +9,9 @@
 #                   The deformable tier, where excavation trains.
 #
 # Both return an identical tensor: (num_envs, ny*nx) of CHASSIS-RELATIVE
-# heights in the robot's yaw frame. That identity is the whole point. A policy
-# cannot tell which backend produced its observation, so a skill trained on
-# procedural terrain runs unmodified on MPM soil, and the fidelity tier becomes
-# a config choice rather than a rewrite.
-#
-# Training navigation on procedural terrain rather than live MPM is not a
-# compromise. A procedural generator samples pits, spoil piles, ruts and slopes
-# across a far wider distribution than any real dig sequence would produce, at
-# a hundred times the throughput. MPM earns its cost where granular flow is the
-# physics being learned, which is excavation and nothing else.
+# heights in the robot's yaw frame. A policy cannot tell which backend produced
+# its observation, so a skill trained on procedural terrain runs unmodified on
+# MPM soil and the fidelity tier is a config choice.
 
 from __future__ import annotations
 

@@ -4,17 +4,13 @@
 # and body handles, the skid-steer drive mapping, proprioceptive observation
 # terms, the failure terminations, and root reset.
 #
-# Structure follows tricycle_env.py, which is the validated DirectRLEnv in this
-# repo: assets are fetched from the scene in _setup_scene, never constructed
-# there; joint ids are resolved once in __init__; resets write root pose, root
-# velocity and joint state separately.
+# Assets are fetched from the scene in _setup_scene, never constructed there;
+# joint ids resolve once in __init__; resets write root pose, root velocity and
+# joint state separately.
 #
-# The write/set calls used here are the same ones the tricycle uses
-# (write_root_pose_to_sim, set_joint_velocity_target, ...). On the develop
-# branch they are marked deprecated in favour of the *_index variants and the
-# actuator command API, but they still exist with the same positional
-# signatures, and they are the path this repo has actually run. Migrate them
-# all at once, later, deliberately.
+# write_root_pose_to_sim, set_joint_velocity_target and friends are marked
+# deprecated in favour of the *_index variants and the actuator command API,
+# but still carry the same positional signatures.
 
 from __future__ import annotations
 

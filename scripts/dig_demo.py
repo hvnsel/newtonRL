@@ -12,13 +12,10 @@
 #   isaaclab -p scripts/dig_demo.py
 #   isaaclab -p scripts/dig_demo.py --cut 0.05 --drive 0.35 --seconds 40
 #
-# The point is not the motion -- it is the FILL READOUT. drum_fill_mass is the
-# entire excavation reward, and it reads particle positions through an adapter
-# that was written against the isaaclab_newton source without ever being run.
-# If that adapter is wrong it returns zero, which during training is
-# indistinguishable from a policy that has not learned to dig. Here the drums
-# are provably in the soil, so fill MUST rise. It is the one check that cannot
-# be made without a simulator.
+# The output that matters is the FILL READOUT. drum_fill_mass is the entire
+# excavation reward; a broken particle adapter returns zero, which in training
+# looks exactly like a policy that has not learned to dig. Here the drums are
+# provably in the soil, so fill must rise.
 #
 # Pass --no_window to run it as a plain assertion with no viewer.
 
@@ -73,54 +70,40 @@ def _parse(argv):
     p.add_argument("--t_spin", type=float, default=5.0, help="start the drums")
     p.add_argument("--t_drive", type=float, default=7.0, help="start crawling forward")
 
-    # How deep the drum should cut, in METRES, rather than a raw boom command.
+    # Depth of the SHELL below the soil surface, in metres, not a boom command:
+    # the command reaching a given depth depends on the bed depth and on
+    # whether the machine stands on the soil or beside it, and
+    # boom_command_for_cut() solves it from the env's own config.
     #
-    # The command that reaches a given depth is not a constant: it depends on
-    # the bed's depth and on whether the machine is standing on the soil or on
-    # the ground beside it. Hardcoding one is how a demo ends up waving the
-    # drum in the air while the operator concludes the fill sensor is broken.
-    # boom_command_for_cut() solves it from the env's own config instead.
-    # Depth of the SHELL below the soil surface, in metres -- not a boom
-    # command. 0.10 rather than 0.12 because the lips stand 0.046 m proud of
-    # the shell and the small bed is only 0.16 m deep on a rigid floor, so 0.12
-    # already drags them through it. cut_diagnosis() reports this per run.
+    # 0.10 rather than 0.12 because the lips stand 0.046 m proud of the shell
+    # and the small bed is 0.16 m deep on a rigid floor. cut_diagnosis()
+    # reports the margin per run.
     p.add_argument("--cut", type=float, default=0.10,
                    help="how deep the drum SHELL should cut below the surface, metres")
     p.add_argument("--boom", type=float, default=None,
                    help="raw boom command, overriding --cut")
-    # 1.0 is 8 rad/s, a 2.0 m/s speed at the lip, which throws soil clear of
-    # the drum instead of carrying it in. 0.4 is 0.8 m/s and scoops.
-    #
-    # The LOADING sign is not a free choice and not a guess: a command of sign k
-    # turns the drum toward -k*phi, so in the drum's frame the soil streams
-    # toward +k*phi, and the channel between a mouth's two lips only runs
-    # inward one way round. DIG_DRUM_SIGN is derived from the lip handedness so
-    # the two cannot drift apart.
-    #
-    # The other sign is the DUMP, not a mistake: the same channel run backwards
-    # lifts the load out past the outer lip. Worth watching once the drum has
-    # something in it.
+    # 1.0 is 8 rad/s, 2.0 m/s at the lip, which throws soil clear of the drum;
+    # 0.4 is 0.8 m/s and scoops. DIG_DRUM_SIGN is the loading sign, derived
+    # from the lip handedness; the other sign dumps.
     p.add_argument("--drum", type=float, default=0.4 * DIG_DRUM_SIGN,
                    help="drum command once spinning; |cmd| > ~0.5 flings rather than scoops. "
                         f"The loading sign for this lip is {DIG_DRUM_SIGN:+.0f}")
     p.add_argument("--drive", type=float, default=0.25, help="forward command once crawling")
 
-    # Soil. These are explicit flags rather than Hydra overrides on purpose.
-    # `env.soil_cohesion=1500` sets the cfg FIELD, but the MPM material was
-    # already built from it in __post_init__, which Hydra runs after -- so the
-    # override changes the number the script prints and not the soil it digs.
-    # These set the field and then re-run apply_soil_material().
+    # Explicit flags rather than Hydra overrides: `env.soil_cohesion=1500` sets
+    # the cfg field, but the MPM material was built from it in __post_init__,
+    # which Hydra runs after. These set the field and re-run
+    # apply_soil_material().
     p.add_argument("--cohesion", type=float, default=None,
                    help="soil yield_stress in Pa; 0 sprays, ~800 holds a cut together")
     p.add_argument("--friction", type=float, default=None, help="soil friction, ~tan(phi)")
     p.add_argument("--density", type=float, default=None, help="soil density, kg/m3")
-    # The channel opens 0.122 m and the coupler eats a whole voxel of it, while
-    # particles are spawned one voxel apart -- so this sets how many GRAINS wide
-    # the way in is, and granular material arches across an orifice narrower
-    # than about four of them however hard it is driven.
+    # The channel opens 0.122 m, the coupler eats a whole voxel of it and
+    # particles spawn one voxel apart, so this sets how many grains wide the
+    # way in is. Granular material arches across an orifice narrower than about
+    # four of them however hard it is driven.
     #   0.03 -> 3.0 grains   0.025 -> 3.9   0.02 -> 5.0
-    # Finer costs particles as the cube, which is affordable now that the rigid
-    # solver's contact buffers are no longer the limit.
+    # Finer costs particles as the cube.
     p.add_argument("--voxel", type=float, default=None,
                    help="MPM voxel; sets how many grains wide the drum's entry channel is")
 

@@ -5,17 +5,13 @@
 #   1. soil_heightmap   -- MPM particles rasterised into a per-env height grid
 #   2. drum_fill        -- mass of MPM particles inside a drum's cavity
 #
-# Both are pure PyTorch, deliberately. The obvious alternative is a Warp
-# kernel, and the cost is the same either way (one pass over the particles,
-# which is nothing next to the MPM solve itself). But Warp JIT-compiles to a
-# cache directory, and on a cluster that cache is either cold on every job or
-# it is a shared-filesystem coordination problem. scatter_reduce has neither
-# failure mode. Revisit only if a profile says this is hot.
+# Both are pure PyTorch. A Warp kernel costs the same -- one pass over the
+# particles, nothing next to the MPM solve -- but JIT-compiles to a cache
+# directory that is cold on every cluster job or a shared-filesystem
+# coordination problem. scatter_reduce has neither failure mode.
 #
-# Nothing here imports isaaclab or newton. That is on purpose: it means the
-# whole file is testable on a laptop with no GPU, and it keeps the Newton API
-# surface confined to two small adapters at the bottom, both of which are now
-# checked against the isaaclab_newton source rather than guessed.
+# Nothing here imports isaaclab or newton, so the file runs on a laptop with
+# no GPU and the Newton API surface stays in two adapters at the bottom.
 
 from __future__ import annotations
 
@@ -135,14 +131,12 @@ def drum_fill_fraction(fill_mass: torch.Tensor, capacity_kg: float) -> torch.Ten
 # ---------------------------------------------------------------------------
 # Quaternion helper
 #
-# ORDER IS (x, y, z, w). Isaac Lab 3.x migrated from 2.x's (w, x, y, z), and
-# every pose in isaaclab.assets on this branch is xyzw -- base_articulation_data
-# documents it ten times and wxyz zero times. Getting this backwards does not
-# crash: it silently rotates by a different orientation, so drum fill reads
-# plausible-but-wrong numbers and the reward quietly trains the wrong thing.
+# ORDER IS (x, y, z, w). Isaac Lab 3.x migrated from 2.x's (w, x, y, z) and
+# every pose in isaaclab.assets is xyzw. Reversing it does not crash: it
+# rotates by a different orientation, so drum fill reads plausible-but-wrong.
 #
-# Mirrors isaaclab.utils.math.quat_apply_inverse exactly, duplicated so this
-# module stays importable without isaaclab.
+# Mirrors isaaclab.utils.math.quat_apply_inverse, duplicated so this module
+# stays importable without isaaclab.
 # ---------------------------------------------------------------------------
 
 

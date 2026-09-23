@@ -2,9 +2,7 @@
 #
 # Drive to a goal pose over already-worked terrain. Actions are [forward,
 # yaw]; the arms are held stowed by a fixed position target and the drums are
-# held still, so the navigator physically cannot disturb soil. That is the
-# whole mechanism keeping navigation and excavation mutually exclusive -- a
-# missing actuator, not a penalty the policy could trade against.
+# held still, so the navigator has no actuator with which to disturb soil.
 #
 # Step order in DirectRLEnv is: _pre_physics_step -> _apply_action (x
 # decimation) -> _get_dones -> _get_rewards -> _reset_idx -> _get_observations.

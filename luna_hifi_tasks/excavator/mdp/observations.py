@@ -1,23 +1,14 @@
 # observations.py
 #
-# Observation assembly as a declared list of named terms rather than a
-# hand-concatenated tensor and a magic `observation_space = 23`.
+# Observation assembly as a declared list of named terms.
 #
-# Three things this buys, all of which are correctness rather than tidiness:
+#   * the observation dimension is derived, so turning the height map on or
+#     off is a flag rather than an integer edited in two files
+#   * every term declares its width and assembly asserts each tensor matches
+#   * the spec hashes, so a policy trained against one layout cannot be loaded
+#     against another
 #
-#   1. The observation dimension is DERIVED. Turning the height map on or off
-#      is a flag, not an edit to a hardcoded integer that some other file also
-#      hardcodes.
-#   2. Assembly is checked. Every term declares its width, and building an
-#      observation asserts each tensor matches. A term that silently returns
-#      the wrong shape is otherwise invisible until the policy is mysteriously
-#      worse.
-#   3. The spec hashes. Store the hash with the checkpoint and a policy trained
-#      against one layout cannot be silently loaded against another. In a
-#      hierarchy this is the failure that costs you a week: the skill still
-#      runs, still produces actions, and is just quietly wrong.
-#
-# No isaaclab import here on purpose -- same reason as sensors.py.
+# No isaaclab import here, for the same reason as sensors.py.
 
 from __future__ import annotations
 
@@ -47,13 +38,10 @@ DIG_SCAN_NX, DIG_SCAN_NY = 16, 8
 DIG_SCAN_CELL = 0.125
 DIG_SCAN_CELLS = DIG_SCAN_NX * DIG_SCAN_NY
 
-# Isaac Lab's GridPatternCfg puts a point at BOTH ends of each axis:
-# arange(-size/2, size/2 + eps, res) yields size/res + 1 points. So to get
-# exactly NX x NY rays the pattern size must be (NX-1)*cell, not NX*cell.
-# Handing it NX*cell produces 17 x 13 = 221 rays against a 192-wide term, and
-# the mismatch surfaces as a shape error in observation assembly -- which is
-# the good outcome; the bad one is nobody noticing the window is a cell wider
-# than the tests assume. These constants make the two agree by construction.
+# GridPatternCfg puts a point at both ends of each axis:
+# arange(-size/2, size/2 + eps, res) yields size/res + 1 points. For exactly
+# NX x NY rays the pattern size must be (NX-1)*cell, not NX*cell, which would
+# give 17 x 13 = 221 rays against a 192-wide term.
 NAV_SCAN_SIZE = ((NAV_SCAN_NX - 1) * NAV_SCAN_CELL, (NAV_SCAN_NY - 1) * NAV_SCAN_CELL)
 DIG_SCAN_SIZE = ((DIG_SCAN_NX - 1) * DIG_SCAN_CELL, (DIG_SCAN_NY - 1) * DIG_SCAN_CELL)
 
@@ -162,13 +150,10 @@ class ObsSpec:
 # The specs themselves
 # ---------------------------------------------------------------------------
 #
-# Heights and angles follow two rules throughout:
-#
-#   * every angle enters as (sin, cos), never as a raw value. A heading error
-#     wraps at +-pi, and that discontinuity quietly poisons the value function.
-#   * every height is RELATIVE -- to the chassis, or to the undisturbed bed
-#     surface. An absolute height makes the policy relearn the task at each
-#     terrain elevation.
+#   * every angle enters as (sin, cos): a raw heading error wraps at +-pi and
+#     the discontinuity poisons the value function
+#   * every height is relative, to the chassis or to the undisturbed bed
+#     surface, so the policy does not relearn the task per terrain elevation
 
 
 def navigate_obs_spec(

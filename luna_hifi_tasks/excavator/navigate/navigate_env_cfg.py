@@ -6,8 +6,6 @@
 # excavate task builds from particles (see mdp/terrain.py), so a policy trained
 # here reads MPM soil correctly.
 #
-# Physics mirrors the flagship Newton + trimesh-terrain config (the Spot
-# velocity env under newton_mjwarp), which is the path Isaac Lab itself runs.
 #
 # Gravity is lunar. See excavator_cfg.py for what that changed.
 

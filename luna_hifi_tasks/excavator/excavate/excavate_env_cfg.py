@@ -1,15 +1,11 @@
 # excavate_env_cfg.py
 #
-# Excavation on the MPM tier: an implicit-MPM regolith bed, the machine
-# parked on top of it, both drums cutting as it drives. Tens of envs, not
-# thousands -- this is where the simulation budget goes, because granular flow
-# into a drum is the physics being learned and nothing cheaper reproduces it.
+# Excavation on the MPM tier: an implicit-MPM regolith bed, the machine parked
+# on top of it, both drums cutting as it drives. Tens of envs, not thousands.
 #
-# The rigid <-> MPM coupling follows tricycle_env_cfg.py line for line, which
-# is the reference that has actually run in this repo. The rules it encodes
-# (one solver per NewtonCfg, MPM entry in_place + all_particles, no
-# project_outside_colliders on a coupled entry, tool bodies as a lagged proxy
-# mapping with a mass_scale, soft_contact_max=0) are all load-bearing.
+# Coupling rules, all load-bearing: one solver per NewtonCfg, MPM entry
+# in_place + all_particles, no project_outside_colliders on a coupled entry,
+# tool bodies as a lagged proxy mapping with a mass_scale, soft_contact_max=0.
 #
 # Gravity is lunar. See excavator_cfg.py.
 
@@ -56,30 +52,23 @@ from ..mdp.observations import NAV_SCAN_CELLS, critic_state_spec, excavate_obs_s
 RIGID_ENTRY = "rover"
 MPM_ENTRY = "soil"
 
-# 5 cm voxels are what the tricycle validated. The drum bore is 34 cm across,
-# i.e. seven cells -- coarse for resolving fill, and the single place in this
-# machine where MPM resolution binds. Dropping to 0.03 triples the particle
-# count; budget for it once the pipeline runs at 0.05.
+# The drum bore is 34 cm across: seven cells at 0.05. Dropping to 0.03 triples
+# the particle count.
 VOXEL_SIZE = 0.05
 MPM_COLLIDER_MARGIN = 0.5 * VOXEL_SIZE
 MPM_PARTICLES_PER_CELL = 1.0
 MPM_VISUAL_COLOR = (0.62, 0.55, 0.45)
 
-# The bed is DERIVED, not constant. Its extent lives on the env cfg as
-# bed_x / bed_y / bed_depth, and __post_init__ rewrites the scene from those.
-# Everything downstream -- the particle count, the sparse-grid capacities, the
-# height grid the scans rasterise onto, the hidden floor slab, the spawn height
-# -- follows from them, which is what makes a smaller bed a subclass rather
-# than a fork of this file.
+# The bed extent lives on the env cfg as bed_x / bed_y / bed_depth, and
+# __post_init__ rewrites the scene from those: particle count, sparse-grid
+# capacities, the height grid, the floor slab and the spawn height all follow.
 #
 # Empty height-grid cells read BED_FLOOR_Z, the top of the slab an excavated
-# cell bottoms out on, so dug ground and untouched ground never look alike.
+# cell bottoms out on.
 BED_FLOOR_Z = 0.0
 
-# Validated regolith parameters from the tricycle. friction ~ tan(phi),
-# yield_stress is cohesion in Pa (left at the default 0 -- the main knob to
-# tune once digging runs). yield_pressure caps compression: packed ground,
-# not a sandbox.
+# friction ~ tan(phi); yield_stress is cohesion in Pa, left at 0; and
+# yield_pressure caps compression.
 SOIL_MATERIAL = MPMParticleMaterialCfg(
     density=1800.0,
     friction=0.84,
@@ -89,11 +78,10 @@ SOIL_MATERIAL = MPMParticleMaterialCfg(
 BORE_RADIUS = DRUM_RADIUS - DRUM_WALL_T
 BORE_HALF_LEN = DRUM_HALF_LEN
 BORE_VOLUME = math.pi * BORE_RADIUS ** 2 * (2.0 * BORE_HALF_LEN)
-# ~155 kg. An UPPER bound twice over: the two lifters displace about 7% of the
-# bore they sweep, and no granular fill packs to 100% of a free volume anyway.
-# It is a normaliser, not a prediction -- fill fraction is only ever compared
-# against itself and against fill_success_fraction, so what matters is that it
-# stays put when the soil density does not.
+# ~155 kg, an upper bound: the two lifters displace about 7% of the bore they
+# sweep and granular fill does not pack to 100% of a free volume. A normaliser
+# -- fill fraction is compared against itself and against
+# fill_success_fraction.
 DRUM_CAPACITY_KG = BORE_VOLUME * SOIL_MATERIAL.density
 
 DIG_OBS = excavate_obs_spec()
@@ -203,102 +191,72 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     bed_x: tuple[float, float] = (-3.0, 5.0)
     bed_y: tuple[float, float] = (-1.0, 1.0)
     bed_depth: float = 0.25
-    # THE parameter for whether the drum can fill. The coupler inflates every
-    # collider by half a voxel per side, so it eats a whole voxel out of every
-    # passage, and particles are spawned one voxel apart. The drum's entry
-    # channel opens 0.082 m, so at 0.05 there is 0.032 m clear -- less than one
-    # particle, and soil bridges the opening and stops in the lip instead of
-    # going in. At 0.03 the same channel is 1.7 particles wide and flows.
-    #
-    # It is not free: halving it multiplies the particle count by eight for a
-    # given bed. That is why the Micro preset shrinks the bed at the same time.
+    # Decides whether the drum can fill. The coupler inflates every collider by
+    # half a voxel per side, eating a whole voxel out of every passage, and
+    # particles spawn one voxel apart. The drum's entry channel opens 0.082 m:
+    # 0.032 m clear at 0.05, under one particle, and soil bridges it; 1.7
+    # particles wide at 0.03, and it flows. Halving the voxel multiplies the
+    # particle count by eight for a given bed.
     voxel_size: float = VOXEL_SIZE
     particles_per_cell: float = MPM_PARTICLES_PER_CELL
     spawn_on_bed: bool = True
 
     # Sparse-grid active cells per particle. ABSOLUTE totals over all envs.
+    # Overrunning them is an illegal access -- a CUDA 700 storm, or 0xC0000374
+    # on Windows -- not an out-of-memory error.
     #
-    # Read the failure mode correctly, because we had it backwards for most of
-    # this machine's life: overrunning these caps is an ILLEGAL ACCESS -- a CUDA
-    # 700 storm, or a 0xC0000374 heap corruption on Windows -- and it looks
-    # nothing like running out of memory, but it was being treated as though it
-    # were. Every crash was answered by shrinking the bed, which made the
-    # shortfall worse relative to the collider set and guaranteed the next one.
-    #
-    # The grid is cheap. A cell is tens of bytes, so 2^20 of them is well under
-    # 100 MB on a card with six thousand. Being stingy here buys nothing and
-    # costs particles, which are the one thing actually worth spending on.
-    #
-    # 8, the tricycle's proven ratio. Raising it to 24 on the theory that the
-    # caps were the binding constraint changed nothing: the 0.03 m voxel died
-    # exactly the same way with 32x the grid. So the caps are NOT what this
-    # machine is hitting, and scripts/mpm_probe.py exists to find what is
-    # instead of the next plausible-sounding guess.
+    # A cell is tens of bytes, so 2^20 of them is under 100 MB. 8 is the
+    # tricycle's ratio; raising it to 24 changed nothing, so the caps are not
+    # what this machine hits.
     grid_cap_multiplier: float = 8.0
 
-    # Which bodies are coupled to the soil. Narrow it on a preset whose soil
-    # some of them cannot reach: each body brings every one of its geoms, and
-    # the drums are 38 geoms apiece.
+    # Which bodies are coupled to the soil. Each body brings every one of its
+    # geoms; the drums are 38 apiece.
     soil_contact_regex: str = SOIL_CONTACT_BODIES_REGEX
 
-    # Rigid-solver buffers, per env. FIXED SIZE, and overrunning one is an
+    # Rigid-solver buffers, per env. Fixed size, and overrunning one is an
     # illegal memory access -- a CUDA 700 storm, or 0xC0000374 on Windows --
-    # not a clean error, which is what makes it so hard to place.
+    # not a clean error.
     #
-    # These were 200/96, inherited from the tricycle and then LOWERED, on a
-    # machine with fifteen times the geometry. The tricycle has 8 geoms and
-    # gave itself 128 contact slots; this excavator has 119, of which 104 are
-    # coupled to the soil, and had 96. Contacts scale with colliders AND with
-    # how much soil is touching them, which is why the crash tracked the
-    # particle count and looked for all the world like a memory limit.
+    # Contacts scale with collider count and with how much soil touches them.
+    # This machine carries 119 geoms, 104 of them coupled, against the
+    # tricycle's 8. A standalone Warp MPM sample has no rigid solver and so
+    # neither buffer, which is why it reaches particle counts a coupled scene
+    # does not.
     #
-    # This is also the honest answer to "why can a standalone Warp MPM sample
-    # run tens of thousands of particles when we cannot": a standalone sample
-    # has no rigid solver, so it has no njmax and no nconmax. These buffers
-    # only exist because a rigid solver is coupled in, and they are what we
-    # were overflowing.
-    #
-    # A contact is a couple of hundred bytes. 8192 of them is about 1.6 MB, so
-    # there is no reason to be tight here.
+    # A contact is a couple of hundred bytes; 8192 is about 1.6 MB.
     rigid_njmax: int = 4096
     rigid_nconmax: int = 8192
 
-    # Active cells per LEAF NODE, as a right shift: 7 is one leaf per 128
-    # cells, four times the theoretical minimum for 8^3 blocks. Lower it (more
-    # leaves) only if the solver runs out of tree, and expect every step to
-    # cost 512 cells of storage.
+    # Active cells per leaf node, as a right shift: 7 is one leaf per 128
+    # cells, four times the minimum for 8^3 blocks. Each step down costs 512
+    # cells of storage.
     grid_leaf_shift: int = 7
 
 
 
     # --- regolith ---
     #
-    # The yield surface in this MPM formulation is
+    # The yield surface is
     #     tau_max(p) = yield_stress + friction * (p - p_min)
-    # so friction is ~tan(phi) and soil_cohesion IS the cohesion, in Pa. Old
+    # so friction is ~tan(phi) and soil_cohesion is cohesion in Pa.
     # Drucker-Prager alpha numbers do not port across.
     #
-    # Cohesion is the knob that decides whether the drum CAPTURES soil or just
-    # sprays it. At zero the regolith is dry sand, and sand does not hold the
-    # shape of a cut: it shears off the lip and flows back out of the mouth it
-    # came in through. A few hundred Pa and the cut travels as a clod that the
-    # lifters can carry round. Lunar simulants sit around 0.1-1 kPa.
+    # At zero cohesion the regolith is dry sand: it shears off the lip and
+    # flows back out of the mouth it entered. A few hundred Pa and the cut
+    # travels as a clod the lifters can carry round. Lunar simulants sit
+    # around 0.1-1 kPa.
     #
     # The blades sweep r = 0.053 to 0.246 m and fill is counted inside the
-    # r = 0.170 m bore, so the lifters reach 0.117 m into the volume being
-    # measured. That is deliberate -- it is what carries the load up the
-    # ascending side instead of letting it sit at the bottom waiting for a
-    # mouth -- but it also means a NON-cohesive soil gets churned by a lifter
-    # every half turn. Cohesion and lifter depth are the same knob seen from
-    # two ends; if fill oscillates instead of climbing, this is why.
+    # r = 0.170 m bore, so the lifters reach 0.117 m into the measured volume
+    # and churn a non-cohesive soil every half turn.
     soil_density: float = 1800.0
     soil_friction: float = 0.84              # tan(40 deg)
     soil_cohesion: float = 0.0               # yield_stress, Pa
     soil_yield_pressure: float = 1.0e12      # packed ground, not a sandbox
 
-    # Derived in __post_init__ from the four fields above. Declared here so the
-    # env can read them off the cfg instead of importing module constants,
-    # which is what makes a differently-sized bed a subclass.
+    # Derived in __post_init__ from the four fields above, and read off the cfg
+    # rather than imported as module constants.
     bed_top: float = 0.0
     bed_grid_lower: tuple[float, float] = (0.0, 0.0)
     bed_grid_nx: int = 0
@@ -306,10 +264,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     bed_particles_per_env: int = 0
     drum_capacity_kg: float = DRUM_CAPACITY_KG
 
-    # The sparse-grid capacities below are ABSOLUTE totals across all envs and
-    # do not scale with --num_envs (Hydra applies that after __post_init__).
-    # They are sized here for max_num_envs, and the env asserts at start-up
-    # that num_envs does not exceed it. Raise this, not the caps directly.
+    # The sparse-grid capacities are absolute totals across all envs and do not
+    # scale with --num_envs, which Hydra applies after __post_init__. They are
+    # sized for max_num_envs and the env asserts num_envs does not exceed it.
     max_num_envs = 32
 
     # actions: [forward, yaw, boom, drum] in [-1, 1]. Boom and drum are one
@@ -330,9 +287,8 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # --- success ---
     fill_success_fraction = 0.8
     # "mean": the pair averages past the threshold. "all": every drum must.
-    # Mean is the default because the rear drum trails through the trench the
-    # front one cut and fills more slowly; requiring both to be full would
-    # make the front drum overfill waiting for it.
+    # The rear drum trails through the trench the front one cut and fills more
+    # slowly.
     fill_success_mode = "mean"
 
     # --- reward weights ---
@@ -358,12 +314,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     proxy_mass_scale: float = 10.0
 
     # The soil_* fields are plain numbers on this cfg; the solver reads an
-    # MPMParticleMaterialCfg hanging off the spawner. Copying between them is
-    # its own method because __post_init__ is NOT the last word on those
-    # fields: Hydra applies command-line overrides AFTER __post_init__ has run,
-    # so `env.soil_cohesion=1500` changes the field and nothing downstream of
-    # it. Anything that touches a soil_* field late must call this, and the env
-    # refuses to start if the two disagree.
+    # MPMParticleMaterialCfg on the spawner. Hydra applies overrides after
+    # __post_init__, so anything setting a soil_* field late must call this
+    # again. The env refuses to start if the two disagree.
     def apply_soil_material(self) -> None:
         """Copy the soil_* fields onto the MPM material and the derived capacity."""
         mat = self.scene.soil.spawn.material
@@ -374,15 +327,14 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             "yield_pressure": self.soil_yield_pressure,
         }
         for name, value in values.items():
-            # A plain setattr on a dataclass instance silently creates an
-            # attribute the solver never reads, so an API rename here would
-            # look exactly like soil parameters having no effect. Check first.
+            # A plain setattr would create an attribute the solver never
+            # reads, so a field rename would present as soil parameters having
+            # no effect.
             if not hasattr(mat, name):
                 raise AttributeError(
                     f"MPMParticleMaterialCfg has no field {name!r} on this Isaac Lab "
-                    f"build; it has {sorted(vars(mat))}. Setting it anyway would be a "
-                    "silent no-op -- the soil would keep its default and no amount of "
-                    "tuning soil_cohesion would change anything."
+                    f"build; it has {sorted(vars(mat))}. Setting it would be a silent "
+                    "no-op and the soil would keep its default."
                 )
             setattr(mat, name, value)
         self.drum_capacity_kg = BORE_VOLUME * self.soil_density
@@ -431,30 +383,17 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         slab.init_state.pos = (0.5 * (self.bed_x[0] + self.bed_x[1]), 0.0, -0.05)
 
         # Wheels rest on z = 0 in the shared asset cfg. On the bed that is a
-        # quarter metre of regolith, so lift the machine clear of it; with a
-        # pile in front of the machine instead, leave it on the ground plane.
+        # quarter metre of regolith; with a pile ahead of the machine instead,
+        # it stays on the ground plane.
         z = SPAWN_Z + (self.bed_top if self.spawn_on_bed else 0.0)
         self.scene.excavator.init_state.pos = (0.0, 0.0, z)
 
         total_particles = self.bed_particles_per_env * self.max_num_envs
         active = _next_pow2(int(self.grid_cap_multiplier * total_particles))
-        # A leaf is a BLOCK of cells, not a cell. That one fact is why this
-        # machine appeared to be capped at a few thousand particles:
-        #
-        #   max_leaf_node_count was active >> 1, so for every two active cells
-        #   we asked for one whole leaf BLOCK. At the sparse-grid block size of
-        #   8^3 = 512 cells, that is 256 times more storage than the active
-        #   cell count calls for -- 200 MB of grid for 1,584 particles, and
-        #   800 MB by 5,544, which is where a 6 GB card running Kit gives out.
-        #
-        # A ladder of single-knob trials (scripts/mpm_probe.py) put it beyond
-        # doubt: every configuration with active <= 32,768 ran and every one
-        # with active >= 65,536 died, at three different voxel sizes and with
-        # the collider set varied. Neither the voxel nor the colliders moved
-        # the boundary at all. It was always this.
-        #
-        # >> 7 keeps four times the theoretical minimum of one leaf per 512
-        # cells, and the floors stop a small bed from starving the tree.
+        # A leaf is a BLOCK of 8^3 = 512 cells, not a cell, so a leaf count
+        # near the active cell count costs hundreds of times the storage the
+        # active set calls for. >> 7 keeps four times the minimum of one leaf
+        # per 512 cells; the floors stop a small bed from starving the tree.
         leaf = max(active >> self.grid_leaf_shift, 1024)
         lower = max(leaf >> 3, 256)
         upper = max(lower >> 3, 64)
@@ -469,13 +408,12 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         )
         print(
             f"[excavate] rigid solver njmax={self.rigid_njmax} "
-            f"nconmax={self.rigid_nconmax} (fixed-size; overrunning either is an "
-            f"illegal access, not an error)"
+            f"nconmax={self.rigid_nconmax}"
         )
         print(
-            f"[excavate]   {self.grid_cap_multiplier:.0f} cells/particle; a leaf covers "
-            f"{1 << self.grid_leaf_shift} of them and is the thing that actually costs "
-            f"memory -- roughly {leaf * 512 * 48 / 1e6:.0f} MB of grid here."
+            f"[excavate]   {self.grid_cap_multiplier:.0f} cells/particle, "
+            f"{1 << self.grid_leaf_shift} cells/leaf, "
+            f"~{leaf * 512 * 48 / 1e6:.0f} MB of grid"
         )
 
         self.sim.physics = NewtonCfg(
@@ -496,14 +434,10 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                     CouplerEntryCfg(
                         name=MPM_ENTRY,
                         solver_cfg=MPMSolverCfg(
-                            # self.voxel_size, NOT the module constant. This is
-                            # the SOLVER's grid, and it is what sets both the
-                            # particle spacing and the margin the coupler
-                            # inflates every collider by. Pinned to VOXEL_SIZE
-                            # it silently ignored a finer cfg voxel: particles
-                            # spawned closer together, the grid stayed coarse,
-                            # and nothing about what fits through the drum
-                            # changed.
+                            # self.voxel_size, not the module constant: this
+                            # grid sets both the particle spacing and the
+                            # margin the coupler inflates colliders by, so
+                            # pinning it makes a finer cfg voxel a no-op.
                             voxel_size=self.voxel_size,
                             grid_type="sparse",
                             grid_padding=0,
@@ -568,41 +502,29 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
 @configclass
 class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
-    """A bed that fits a 6 GB laptop, sized against the tricycle's known-good
-    footprint rather than against what looks small on paper.
+    """A bed that fits a 6 GB laptop: 1,152 particles and 16,384 active cells,
+    against the full bed's 32,000 particles per env and grid caps in the
+    millions.
 
-    The full bed is 32,000 particles per env with grid caps in the millions --
-    a cluster config. An earlier attempt at "small" was 9,504 particles and
-    65,536 cells, which still filled a 6 GB card and failed as a CUDA 700
-    storm. This one is 1,152 particles and 16,384 active cells, which is
-    exactly the capacity the tricycle validated on that hardware.
+    The soil is a pile in FRONT of the machine rather than a bed under it. The
+    machine sits on the rigid ground plane and only the front drum reaches
+    soil, so this does not exercise the counter-rotating pair; it exercises the
+    particle adapter, the coupler mapping and the drum-fill sensor.
 
-    Getting there means giving up something, and the honest trade is that the
-    soil is a PILE IN FRONT of the machine rather than a bed under it. The
-    machine sits on the rigid ground plane and only the FRONT drum reaches
-    soil, so this does not exercise the counter-rotating pair. That is fine for
-    what it is for: proving the particle adapter, the coupler mapping and the
-    drum-fill sensor are wired correctly. Both drums digging is a cluster
-    concern, and the full config covers it.
-
-    Because the machine is on the ground and the pile top is only 0.125 m up,
-    the arm angle that bites is quite different from the deep bed's. Let
-    dig_demo.py solve for it from a cut depth instead of hardcoding a command.
+    The pile top is 0.125 m up, so the arm angle that bites differs from the
+    deep bed's. dig_demo.py solves for it from a cut depth.
     """
 
-    # A tight mound ahead of the machine rather than a thin sheet. Depth is
-    # what matters: at 0.10 m only 0.04 m of the drum bore ever sits inside the
-    # soil column, which is a scratch, not a cut. At 0.16 m it is 0.09 m, and
-    # the footprint shrinks to keep the particle count flat.
+    # Depth is what matters: at 0.10 m only 0.04 m of the drum bore sits inside
+    # the soil column; at 0.16 m it is 0.09 m. The footprint shrinks to keep
+    # the particle count flat.
     bed_x: tuple[float, float] = (1.1, 2.0)
     bed_y: tuple[float, float] = (-0.55, 0.55)
     bed_depth: float = 0.16
     spawn_on_bed: bool = False
 
-    # Cohesive enough that a cut clod survives the trip into the bore. This is
-    # the first thing to sweep if fill stays near zero while particles visibly
-    # move: 0 sprays, ~800 holds together, too much and the drum cannot cut in
-    # at all.
+    # Cohesive enough that a cut clod survives the trip into the bore. 0
+    # sprays; ~800 holds together; too much and the drum cannot cut in.
     soil_cohesion: float = 800.0
 
     max_num_envs = 1
@@ -618,27 +540,15 @@ class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
 class ExcavatorExcavateMicroEnvCfg(ExcavatorExcavateSmallEnvCfg):
     """A finer voxel on a small bed, with only the front drum coupled.
 
-    Why a finer voxel at all: the coupler inflates every collider by half a
-    voxel per side, so it eats a whole voxel out of every passage, and
-    particles are spawned one voxel apart. The drum's entry channel opens
-    0.082 m, so at 0.05 there is 0.032 m clear -- 0.6 of a particle spacing,
-    and soil bridges the opening and stops in the lip instead of going in. At
-    0.03 it is 1.7 spacings.
-
-    Why the bed is no longer tiny: it never needed to be. A ladder of
-    single-knob trials showed survival tracking the sparse-grid cap and nothing
-    else -- not the voxel, not the collider count -- and the cap was being
-    turned into 256 times its own weight in memory by a leaf-node ratio that
-    counted blocks as though they were cells. See the note by grid_leaf_shift.
-    Three rounds of shrinking beds were chasing the wrong quantity.
+    The drum's entry channel opens 0.082 m. At a 0.05 voxel that leaves 0.032 m
+    clear, 0.6 of a particle spacing, and soil bridges the opening; at 0.03 it
+    is 1.7 spacings and flows.
     """
 
     voxel_size: float = 0.03
 
-    # A strip worth cutting. Kept modest rather than minimal: the contact
-    # buffers were the thing being overrun, not the particle count, but that
-    # was established by reading the config rather than by a run, so this is
-    # the first size to try and not the last.
+    # A strip worth cutting. The contact buffers, not the particle count, are
+    # what overruns first.
     bed_x: tuple[float, float] = (1.05, 1.95)
     bed_y: tuple[float, float] = (-0.50, 0.50)
     bed_depth: float = 0.21

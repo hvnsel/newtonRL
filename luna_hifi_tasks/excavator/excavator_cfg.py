@@ -158,12 +158,25 @@ EXCAVATOR_CFG = ArticulationCfg(
         # is ~199 N of normal force at 1.62 m/s^2, so ~60 N-m at r = 0.30
         # before slip. 120 is a 2x margin. The earth-gravity figure would be
         # ~362 N-m, which the ground cannot react against.
+        #
+        # With stiffness 0 the damping IS the gain: torque is damping times
+        # the velocity ERROR, so a slow command is a weak one. At 25 a crawl
+        # command of 0.25 rad/s could raise 6.2 N-m per wheel, 83 N in total
+        # against a machine that weighs 797 N here, and the wheels stalled
+        # without turning. 25 was tuned so a FULL-speed command just reached
+        # the effort limit, which left everything below it underpowered --
+        # and a crawl is what excavation is.
+        #
+        # 400 reaches the effort limit at 0.3 rad/s, so the drive acts as a
+        # torque source up to the ceiling at any commanded speed. What
+        # actually bounds tractive force is effort_limit_sim and the ground,
+        # not the gain.
         "wheels": ImplicitActuatorCfg(
             joint_names_expr=JOINT_WHEELS,
             effort_limit_sim=WHEEL_EFFORT,
             velocity_limit_sim=12.0,
             stiffness=0.0,
-            damping=25.0,
+            damping=400.0,
         ),
         # Position drive, sized by dig load rather than gravity. Holding a full
         # drum out horizontally is 229 N-m at lunar gravity; resisting the

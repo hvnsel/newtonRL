@@ -266,10 +266,22 @@ def main(argv=None) -> int:
                 tau = u.robot.data.applied_torque.torch[0, u._wheel_ids]
                 print(f"  [{tag}] chassis x={chassis[0]:+.3f} z={chassis[2]:.3f}   "
                       f"drum x={d[0]:.3f} z={d[2]:.3f}  shroud bottom z={d[2] - 0.212:.3f}")
+                c = u.cfg
+                fm = c.mpm_floor_margin
+                fx = (c.bed_x[0] - fm, c.bed_x[1] + fm)
+                fy = (c.bed_y[0] - fm, c.bed_y[1] + fm)
+                off = int((
+                    (p0[:, 0] < fx[0]) | (p0[:, 0] > fx[1])
+                    | (p0[:, 1] < fy[0]) | (p0[:, 1] > fy[1])
+                ).sum())
+                below = int((p0[:, 2] < -0.10).sum())
                 print(f"  [{tag}] soil {p0.shape[0]} particles  "
                       f"x[{p0[:, 0].min():.2f},{p0[:, 0].max():.2f}] "
+                      f"y[{p0[:, 1].min():+.2f},{p0[:, 1].max():+.2f}] "
                       f"z[{p0[:, 2].min():.3f},{p0[:, 2].max():.3f}]   "
-                      f"bed x{tuple(u.cfg.bed_x)} top {u.cfg.bed_top:.3f}")
+                      f"bed x{tuple(c.bed_x)} y{tuple(c.bed_y)} top {c.bed_top:.3f}")
+                print(f"  [{tag}] past the MPM floor x{fx} y{fy}: {off} particles, "
+                      f"{below} below it (those have nothing to stand on)")
                 print(f"  [{tag}] soil in the bore {inside:.2f} kg, within +0.15 m {near:.2f} kg   "
                       f"wheel vel {wv.mean():+.3f} rad/s (cmd {u._forward_cmd[0] / 0.30:+.3f})  "
                       f"torque {tau.abs().mean():.1f} N-m")

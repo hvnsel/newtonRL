@@ -144,10 +144,14 @@ SOIL_CFG = MPMObjectCfg(
 
 
 def _mpm_ground() -> RigidObjectCfg:
-    """Hidden kinematic slab giving the MPM entry a floor. The MPM entry only
-    sees bodies listed on its CouplerEntryCfg, not the global ground plane, so
-    without this the particles fall forever. Size and position are rewritten in
-    __post_init__ to match the bed."""
+    """Hidden kinematic slab giving the MPM entry a floor.
+
+    The MPM entry only sees bodies listed on its CouplerEntryCfg, not the
+    global ground plane, so anything past the edge of this slab has nothing
+    underneath it and falls forever. It therefore has to extend well beyond
+    the bed: a drum cutting a 0.10 m lift bulldozes a bow wave ahead of
+    itself and throws material sideways, and both leave the bed footprint.
+    Size and position are rewritten in __post_init__."""
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/MPMGround",
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -0.05)),
@@ -222,6 +226,15 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     voxel_size: float = VOXEL_SIZE
     particles_per_cell: float = MPM_PARTICLES_PER_CELL
     spawn_on_bed: bool = True
+
+    # How far past the bed, on every side, the MPM floor slab and the height
+    # grid reach. Soil does not stay inside the box it was spawned in: a
+    # single 12 s crawl pushed the near edge 0.20 m back. Past the slab there
+    # is no floor and particles fall forever; past the height grid they are
+    # dropped from the rasterisation, so the terrain scan reads bare ground
+    # where a spoil pile is.
+    mpm_floor_margin: float = 1.0
+    heightmap_margin: float = 1.0
 
     # Sparse-grid active cells per particle. ABSOLUTE totals over all envs.
     # Overrunning them is an illegal access -- a CUDA 700 storm, or 0xC0000374
@@ -479,9 +492,10 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         width = self.bed_y[1] - self.bed_y[0]
 
         self.bed_top = margin + self.bed_depth
-        self.bed_grid_lower = (self.bed_x[0], self.bed_y[0])
-        self.bed_grid_nx = int(math.ceil(length / self.voxel_size))
-        self.bed_grid_ny = int(math.ceil(width / self.voxel_size))
+        hm = self.heightmap_margin
+        self.bed_grid_lower = (self.bed_x[0] - hm, self.bed_y[0] - hm)
+        self.bed_grid_nx = int(math.ceil((length + 2.0 * hm) / self.voxel_size))
+        self.bed_grid_ny = int(math.ceil((width + 2.0 * hm) / self.voxel_size))
         self.bed_particles_per_env = particles_per_env(
             lower, upper, self.voxel_size, self.particles_per_cell
         )
@@ -494,9 +508,16 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         spawn.particles_per_cell = self.particles_per_cell
 
         slab = self.scene.mpm_ground
-        slab.spawn.size = (length + 1.0, width + 1.0, 0.10)
+        fm = self.mpm_floor_margin
+        slab.spawn.size = (length + 2.0 * fm, width + 2.0 * fm, 0.10)
         slab.spawn.collision_props.contact_margin = margin
-        slab.init_state.pos = (0.5 * (self.bed_x[0] + self.bed_x[1]), 0.0, -0.05)
+        # Centred on the bed in BOTH axes; a bed whose y range is not centred
+        # on zero would otherwise hang off one side of its own floor.
+        slab.init_state.pos = (
+            0.5 * (self.bed_x[0] + self.bed_x[1]),
+            0.5 * (self.bed_y[0] + self.bed_y[1]),
+            -0.05,
+        )
 
         # Wheels rest on z = 0 in the shared asset cfg. On the bed that is a
         # quarter metre of regolith; with a pile ahead of the machine instead,

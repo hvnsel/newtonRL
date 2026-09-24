@@ -252,25 +252,31 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             ).sum(dim=-1)
             return torch.maximum(z, floor.view(-1, *([1] * nd)))
 
-        # The plane sampled at the same cells the scan was taken at, then put
-        # in the scan's own frame so the drum's height cancels out of every
-        # comparison below.
+        # The plane sampled at the same cells the scan was taken at, in the
+        # SAME convention every scan backend uses: reference height minus
+        # ground height, so a lower surface reads larger. Written the other way
+        # round the drum's height does not cancel out of the difference, it
+        # doubles, and lowering an empty boom scores as if it were digging.
         pts = scan_points_world(
             front, self.robot.data.root_quat_w.torch, self._dig_pattern
         )[:, self._footprint]
-        t = (plane_at(pts) - drum_z.unsqueeze(-1)).clamp(-clip, clip)
-        level = (plane_at(front[:, :2]) - drum_z).clamp(-clip, clip)
+        t = (drum_z.unsqueeze(-1) - plane_at(pts)).clamp(-clip, clip)
+        level = (drum_z - plane_at(front[:, :2])).clamp(-clip, clip)
         grad_b = R.world_to_body_xy(self._target_grad, self._base_yaw())
         foot = actor_scan[:, self._footprint]
+        # t - foot is (drum - target) - (drum - ground) = ground - target.
+        # Positive means soil still standing above the commanded plane, and
+        # the drum's height is gone from it.
+        residual = t - foot
         return {
             "target_level": level.unsqueeze(-1),
             "grad_forward": grad_b[:, 0:1],
             "grad_lateral": grad_b[:, 1:2],
-            "depth_error": (foot - t).mean(dim=-1, keepdim=True),
-            "cut_progress": (foot <= t).float().mean(dim=-1, keepdim=True),
+            "depth_error": residual.mean(dim=-1, keepdim=True),
+            "cut_progress": (foot >= t).float().mean(dim=-1, keepdim=True),
             # m3 of soil still above the target, and taken below it
-            "above_volume": (foot - t).clamp_min(0.0).sum(dim=-1) * self._cell_area,
-            "below_volume": (t - foot).clamp_min(0.0).sum(dim=-1) * self._cell_area,
+            "above_volume": residual.clamp_min(0.0).sum(dim=-1) * self._cell_area,
+            "below_volume": (-residual).clamp_min(0.0).sum(dim=-1) * self._cell_area,
         }
 
     def _drum_spawn_ground(

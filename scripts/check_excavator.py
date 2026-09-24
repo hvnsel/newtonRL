@@ -6,11 +6,22 @@
 #   python scripts/check_excavator.py
 #
 # It needs its OWN environment, not Isaac Lab's. The two requirements cannot
-# both be met in one: Isaac Sim pins mujoco to its own version (3.8.0 on the
-# 6.0 line) because MJWarp, the rigid solver the excavator runs on, is built
-# against it, while mj_geomDistance only measures anything from 3.13. Upgrading
-# inside Isaac Lab's venv replaces the solver's MuJoCo, which is a physics
-# change dressed as a tooling fix.
+# both be met in one: mj_geomDistance only measures anything from mujoco 3.13,
+# while MJWarp -- the rigid solver the excavator runs on -- is built against a
+# specific older one. Changing it inside Isaac Lab's venv is a physics change
+# dressed as a tooling fix, and it breaks the sim outright.
+#
+# Which version the venv wants is NOT what pip's resolver says. It quotes
+# isaacsim-core's declaration (mujoco==3.8.0 on the 6.0 line), which a newer
+# newton supersedes. The authority is newton's own runtime check, printed on
+# every run:
+#
+#   RuntimeWarning: MuJoCo dependency version mismatch with Newton's declared
+#   requirements: mujoco==3.8.0 (requires ~=3.11.0)
+#
+# Follow that line. Installing isaacsim-core's 3.8.0 against newton 1.5.1 and
+# mujoco-warp 3.11 crashes in mujoco_warp.put_model with a None array shape,
+# because a field the newer mujoco-warp expects does not exist in 3.8.
 #
 #   python -m venv .venv-geom
 #   .venv-geom/bin/pip install -e ".[assets]"     # declares mujoco>=3.13

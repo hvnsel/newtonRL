@@ -2,8 +2,15 @@
 #
 # Offline geometry check for the excavator MJCF. Needs MuJoCo, NOT Isaac Lab:
 #
-#   pip install mujoco
+#   pip install "mujoco>=3.13"
 #   python scripts/check_excavator.py
+#
+# Run it with a PLAIN Python, not isaaclab.bat -p. Isaac Sim pins mujoco to
+# its own version (3.8.0 on the 6.0 line) because MJWarp, the rigid solver the
+# excavator runs on, is built against it. Installing 3.13+ into that venv to
+# satisfy this script replaces the solver's own MuJoCo. Nothing here imports
+# the package -- excavator.py is loaded straight off disk below -- so any
+# interpreter with mujoco and numpy will do.
 #
 # The next place these numbers show up is a converted USD inside a physics
 # solver, where a 2 cm interpenetration presents as an unstable policy.

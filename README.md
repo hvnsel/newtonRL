@@ -142,12 +142,20 @@ Test-Path $REPO\scripts\dig_demo.py      # must be True
 Then:
 
 ```powershell
-# 1. Check the geometry before converting. Needs MuJoCo, not Isaac Lab.
-#    Below 3.13, mj_geomDistance returns 0.0 for every pair and every
-#    clearance reads 0.0000. The script probes for that and skips rather
+# 1. Check the geometry before converting. Needs MuJoCo, not Isaac Lab, and
+#    it loads excavator.py straight off disk -- so run it with a PLAIN
+#    Python, never isaaclab.bat -p.
+#
+#    Isaac Sim pins mujoco to its own version because MJWarp, the rigid
+#    solver the excavator runs on, is built against it. Installing 3.13+
+#    into that venv to satisfy this script replaces the solver's MuJoCo.
+#
+#    Below 3.13 mj_geomDistance returns 0.0 for every pair and every
+#    clearance reads 0.0000; the script probes for that and skips rather
 #    than reporting a false failure.
-.\isaaclab.bat -p -m pip install -U "mujoco>=3.13"
-.\isaaclab.bat -p $REPO\scripts\check_excavator.py
+$SYSPY = "C:\Users\hanse\AppData\Local\Programs\Python\Python312\python.exe"
+& $SYSPY -m pip install "mujoco>=3.13" numpy
+& $SYSPY $REPO\scripts\check_excavator.py
 
 # 2. Write the MJCF.
 .\isaaclab.bat -p -c "from luna_hifi_tasks.excavator.excavator import write_mjcf; print(write_mjcf())"

@@ -233,6 +233,48 @@ def main(argv=None) -> int:
             dig[:, 4] = max(-1.0, min(1.0, -arm / max(shi, 1e-6)))
             print(f"  cut {cut:.2f} m -> boom {boom:+.3f}, arm {arm:.3f} rad, "
                   f"crawl {0.05 * 5.0 * 0.30:.3f} m/s over {args.steps} steps")
+
+            def _where(tag: str) -> None:
+                """Drum, soil and drive state, all in the env frame.
+
+                Fill reading zero has three unrelated causes -- the drum is
+                not in the soil, the soil is not where the cfg says, or the
+                machine never moved -- and they are indistinguishable from
+                the fill number alone.
+                """
+                from luna_hifi_tasks.excavator.excavate.excavate_env_cfg import (
+                    BORE_HALF_LEN, BORE_RADIUS,
+                )
+                from luna_hifi_tasks.excavator.mdp.sensors import drum_fill_mass
+
+                org = u.scene.env_origins[0]
+                pos, env = u._particles()
+                p0 = pos[env == 0] - org
+                dpos, dquat = u._drum_poses()
+                d = dpos[0, 0] - org
+                chassis = u.robot.data.root_pos_w.torch[0] - org
+                # Same test the fill sensor uses, in the drum's own frame, at
+                # the bore and at a shell 0.15 m wider. Soil in the shell but
+                # not the bore means the drum is beside it, not in it.
+                def mass(radius: float) -> float:
+                    return float(drum_fill_mass(
+                        pos, env, u._particle_mass, dpos[:, 0], dquat[:, 0],
+                        radius, BORE_HALF_LEN, u.num_envs,
+                    )[0])
+                inside, near = mass(BORE_RADIUS), mass(BORE_RADIUS + 0.15)
+                wv = u.robot.data.joint_vel.torch[0, u._wheel_ids]
+                tau = u.robot.data.applied_torque.torch[0, u._wheel_ids]
+                print(f"  [{tag}] chassis x={chassis[0]:+.3f} z={chassis[2]:.3f}   "
+                      f"drum x={d[0]:.3f} z={d[2]:.3f}  shroud bottom z={d[2] - 0.212:.3f}")
+                print(f"  [{tag}] soil {p0.shape[0]} particles  "
+                      f"x[{p0[:, 0].min():.2f},{p0[:, 0].max():.2f}] "
+                      f"z[{p0[:, 2].min():.3f},{p0[:, 2].max():.3f}]   "
+                      f"bed x{tuple(u.cfg.bed_x)} top {u.cfg.bed_top:.3f}")
+                print(f"  [{tag}] soil in the bore {inside:.2f} kg, within +0.15 m {near:.2f} kg   "
+                      f"wheel vel {wv.mean():+.3f} rad/s (cmd {u._forward_cmd[0] / 0.30:+.3f})  "
+                      f"torque {tau.abs().mean():.1f} N-m")
+
+            _where("start")
             peak = u._fill_kg.sum(dim=-1).clone()
             for i in range(args.steps):
                 obs, *_ = env.step(dig)
@@ -243,6 +285,7 @@ def main(argv=None) -> int:
             # Peak, not end minus start: a machine that crosses the bed and
             # carries on sheds its load, and what is under test is whether the
             # particle adapter reads real particles at all.
+            _where("end")
             print(f"  peak fill per env: {peak.tolist()}")
             _check(bool((peak > 1.0).any()), "drum fill rose with drums in the bed (particle adapter reads real particles)", failures)
         else:

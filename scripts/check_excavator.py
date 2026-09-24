@@ -5,12 +5,19 @@
 #   pip install "mujoco>=3.13"
 #   python scripts/check_excavator.py
 #
-# Run it with a PLAIN Python, not isaaclab.bat -p. Isaac Sim pins mujoco to
-# its own version (3.8.0 on the 6.0 line) because MJWarp, the rigid solver the
-# excavator runs on, is built against it. Installing 3.13+ into that venv to
-# satisfy this script replaces the solver's own MuJoCo. Nothing here imports
-# the package -- excavator.py is loaded straight off disk below -- so any
-# interpreter with mujoco and numpy will do.
+# It needs its OWN environment, not Isaac Lab's. The two requirements cannot
+# both be met in one: Isaac Sim pins mujoco to its own version (3.8.0 on the
+# 6.0 line) because MJWarp, the rigid solver the excavator runs on, is built
+# against it, while mj_geomDistance only measures anything from 3.13. Upgrading
+# inside Isaac Lab's venv replaces the solver's MuJoCo, which is a physics
+# change dressed as a tooling fix.
+#
+#   python -m venv .venv-geom
+#   .venv-geom/bin/pip install -e ".[assets]"     # declares mujoco>=3.13
+#   .venv-geom/bin/python scripts/check_excavator.py
+#
+# Nothing here imports the package -- excavator.py is loaded straight off disk
+# below -- so the install is only for the dependency.
 #
 # The next place these numbers show up is a converted USD inside a physics
 # solver, where a 2 cm interpenetration presents as an unstable policy.

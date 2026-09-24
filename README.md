@@ -146,16 +146,14 @@ Then:
 #    it loads excavator.py straight off disk -- so run it with a PLAIN
 #    Python, never isaaclab.bat -p.
 #
-#    Isaac Sim pins mujoco to its own version because MJWarp, the rigid
-#    solver the excavator runs on, is built against it. Installing 3.13+
-#    into that venv to satisfy this script replaces the solver's MuJoCo.
-#
-#    Below 3.13 mj_geomDistance returns 0.0 for every pair and every
-#    clearance reads 0.0000; the script probes for that and skips rather
-#    than reporting a false failure.
-$SYSPY = "C:\Users\hanse\AppData\Local\Programs\Python\Python312\python.exe"
-& $SYSPY -m pip install "mujoco>=3.13" numpy
-& $SYSPY $REPO\scripts\check_excavator.py
+#    It gets its own venv. Isaac Sim pins mujoco to its own version because
+#    MJWarp, the rigid solver the excavator runs on, is built against it,
+#    while mj_geomDistance only measures anything from 3.13 up. Below that
+#    every clearance reads 0.0000; the script probes for it and skips rather
+#    than reporting a false failure. One venv cannot satisfy both.
+python -m venv $REPO\.venv-geom
+& $REPO\.venv-geom\Scripts\pip install -e "$REPO[assets]"
+& $REPO\.venv-geom\Scripts\python $REPO\scripts\check_excavator.py
 
 # 2. Write the MJCF.
 .\isaaclab.bat -p -c "from luna_hifi_tasks.excavator.excavator import write_mjcf; print(write_mjcf())"

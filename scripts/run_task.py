@@ -154,16 +154,29 @@ def main(argv=None) -> int:
         print("  joints:", u.robot.joint_names)
         print("  wheel ids", u._wheel_ids, "arm ids", u._arm_ids, "drum ids", u._drum_ids,
               "drum body ids", u._drum_body_ids)
-        try:
-            import isaacsim.core.utils.prims as prim_utils  # type: ignore
+        print("  shroud ids", u._shroud_ids)
+        # Which prims the MPM coupling regex actually matched. The shroud
+        # hangs off the ARM rather than the drum, so it is the one body most
+        # likely to fall outside the pattern -- and a shroud that is not
+        # coupled retains nothing while looking like a geometry failure.
+        import re as _re
 
-            paths = [p.GetPath().pathString for p in prim_utils.get_all_matching_child_prims("/World/envs/env_0")]
-            hits = [p for p in paths if "wheel" in p or "drum" in p or "chassis" in p]
-            print("  env_0 prims with wheel/drum/chassis in the path:")
-            for h in hits[:24]:
+        pattern = _re.compile(u.cfg.soil_contact_regex)
+        try:
+            from pxr import Usd  # type: ignore
+
+            stage = u.sim.stage if hasattr(u.sim, "stage") else None
+            paths = ([p.GetPath().pathString for p in stage.Traverse()] if stage else [])
+        except Exception:
+            paths = []
+        hits = [p for p in paths if pattern.match(p)]
+        if hits:
+            print(f"  soil_contact_regex matched {len(hits)} prims:")
+            for h in hits[:16]:
                 print("   ", h)
-        except Exception as exc:  # kit-less path: no prim utils, that is fine
-            print(f"  (prim listing unavailable here: {type(exc).__name__})")
+        else:
+            print("  (could not list prims here; the coupler's own body count is")
+            print("   the fallback -- 4 wheels + 2 rotors + 2 shrouds should be 8)")
 
         obs, _ = env.reset()
         pol, crit = obs["policy"], obs["critic"]

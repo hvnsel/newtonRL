@@ -182,6 +182,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             "arm_pos": p["arm_pos"],
             "arm_vel": p["arm_vel"],
             "drum_vel": p["drum_vel"],
+            "shroud_pos": p["shroud_pos"],
             "drum_fill": fill_frac,
             "terrain_scan": actor_scan,
             "last_action": self._actions,

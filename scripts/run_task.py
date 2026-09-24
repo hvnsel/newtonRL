@@ -163,28 +163,46 @@ def main(argv=None) -> int:
         print("  wheel ids", u._wheel_ids, "arm ids", u._arm_ids, "drum ids", u._drum_ids,
               "drum body ids", u._drum_body_ids)
         print("  shroud ids", u._shroud_ids)
-        # Which prims the MPM coupling regex actually matched. The shroud
-        # hangs off the ARM rather than the drum, so it is the one body most
-        # likely to fall outside the pattern -- and a shroud that is not
-        # coupled retains nothing while looking like a geometry failure.
-        import re as _re
+        if is_dig:
+            # Which prims the MPM coupling regex actually matched. The shroud
+            # hangs off the ARM rather than the drum, so it is the one body
+            # most likely to fall outside the pattern -- and a shroud that is
+            # not coupled retains nothing while looking like a geometry
+            # failure.
+            import re as _re
 
-        pattern = _re.compile(u.cfg.soil_contact_regex)
-        try:
-            from pxr import Usd  # type: ignore
+            pattern = _re.compile(u.cfg.soil_contact_regex)
+            try:
+                from pxr import Usd  # noqa: F401
 
-            stage = u.sim.stage if hasattr(u.sim, "stage") else None
-            paths = ([p.GetPath().pathString for p in stage.Traverse()] if stage else [])
-        except Exception:
-            paths = []
-        hits = [p for p in paths if pattern.match(p)]
-        if hits:
-            print(f"  soil_contact_regex matched {len(hits)} prims:")
-            for h in hits[:16]:
-                print("   ", h)
+                stage = u.sim.stage if hasattr(u.sim, "stage") else None
+                paths = ([p.GetPath().pathString for p in stage.Traverse()] if stage else [])
+            except Exception:
+                paths = []
+            hits = [p for p in paths if pattern.match(p)]
+            if hits:
+                print(f"  soil_contact_regex matched {len(hits)} prims:")
+                for h in hits[:16]:
+                    print("   ", h)
+            else:
+                print("  (could not list prims here; the coupler's own body count is")
+                print("   the fallback -- 4 wheels + 2 rotors + 2 shrouds should be 8)")
         else:
-            print("  (could not list prims here; the coupler's own body count is")
-            print("   the fallback -- 4 wheels + 2 rotors + 2 shrouds should be 8)")
+            # The rigid tier has no coupler; its sensors are the two ray
+            # casters. GridPatternCfg puts a ray at BOTH ends of each axis, so
+            # a size of NX*cell rather than (NX-1)*cell silently yields one
+            # extra row and column and the observation no longer matches its
+            # declared width.
+            from luna_hifi_tasks.excavator.mdp.observations import (
+                NAV_FAR_CELLS, NAV_NEAR_CELLS,
+            )
+
+            for name, want in (("far_scanner", NAV_FAR_CELLS), ("near_scanner", NAV_NEAR_CELLS)):
+                rays = u.scene[name].data.ray_hits_w.torch.shape[1]
+                _check(rays == want, f"{name} casts {rays} rays == {want} declared cells", failures)
+            levels = u.terrain.terrain_levels
+            print(f"  terrain levels: {int(levels.min())}-{int(levels.max())} of "
+                  f"{int(u.terrain.max_terrain_level)}, mean {levels.float().mean():.2f}")
 
         obs, _ = env.reset()
         pol, crit = obs["policy"], obs["critic"]

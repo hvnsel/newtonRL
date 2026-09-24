@@ -107,13 +107,20 @@ def distance_works(m: mujoco.MjModel, d: mujoco.MjData) -> bool:
     """Does mj_geomDistance actually measure anything on this build?
 
     Probed against a pair whose separation is obvious from the model's own
-    frames -- the deck and a drum end cap are the better part of a metre apart
-    -- so a zero here cannot be a real contact.
+    frames -- the deck and a shroud end plate are the better part of a metre
+    apart -- so a zero here cannot be a real contact.
+
+    The probe pair is named, so renaming a geom silently disarms it. It asserts
+    rather than assuming: a disarmed probe reports every clearance as 0.0000
+    and fails a model that is fine, which is worse than no probe at all.
     """
     a = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "deck")
-    b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "drum_front_cap_l")
-    if a < 0 or b < 0:
-        return True                      # cannot probe; assume it works
+    b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "shroud_front_end_l")
+    assert a >= 0 and b >= 0, (
+        "the mj_geomDistance probe names geoms that no longer exist "
+        f"(deck={a}, shroud_front_end_l={b}). Point it at a pair that does, or "
+        "every clearance below reads 0.0000 and fails a sound model."
+    )
     apart = float(np.linalg.norm(d.geom_xpos[a] - d.geom_xpos[b]))
     got = mujoco.mj_geomDistance(m, d, a, b, DISTMAX, None)
     if apart > 0.5 and got <= 1e-9:
@@ -452,6 +459,7 @@ def check_reach(fail: list[str]) -> None:
 def main() -> int:
     path = X.write_mjcf()
     print(f"MJCF: {path}")
+    print(f"mujoco {mujoco.__version__} (clearance checks need {MIN_MUJOCO}+)")
     m = mujoco.MjModel.from_xml_path(path)
     d = mujoco.MjData(m)
     d.qpos[:] = m.qpos0

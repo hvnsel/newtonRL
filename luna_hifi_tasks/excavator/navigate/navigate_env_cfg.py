@@ -121,15 +121,34 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
     # --- goals ---
     goal_dist_range = (2.0, 5.0)         # initial sampling band, metres
-    goal_dist_max = 12.0                 # curriculum ceiling
+    goal_dist_max = 8.0                  # curriculum ceiling
     goal_dist_tol = 0.5                  # reached when closer than this ...
     goal_heading_tol_rad = 0.35          # ... and facing within this
     spawn_xy_jitter = 2.0                # random offset inside the terrain cell
 
-    # --- curriculum on goal distance ---
+    # Goals are held inside the sub-terrain the env was assigned. Cells are
+    # 16 m and the machine is 3.78 m long, so the margin leaves it room to
+    # turn at the boundary. goal_cell_half is derived in __post_init__.
+    goal_cell_margin = 2.0
+    goal_cell_half = 6.0
+
+    # Goal heading, relative to the bearing the machine drove in on. A dig
+    # approach arrives roughly facing the way it came; goal_yaw_random_frac
+    # of episodes still draw a heading uniformly so the skill can also turn
+    # on the spot when asked.
+    goal_yaw_spread = 0.5                # rad, 1 sigma
+    goal_yaw_random_frac = 0.15
+
+    # --- curriculum ---
+    # Two independent ladders. Goal distance widens globally on the success
+    # rate over a window of finished episodes; terrain difficulty is per-env
+    # and moves through TerrainImporter.update_env_origins on every reset.
     curriculum_window = 256              # episodes averaged for the success rate
     curriculum_success_rate = 0.7        # widen the band above this ...
     curriculum_step = 1.0                # ... by this many metres
+    # An episode that ended without reaching the goal and closed less than
+    # this fraction of its starting distance moves that env down a level.
+    terrain_demote_fraction = 0.5
 
     # --- actions ---
     action_smoothing = 0.3               # EMA: a_t = (1-s) a_cmd + s a_{t-1}
@@ -152,7 +171,7 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
     # --- termination ---
     max_tilt_rad = math.radians(60.0)
-    max_env_excursion = 14.0             # metres from the env origin
+    max_env_excursion = 10.0             # metres from the env origin
 
     # --- arms ---
     arm_hold_angle = ARM_STOW_ANGLE
@@ -162,6 +181,9 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     scan_noise_std = 0.0                 # actor only; critic sees the clean scan
 
     def __post_init__(self) -> None:
+        cell = min(self.scene.terrain.terrain_generator.size)
+        self.goal_cell_half = 0.5 * cell - self.goal_cell_margin
+
         self.sim.physics = NewtonCfg(
             solver_cfg=MJWarpSolverCfg(
                 njmax=200,

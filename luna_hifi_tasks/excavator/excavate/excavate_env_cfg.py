@@ -34,7 +34,16 @@ from isaaclab_newton.sim.spawners.mpm import MPMGridCfg, MPMParticleMaterialCfg
 
 from isaaclab_contrib.coupling import CouplerEntryCfg, CouplerProxyCfg, CouplerProxyMappingCfg
 
-from ..excavator import ARM_RANGE, ROTOR_HALF_LEN, ROTOR_TIP_R, SHROUD_OUT_R, SHROUD_RANGE
+from ..excavator import (
+    ARM_LEN,
+    ARM_RANGE,
+    CHASSIS_Z,
+    MAST_TOP_Z,
+    ROTOR_HALF_LEN,
+    ROTOR_TIP_R,
+    SHROUD_OUT_R,
+    SHROUD_RANGE,
+)
 from ..excavator_cfg import (
     EXCAVATOR_CFG,
     EXCAVATOR_PRIM_REGEX,
@@ -421,6 +430,29 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             if getattr(mat, m) != v
         ]
         return "; ".join(bad) if bad else None
+
+    def boom_command_for_cut(self, cut: float) -> tuple[float, float]:
+        """(boom command in [-1, 1], arm angle in rad) that puts the SHROUD
+        `cut` metres below the soil surface.
+
+        All heights in world z:
+
+            wheel plane = the bed surface when the machine stands on the bed,
+                          otherwise 0 -- it is beside the pile, on the ground
+            drum bottom = wheel plane + pivot - ARM_LEN*sin(angle) - SHROUD_OUT_R
+            target      = bed surface - cut
+
+        A raw boom command does not carry between scenes. 0.9 is 0.66 rad,
+        which on a pile-in-front bed puts the shroud 0.18 m BELOW the ground
+        plane: the drum bottoms out on the rigid floor, jacks the wheels off
+        the ground, and the machine never reaches the soil.
+        """
+        pivot = CHASSIS_Z + MAST_TOP_Z
+        wheel_plane = self.bed_top if self.spawn_on_bed else 0.0
+        sin_t = (wheel_plane + pivot - SHROUD_OUT_R - (self.bed_top - cut)) / ARM_LEN
+        lo, hi = self.arm_range
+        angle = min(max(math.asin(min(max(sin_t, -1.0), 1.0)), lo), hi)
+        return 2.0 * (angle - lo) / (hi - lo) - 1.0, angle
 
     def footprint_cells(self) -> int:
         """Scan cells inside the drum's footprint. Must match the mask the env

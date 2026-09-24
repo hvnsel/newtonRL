@@ -39,8 +39,6 @@ import luna_hifi_tasks  # noqa: F401  (registers Luna-* tasks)
 from luna_hifi_tasks.excavator.excavator import (
     ARM_LEN,
     DIG_DRUM_SIGN,
-    CHASSIS_Z,
-    MAST_TOP_Z,
     PIVOT_X,
     ROTOR_TIP_R,
     SHROUD_OUT_R,
@@ -81,7 +79,7 @@ def _parse(argv):
     # Depth of the SHELL below the soil surface, in metres, not a boom command:
     # the command reaching a given depth depends on the bed depth and on
     # whether the machine stands on the soil or beside it, and
-    # boom_command_for_cut() solves it from the env's own config.
+    # cfg.boom_command_for_cut() solves it from the env's own config.
     #
     # Measured to the SHROUD, which is the outermost thing on the drum and the
     # first to touch anything. cut_diagnosis() reports the margin per run.
@@ -125,31 +123,6 @@ def _parse(argv):
     args, hydra_args = setup_preset_cli(p, argv)
     sys.argv = [sys.argv[0]] + hydra_args
     return args
-
-
-def boom_command_for_cut(cfg, cut: float) -> tuple[float, float]:
-    """Boom command in [-1, 1] that puts the drum `cut` metres into the soil.
-
-    Geometry, all heights measured in world z:
-
-        wheel plane   = bed surface if the machine stands on the bed,
-                        otherwise 0 (it is beside the pile, on the ground)
-        drum bottom   = wheel plane + pivot - ARM_LEN*sin(angle) - SHROUD_OUT_R
-        target        = bed surface - cut
-
-    Solve for the angle, clamp to the joint's range, then invert the linear
-    action mapping the env applies:  angle = lo + 0.5*(cmd + 1)*(hi - lo).
-    """
-    pivot = CHASSIS_Z + MAST_TOP_Z          # pivot height above the wheel plane
-    wheel_plane = cfg.bed_top if cfg.spawn_on_bed else 0.0
-    target = cfg.bed_top - cut
-
-    sin_t = (wheel_plane + pivot - SHROUD_OUT_R - target) / ARM_LEN
-    angle = math.asin(min(max(sin_t, -1.0), 1.0))
-
-    lo, hi = cfg.arm_range
-    angle = min(max(angle, lo), hi)
-    return 2.0 * (angle - lo) / (hi - lo) - 1.0, angle
 
 
 def soil_shells(u) -> tuple[torch.Tensor, torch.Tensor]:
@@ -308,7 +281,7 @@ def main(argv=None) -> int:
                   f"{args.drum:+.2f} the channel runs outward and the drum empties. "
                   "Expect fill to fall, not rise.")
 
-        boom, angle = boom_command_for_cut(u.cfg, args.cut)
+        boom, angle = u.cfg.boom_command_for_cut(args.cut)
         lo_arm, hi_arm = u.cfg.arm_range
 
         # Where the drum actually is against where the soil actually is. A bed

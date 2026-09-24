@@ -220,23 +220,31 @@ def main(argv=None) -> int:
             from luna_hifi_tasks.excavator.excavator import DIG_DRUM_SIGN
 
             dig = torch.zeros(u.num_envs, u.cfg.action_space, device=u.device)
-            lo, hi = u.cfg.arm_range
-            slo, shi = u.cfg.shroud_range
-            dig[:, 0] = 0.3                     # forward
-            dig[:, 2] = 0.9                     # boom well down
+            _, shi = u.cfg.shroud_range
+            # Solved from the scene rather than hard-coded: the command that
+            # reaches a given depth depends on the bed and on whether the
+            # machine stands on it or beside it.
+            cut = 0.08
+            boom, arm = u.cfg.boom_command_for_cut(cut)
+            dig[:, 0] = 0.05                    # 0.075 m/s, the crawl dig_demo uses
+            dig[:, 2] = boom
             dig[:, 3] = DIG_DRUM_SIGN           # rotors at the loading sign
             # Inlet held at minus the arm angle, so it points at the ground.
-            arm = lo + 0.5 * (0.9 + 1.0) * (hi - lo)
             dig[:, 4] = max(-1.0, min(1.0, -arm / max(shi, 1e-6)))
-            fill0 = u._fill_kg.clone()
+            print(f"  cut {cut:.2f} m -> boom {boom:+.3f}, arm {arm:.3f} rad, "
+                  f"crawl {0.05 * 5.0 * 0.30:.3f} m/s over {args.steps} steps")
+            peak = u._fill_kg.sum(dim=-1).clone()
             for i in range(args.steps):
                 obs, *_ = env.step(dig)
+                peak = torch.maximum(peak, u._fill_kg.sum(dim=-1))
                 if i % 50 == 0:
                     print(f"  step {i:4d}  fill kg {u._fill_kg.mean(0).tolist()}  "
                           f"arm {u.robot.data.joint_pos.torch[0, u._arm_ids].tolist()}")
-            gained = (u._fill_kg - fill0).sum(dim=-1)
-            print(f"  fill gained per env: {gained.tolist()}")
-            _check(bool((gained > 1.0).any()), "drum fill rose with drums in the bed (particle adapter reads real particles)", failures)
+            # Peak, not end minus start: a machine that crosses the bed and
+            # carries on sheds its load, and what is under test is whether the
+            # particle adapter reads real particles at all.
+            print(f"  peak fill per env: {peak.tolist()}")
+            _check(bool((peak > 1.0).any()), "drum fill rose with drums in the bed (particle adapter reads real particles)", failures)
         else:
             print(f"\n=== drive: {args.steps} steps forward with a slow yaw ===")
             drive = torch.zeros(u.num_envs, 2, device=u.device)

@@ -284,7 +284,12 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # The sparse-grid capacities are absolute totals across all envs and do not
     # scale with --num_envs, which Hydra applies after __post_init__. They are
     # sized for max_num_envs and the env asserts num_envs does not exceed it.
-    max_num_envs = 32
+    #
+    # Held equal to scene.num_envs so the default config does not allocate a
+    # grid twice the size of the run it is about to do. Raising num_envs means
+    # raising this with it, and the grid cost goes up in proportion: 16 envs of
+    # the full bed is 2.6M particles and about 6.4 GB of grid.
+    max_num_envs = 16
 
     # actions: [forward, yaw, boom, drum, shroud] in [-1, 1]. Boom, drum and
     # shroud are one command each, applied to both ends -- the counter-rotating

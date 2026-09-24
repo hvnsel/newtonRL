@@ -151,6 +151,14 @@ def main(argv=None) -> int:
     env_cfg, _ = resolve_task_config(args.task, "")
     if args.num_envs is not None:
         env_cfg.scene.num_envs = args.num_envs
+        # The sparse-grid capacities are absolute totals sized from
+        # max_num_envs, not from scene.num_envs, so asking for 2 environments
+        # otherwise allocates the grid for all 32 and runs out of device
+        # memory on anything but a datacentre card. __post_init__ is what
+        # derives the capacities, so it has to run again.
+        if hasattr(env_cfg, "max_num_envs"):
+            env_cfg.max_num_envs = args.num_envs
+            env_cfg.__post_init__()
     if hasattr(env_cfg, "apply_soil_material"):
         env_cfg.apply_soil_material()
 

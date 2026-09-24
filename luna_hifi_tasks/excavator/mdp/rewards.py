@@ -196,22 +196,46 @@ def front_drum_full(fill_fraction: torch.Tensor, threshold: float) -> torch.Tens
 
 
 class TermLogger:
-    """Accumulates per-term reward sums so training logs show which term is
-    actually driving the policy. Without this you learn that something is
-    wrong from the behaviour, weeks later."""
+    """Accumulates each term's SIGNED, WEIGHTED contribution to the reward.
+
+    Signed and weighted because that is what the policy optimises. Logging the
+    raw quantity instead shows how large a penalty's input was, not whether it
+    dominates the objective -- and the two can differ by two orders of
+    magnitude when a small weight multiplies a large quantity every step.
+
+    Summed over the episode rather than averaged per second for the same
+    reason: an episode that ends early paid less, and dividing by the
+    configured length hides that.
+    """
 
     def __init__(self, names: list[str], num_envs: int, device) -> None:
+        self.names = list(names)
         self.sums = {n: torch.zeros(num_envs, device=device) for n in names}
 
-    def add(self, name: str, value: torch.Tensor) -> torch.Tensor:
-        self.sums[name] += value
-        return value
+    def add_all(self, terms: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Accumulate every term and return their sum, the step reward.
 
-    def flush(self, env_ids: torch.Tensor, episode_len_s: float) -> dict[str, float]:
-        """Mean per-second contribution over the finishing envs, then zero them."""
+        Raises on a term the logger was not built with, or a declared term
+        this step left out: a reward that silently stops being paid is the
+        failure this class exists to catch.
+        """
+        missing = [n for n in self.names if n not in terms]
+        extra = sorted(set(terms) - set(self.names))
+        if missing or extra:
+            raise KeyError(f"reward terms missing={missing} unexpected={extra}")
+        total = None
+        for name in self.names:
+            value = terms[name]
+            self.sums[name] += value
+            total = value if total is None else total + value
+        return total
+
+    def flush(self, env_ids: torch.Tensor) -> dict[str, float]:
+        """Mean episode total per term over the finishing envs, then zero
+        them. The values sum to the mean episode return."""
         out = {}
         n = max(int(env_ids.numel()), 1)
         for name, buf in self.sums.items():
-            out[f"Episode_Reward/{name}"] = float(buf[env_ids].sum() / n / episode_len_s)
+            out[f"Episode_Reward/{name}"] = float(buf[env_ids].sum() / n)
             buf[env_ids] = 0.0
         return out

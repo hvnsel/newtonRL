@@ -177,20 +177,21 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         wheel_vel = d.joint_vel.torch[:, self._wheel_ids]
         torque = d.applied_torque.torch[:, self._wheel_ids]
 
-        reward = (
-            c.w_progress * L.add("progress", R.progress_reward(self._prev_dist, dist))
-            + c.w_bearing * L.add(
-                "bearing",
-                R.bearing_alignment(vec_b, p["base_lin_vel"][:, 0], MAX_WHEEL_SPEED * WHEEL_RADIUS),
-            )
-            + c.w_goal * L.add("goal", self._reached.float())
-            - c.w_upright * L.add("upright", R.upright_penalty(p["projected_gravity"]))
-            - c.w_slip * L.add("slip", R.wheel_slip(wheel_vel, p["base_lin_vel"][:, 0], WHEEL_RADIUS))
-            - c.w_action_rate * L.add("action_rate", R.action_rate_penalty(self._actions, self._prev_actions))
-            - c.w_energy * L.add("energy", R.energy_penalty(torque, wheel_vel))
-            - c.w_time * L.add("time", torch.ones_like(dist))
-            - c.w_fill_change * L.add("fill_change", torch.zeros_like(dist))   # no soil on this tier
-        )
+        reward = L.add_all({
+            "progress": c.w_progress * R.progress_reward(self._prev_dist, dist),
+            "bearing": c.w_bearing * R.bearing_alignment(
+                vec_b, p["base_lin_vel"][:, 0], MAX_WHEEL_SPEED * WHEEL_RADIUS
+            ),
+            "goal": c.w_goal * self._reached.float(),
+            "upright": -c.w_upright * R.upright_penalty(p["projected_gravity"]),
+            "slip": -c.w_slip * R.wheel_slip(wheel_vel, p["base_lin_vel"][:, 0], WHEEL_RADIUS),
+            "action_rate": -c.w_action_rate * R.action_rate_penalty(self._actions, self._prev_actions),
+            "energy": -c.w_energy * R.energy_penalty(torque, wheel_vel),
+            "time": -c.w_time * torch.ones_like(dist),
+            # No soil on this tier, so this reads zero forever. It stays as an
+            # assertion in reward form.
+            "fill_change": -c.w_fill_change * torch.zeros_like(dist),
+        })
         self._prev_dist[:] = dist
         return reward
 
@@ -304,7 +305,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
 
-        self.extras["log"] = self._log.flush(env_ids, self.cfg.episode_length_s)
+        self.extras["log"] = self._log.flush(env_ids)
         self.extras["log"]["Curriculum/goal_dist_hi"] = self._goal_dist_hi
         self.extras["log"]["Curriculum/terrain_level"] = float(
             self.terrain.terrain_levels.float().mean()

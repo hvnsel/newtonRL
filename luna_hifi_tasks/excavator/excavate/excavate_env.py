@@ -346,19 +346,19 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         all_tau = d.applied_torque.torch
         load_ref = 2.0 * c.target_load_kg
 
-        reward = (
-            c.w_fill * L.add("fill", fill_delta / load_ref)
-            + c.w_depth * L.add("depth", depth_delta / c.cut_volume_ref)
-            + c.w_success * L.add("success", self._success.float())
-            - c.w_overcut * L.add("overcut", cut["below_volume"] / c.cut_volume_ref)
-            - c.w_spill * L.add("spill", R.spill_penalty(fill_delta) / load_ref)
-            - c.w_stall * L.add("stall", R.stall_penalty(wheel_cmd_rad, p["base_lin_vel"][:, 0], WHEEL_RADIUS))
-            - c.w_drift * L.add("drift", R.drift_penalty(p["base_lin_vel"], self._forward_cmd))
-            - c.w_upright * L.add("upright", R.upright_penalty(p["projected_gravity"]))
-            - c.w_energy * L.add("energy", R.energy_penalty(all_tau, all_vel))
-            - c.w_action_rate * L.add("action_rate", R.action_rate_penalty(self._actions, self._prev_actions))
-            - c.w_time * L.add("time", torch.ones(self.num_envs, device=self.device))
-        )
+        reward = L.add_all({
+            "fill": c.w_fill * fill_delta / load_ref,
+            "depth": c.w_depth * depth_delta / c.cut_volume_ref,
+            "success": c.w_success * self._success.float(),
+            "overcut": -c.w_overcut * cut["below_volume"] / c.cut_volume_ref,
+            "spill": -c.w_spill * R.spill_penalty(fill_delta) / load_ref,
+            "stall": -c.w_stall * R.stall_penalty(wheel_cmd_rad, p["base_lin_vel"][:, 0], WHEEL_RADIUS),
+            "drift": -c.w_drift * R.drift_penalty(p["base_lin_vel"], self._forward_cmd),
+            "upright": -c.w_upright * R.upright_penalty(p["projected_gravity"]),
+            "energy": -c.w_energy * R.energy_penalty(all_tau, all_vel),
+            "action_rate": -c.w_action_rate * R.action_rate_penalty(self._actions, self._prev_actions),
+            "time": -c.w_time * torch.ones(self.num_envs, device=self.device),
+        })
         self._fill_prev_kg[:] = self._fill_kg
         self._above_prev[:] = above
         self._cut_fresh[:] = False
@@ -427,4 +427,4 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
 
-        self.extras["log"] = self._log.flush(env_ids, self.cfg.episode_length_s)
+        self.extras["log"] = self._log.flush(env_ids)

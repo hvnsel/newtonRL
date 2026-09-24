@@ -38,17 +38,16 @@ from isaaclab_tasks.utils.hydra import resolve_task_config
 import luna_hifi_tasks  # noqa: F401  (registers Luna-* tasks)
 from luna_hifi_tasks.excavator.excavator import (
     ARM_LEN,
-    BLADE_SWEPT_OUTER_R,
     DIG_DRUM_SIGN,
     CHASSIS_Z,
-    DRUM_RADIUS,
-    DRUM_WALL_T,
     MAST_TOP_Z,
+    ROTOR_TIP_R,
+    SHROUD_OUT_R,
+    VANE_TIP_GAP,
 )
-from luna_hifi_tasks.excavator.excavator import scoop_channel
-from luna_hifi_tasks.excavator.excavator_cfg import MAX_DRUM_SPEED
+from luna_hifi_tasks.excavator.excavator_cfg import MAX_DRUM_SPEED, SPIN_LIMIT
 
-CHANNEL_OPENING = scoop_channel()[0]
+CHANNEL_OPENING = VANE_TIP_GAP
 from luna_hifi_tasks.excavator.excavate.excavate_env_cfg import BORE_HALF_LEN
 from luna_hifi_tasks.excavator.mdp.sensors import drum_fill_mass
 
@@ -75,11 +74,10 @@ def _parse(argv):
     # whether the machine stands on the soil or beside it, and
     # boom_command_for_cut() solves it from the env's own config.
     #
-    # 0.10 rather than 0.12 because the lips stand 0.046 m proud of the shell
-    # and the small bed is 0.16 m deep on a rigid floor. cut_diagnosis()
-    # reports the margin per run.
+    # Measured to the SHROUD, which is the outermost thing on the drum and the
+    # first to touch anything. cut_diagnosis() reports the margin per run.
     p.add_argument("--cut", type=float, default=0.10,
-                   help="how deep the drum SHELL should cut below the surface, metres")
+                   help="how deep the SHROUD should cut below the surface, metres")
     p.add_argument("--boom", type=float, default=None,
                    help="raw boom command, overriding --cut")
     # 1.0 is 8 rad/s, 2.0 m/s at the lip, which throws soil clear of the drum;
@@ -123,7 +121,7 @@ def boom_command_for_cut(cfg, cut: float) -> tuple[float, float]:
 
         wheel plane   = bed surface if the machine stands on the bed,
                         otherwise 0 (it is beside the pile, on the ground)
-        drum bottom   = wheel plane + pivot - ARM_LEN*sin(angle) - DRUM_RADIUS
+        drum bottom   = wheel plane + pivot - ARM_LEN*sin(angle) - SHROUD_OUT_R
         target        = bed surface - cut
 
     Solve for the angle, clamp to the joint's range, then invert the linear
@@ -133,7 +131,7 @@ def boom_command_for_cut(cfg, cut: float) -> tuple[float, float]:
     wheel_plane = cfg.bed_top if cfg.spawn_on_bed else 0.0
     target = cfg.bed_top - cut
 
-    sin_t = (wheel_plane + pivot - DRUM_RADIUS - target) / ARM_LEN
+    sin_t = (wheel_plane + pivot - SHROUD_OUT_R - target) / ARM_LEN
     angle = math.asin(min(max(sin_t, -1.0), 1.0))
 
     lo, hi = cfg.arm_range
@@ -142,21 +140,18 @@ def boom_command_for_cut(cfg, cut: float) -> tuple[float, float]:
 
 
 def soil_shells(u) -> tuple[torch.Tensor, torch.Tensor]:
-    """(in the shell wall band, outside the drum) kg per drum, front and rear.
+    """(in the running clearance, outside the shroud) kg per drum, front and rear.
 
     Three radial bands, because one number cannot tell the interesting states
     apart:
 
-        r < 0.170   the BORE. This is fill, and the only thing that counts.
-        0.170-0.200 inside the shell wall: soil that got past the lips but not
-                    properly in. Genuinely "stuck in the lip".
-        0.200-0.308 OUTSIDE the drum altogether -- the soil the drum happens to
+        r < 0.185   the rotor's swept cylinder. This is fill, and the only
+                    thing that counts.
+        0.185-0.212 the running clearance and the shroud wall: soil wedged
+                    between vane tips and shroud rather than held in a pocket.
+        > 0.212     outside the drum altogether -- soil the shroud happens to
                     be buried in. It rises whenever the drum is in the ground
-                    and means nothing at all.
-
-    An earlier version reported the outer two bands as one number and called it
-    "carried in the lips". It was dominated by the third, so it read as 70 kg
-    of captured soil when the truth was a buried drum and an empty one.
+                    and means nothing.
     """
     pos, env = u._particles()
     dpos, dquat = u._drum_poses()
@@ -168,8 +163,8 @@ def soil_shells(u) -> tuple[torch.Tensor, torch.Tensor]:
             for i in range(2)
         ], dim=-1)
 
-    shell = (within(DRUM_RADIUS) - u._fill_kg).clamp(min=0.0)
-    outside = (within(BLADE_SWEPT_OUTER_R) - within(DRUM_RADIUS)).clamp(min=0.0)
+    shell = (within(SHROUD_OUT_R) - u._fill_kg).clamp(min=0.0)
+    outside = (within(SHROUD_OUT_R + 0.10) - within(SHROUD_OUT_R)).clamp(min=0.0)
     return shell, outside
 
 
@@ -179,36 +174,29 @@ def cut_diagnosis(cfg, cut: float) -> list[str]:
     The bed is a finite slab on a rigid floor, so `cut` is not free: past a
     point the drum is no longer cutting soil, it is grinding on the hidden slab
     that holds the particles up, and the run looks like a dig that will not
-    load. The lips reach DEEPER than the shell, so they hit the floor first --
-    which is easy to miss, because the number you typed refers to the shell.
+    load. `cut` refers to the SHROUD, which is the outermost thing on the drum
+    and the first to touch anything.
     """
-    proud = BLADE_SWEPT_OUTER_R - DRUM_RADIUS
+    wall = SHROUD_OUT_R - ROTOR_TIP_R
     floor = cfg.bed_top - cfg.bed_depth
-    shell_z = cfg.bed_top - cut
-    lip_z = shell_z - proud
-    bore_r = DRUM_RADIUS - DRUM_WALL_T
+    shroud_z = cfg.bed_top - cut
 
     out = []
-    if shell_z < floor:
-        out.append(f"!! the drum SHELL would sit {floor - shell_z:.3f} m below the bed floor "
+    if shroud_z < floor:
+        out.append(f"!! the SHROUD would sit {floor - shroud_z:.3f} m below the bed floor "
                    f"at z={floor:.3f}: it grinds on the slab, it does not dig")
-    elif lip_z < floor:
-        out.append(f"!! the LIPS would reach {floor - lip_z:.3f} m below the bed floor at "
-                   f"z={floor:.3f}, so they PLOUGH THE SLAB and the drum stalls -- it is "
-                   f"not that soil will not enter, it is that the drum cannot turn. They "
-                   f"stand {proud:.3f} m proud of the shell and hit before it does")
-    ceiling = cfg.bed_depth - proud
-    if cut > ceiling:
+    if cut > cfg.bed_depth:
         out.append(f"deepest cut this {cfg.bed_depth:.2f} m bed supports is "
-                   f"{ceiling:.3f} m; try --cut {max(ceiling - 0.005, 0.0):.2f}")
+                   f"{cfg.bed_depth:.3f} m; try --cut {max(cfg.bed_depth - 0.005, 0.0):.2f}")
 
-    submerged = max(min(cut - DRUM_WALL_T, 2.0 * bore_r), 0.0)
-    out.append(f"{submerged / (2.0 * bore_r) * 100:.0f}% of the {2.0 * bore_r:.2f} m bore "
+    span = 2.0 * ROTOR_TIP_R
+    submerged = max(min(cut - wall, span), 0.0)
+    out.append(f"{submerged / span * 100:.0f}% of the {span:.2f} m rotor "
                f"ends up below grade")
-    if submerged < bore_r:
-        out.append(f"that is under half. A {2.0 * bore_r * 0.5 + DRUM_WALL_T + proud:.2f} m "
-                   "deep bed is what it takes to bury half the bore, and no cut depth or "
-                   "cohesion value substitutes for it")
+    if submerged < ROTOR_TIP_R:
+        out.append(f"that is under half. A {ROTOR_TIP_R + wall:.2f} m deep bed is what it "
+                   "takes to bury half the rotor, and no cut depth or cohesion value "
+                   "substitutes for it")
     return out
 
 
@@ -294,8 +282,12 @@ def main(argv=None) -> int:
               f"({'arches' if grains < 3.0 else 'marginal' if grains < 4.5 else 'flows'})")
         rad_s = args.drum * MAX_DRUM_SPEED
         print(f"  drum: {args.drum:+.2f} -> {rad_s:+.1f} rad/s -> "
-              f"lip {abs(rad_s) * BLADE_SWEPT_OUTER_R:.2f} m/s "
-              f"(at r = {BLADE_SWEPT_OUTER_R:.3f} m, the lip tip, not the shell)")
+              f"tip {abs(rad_s) * ROTOR_TIP_R:.2f} m/s "
+              f"(at r = {ROTOR_TIP_R:.3f} m, the vane tip)")
+        if abs(rad_s) > SPIN_LIMIT:
+            print(f"  !! {abs(rad_s):.2f} rad/s is over the {SPIN_LIMIT:.2f} rad/s where "
+                  "outward acceleration passes lunar gravity: regolith is thrown at the "
+                  "shroud instead of carried inward")
         if args.drum * DIG_DRUM_SIGN < 0:
             print(f"  * this is the DUMP direction. Loading is {DIG_DRUM_SIGN:+.0f}; at "
                   f"{args.drum:+.2f} the channel runs outward and the drum empties. "
@@ -306,16 +298,14 @@ def main(argv=None) -> int:
             boom = args.boom
             print(f"  boom command {boom:+.3f} (given directly, --cut ignored)\n")
         else:
-            # --cut is measured to the SHELL. The lips stand proud of it, so
-            # they bite deeper than the number asked for, and the bore -- which
-            # is what fill is counted inside -- sits shallower than both. That
-            # last one is the number to watch: it is what decides how much of
-            # the drum is actually in soil.
-            proud = BLADE_SWEPT_OUTER_R - DRUM_RADIUS
+            # --cut is measured to the SHROUD. The rotor sits inside it, so
+            # the vane tips reach shallower than the number asked for, and
+            # that is the number to watch: it decides how much of the rotor is
+            # actually in soil.
+            wall = SHROUD_OUT_R - ROTOR_TIP_R
             print(f"  to cut {args.cut:.3f} m -> arm {angle:+.3f} rad "
                   f"-> boom command {boom:+.3f}")
-            print(f"  lips reach {args.cut + proud:.3f} m down, "
-                  f"bore bottom {args.cut - DRUM_WALL_T:.3f} m below grade")
+            print(f"  vane tips reach {args.cut - wall:.3f} m below grade")
             for line in cut_diagnosis(u.cfg, args.cut):
                 print(f"  * {line}")
             print()
@@ -415,11 +405,13 @@ def main(argv=None) -> int:
             print("                             shearing off the lip and flowing back out.")
             print("                             NOT env.soil_cohesion=1500: Hydra applies")
             print("                             that after the material is already built")
-            print("    --drum 0.25              slower; lip speed throws soil clear")
-            print(f"    --drum {-0.4 * DIG_DRUM_SIGN:+.1f}             runs the channel backwards: this is the")
-            print("                             DUMP direction and should make fill FALL. If")
-            print("                             it rises instead, SCOOP_CURL is mirrored --")
-            print("                             flip it and DIG_DRUM_SIGN follows")
+            print("    --drum 0.25              slower; above the spin limit the vanes")
+            print("                             throw regolith at the shroud instead of")
+            print("                             carrying it inward")
+            print(f"    --drum {-0.4 * DIG_DRUM_SIGN:+.1f}             runs the vanes backwards, which should")
+            print("                             make fill FALL. If it rises instead,")
+            print("                             RAKE_SIGN is mirrored -- flip it and")
+            print("                             DIG_DRUM_SIGN follows")
         env.close()
     return 0 if ok else 1
 

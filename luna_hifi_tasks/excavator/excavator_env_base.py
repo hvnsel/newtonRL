@@ -24,6 +24,7 @@ from isaaclab.envs import DirectRLEnv
 from .excavator import (
     JOINT_ARMS,
     JOINT_DRUMS,
+    JOINT_SHROUDS,
     JOINT_WHEELS,
     JOINT_WHEELS_LEFT,
     JOINT_WHEELS_RIGHT,
@@ -50,7 +51,12 @@ class ExcavatorEnvBase(DirectRLEnv):
         self._right_ids, _ = self.robot.find_joints(JOINT_WHEELS_RIGHT, preserve_order=True)
         self._arm_ids, _ = self.robot.find_joints(JOINT_ARMS, preserve_order=True)
         self._drum_ids, _ = self.robot.find_joints(JOINT_DRUMS, preserve_order=True)
+        self._shroud_ids, _ = self.robot.find_joints(JOINT_SHROUDS, preserve_order=True)
         self._drum_body_ids, _ = self.robot.find_bodies(BODY_DRUMS, preserve_order=True)
+        assert len(self._shroud_ids) == 2, (
+            f"expected 2 shroud joints, found {len(self._shroud_ids)}. The shroud hinges "
+            "on the drum axis as a separate body; rebuild the USD from excavator.py."
+        )
         assert len(self._wheel_ids) == 4 and len(self._arm_ids) == 2 and len(self._drum_ids) == 2, (
             "joint lookup failed -- the USD's joint names do not match excavator.py; "
             f"have {self.robot.joint_names}"
@@ -101,6 +107,15 @@ class ExcavatorEnvBase(DirectRLEnv):
         counter-rotating, reaction-cancelling dig -- see excavator.py."""
         self.robot.set_joint_velocity_target(speed.unsqueeze(-1).expand(-1, 2), joint_ids=self._drum_ids)
 
+    def _apply_shrouds(self, angle: torch.Tensor) -> None:
+        """Position target for BOTH shrouds. (E,) rad, same value each side.
+
+        The shroud carries the inlet, so commanding minus the arm angle holds
+        the inlet still against the ground while the arm pitches."""
+        self.robot.set_joint_position_target(
+            angle.unsqueeze(-1).expand(-1, 2), joint_ids=self._shroud_ids
+        )
+
     # ------------------------------------------------------------------
     # observation pieces
     # ------------------------------------------------------------------
@@ -115,6 +130,7 @@ class ExcavatorEnvBase(DirectRLEnv):
             "arm_pos": d.joint_pos.torch[:, self._arm_ids],
             "arm_vel": d.joint_vel.torch[:, self._arm_ids],
             "drum_vel": d.joint_vel.torch[:, self._drum_ids] / MAX_DRUM_SPEED,
+            "shroud_pos": d.joint_pos.torch[:, self._shroud_ids],
         }
 
     def _base_yaw(self) -> torch.Tensor:

@@ -1,8 +1,13 @@
 # excavate_env.py
 #
 # Fill both drums from an MPM regolith bed. Actions are [forward, yaw, boom,
-# drum]; boom and drum are single commands applied to both ends, which is the
-# counter-rotating, reaction-cancelling dig.
+# drum, shroud]; boom, drum and shroud are single commands applied to both
+# ends, which is the counter-rotating, reaction-cancelling dig.
+#
+# The shroud is the fixed outer half of each drum, carrying the inlet. It
+# hinges on the drum axis with its own actuator, so the policy aims the inlet
+# independently of where the arm is pointing: down into the cut to load,
+# turned up to hold, turned over the hopper to dump.
 #
 # The reward is captured soil: mass of particles inside each drum's bore, in
 # the drum's own frame. A target-heightmap match is the planner's objective
@@ -45,8 +50,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         )
 
         E, dev = self.num_envs, self.device
-        self._actions = torch.zeros(E, 4, device=dev)
-        self._prev_actions = torch.zeros(E, 4, device=dev)
+        self._actions = torch.zeros(E, 5, device=dev)
+        self._prev_actions = torch.zeros(E, 5, device=dev)
 
         self._particle_mass = mpm_grid_particle_mass(cfg.scene.soil.spawn)
         self._fill_kg = torch.zeros(E, 2, device=dev)
@@ -109,9 +114,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     def _apply_action(self):
         a = self._actions
         lo, hi = self.cfg.arm_range
+        slo, shi = self.cfg.shroud_range
         self._apply_drive(a[:, 0], a[:, 1])
         self._apply_arms(lo + 0.5 * (a[:, 2] + 1.0) * (hi - lo))
         self._apply_drums(a[:, 3] * MAX_DRUM_SPEED)
+        self._apply_shrouds(slo + 0.5 * (a[:, 4] + 1.0) * (shi - slo))
 
     # ------------------------------------------------------------------
     # soil sensing

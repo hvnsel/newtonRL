@@ -9,14 +9,15 @@
 # solver, where a 2 cm interpenetration presents as an unstable policy.
 #
 #   mass table        a body with no inertia NaNs the solver
-#   swept envelopes   what the blades reach. Not SCOOP_TIP_R, which is a
-#                     centreline control point a box of finite thickness
-#                     reaches past.
+#   swept envelopes   what the vanes and the shroud reach, measured in each
+#                     box's own frame. A shroud plate's width runs along the
+#                     arc, not radially, so treating a half-size as radial
+#                     reports an interference fit where there is a running one.
 #   shell continuity  adjacent plates must overlap; a gap is a hole MPM
 #                     particles leak through
-#   cavity probe      ray-cast around the drum axis to count the mouths and
-#                     locate them, which catches a boom or yoke inside the
-#                     cavity
+#   inlet probe       ray-cast around the drum axis to confirm the shroud has
+#                     exactly one opening, where the geometry says. Two, and
+#                     the drum empties wherever the second one points.
 #   clearance sweep   arm swept through ARM_RANGE against the wheels and
 #                     frame. MuJoCo never tests a body against its own parent
 #                     and Isaac articulations default to self-collision off,
@@ -144,226 +145,174 @@ def check_masses(m: mujoco.MjModel, fail: list[str]) -> None:
     print(f"  chassis : drums = {(total - drum - arms) / drum:.1f} : 1")
 
 
-def check_drum_envelope(m: mujoco.MjModel, fail: list[str]) -> None:
-    """Swept radii of the drum's parts, measured off the actual geoms."""
-    print("\n=== drum envelope (radius from the spin axis, metres) ===")
-    groups: dict[str, list[float]] = {"shell": [], "lip": [], "cap": []}
-    for gid in _body_geoms(m, "drum_front_body"):
-        name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, gid)
-        key = ("lip" if ("_out" in name or "_in" in name)
-               else "cap" if "cap" in name else "shell")
-        pts = _corners(m, gid)
-        groups[key] += list(np.hypot(pts[:, 0], pts[:, 2]))
-    for key, radii in groups.items():
-        if radii:
-            print(f"  {key:6s} {min(radii):.4f} .. {max(radii):.4f}")
+def check_rotor_envelope(m: mujoco.MjModel, fail: list[str]) -> None:
+    """What the vanes and the shroud actually reach, from the geom table."""
+    print("\n=== rotor and shroud envelope (radius from the spin axis, m) ===")
+    vane_lo, vane_hi = _radial_band(m, "drum_front_vane")
+    shroud_lo, shroud_hi = _radial_band(m, "shroud_front_arc")
+    print(f"  vanes  {vane_lo:.4f} .. {vane_hi:.4f}   (nominal {X.ROTOR_HUB_R:.3f} .. {X.ROTOR_TIP_R:.3f})")
+    print(f"  shroud {shroud_lo:.4f} .. {shroud_hi:.4f}   (nominal {X.SHROUD_IN_R:.3f} .. {X.SHROUD_OUT_R:.3f})")
 
-    blade_lo, blade_hi = min(groups["lip"]), max(groups["lip"])
-    bore = X.DRUM_RADIUS - X.DRUM_WALL_T
-    print(f"  bore (fill is counted inside this)   {bore:.4f}")
-    print(f"  lip standing proud of the shell      {blade_hi - X.DRUM_RADIUS:+.4f}")
-    print(f"  vane reaching into the cavity        {bore - blade_lo:+.4f}")
+    clearance = shroud_lo - vane_hi
+    print(f"  running clearance, vane tip to shroud {clearance:+.4f} m")
+    if clearance <= 0.0:
+        fail.append(f"the vanes overlap the shroud by {-clearance:.4f} m; the rotor "
+                    "cannot turn. Lower ROTOR_TIP_R or raise SHROUD_IN_R")
+    elif clearance >= X.MPM_TARGET_VOXEL:
+        fail.append(f"running clearance {clearance:.4f} m is at least one "
+                    f"{X.MPM_TARGET_VOXEL:.3f} m voxel, so the coupler leaves it OPEN and "
+                    "regolith escapes round the whole circumference instead of staying in "
+                    "a pocket. Tighten SHROUD_IN_R toward ROTOR_TIP_R")
 
-    narrow, wide = X.scoop_channel()
-    opening = narrow - 2.0 * X.BLADE_HALF_T
-    print(f"  channel between the two lips  {narrow:.4f} .. {wide:.4f} m centreline")
-    print(f"    -> opening {opening:.4f} m, "
-          f"{opening - X.MPM_TARGET_VOXEL:+.4f} m clear after the coupler margin")
-    inside, outside = X.scoop_mouth_coverage()
-    step = 360.0 / X.DRUM_FACETS
-    # Degrees as well as percent: the fraction is of ONE MOUTH, so halving
-    # DRUM_FACETS halves it without a single millimetre of lip moving.
-    print(f"  mouth is {step:.0f} deg wide, {X.SCOOP_COUNT} of them "
-          f"{360 // X.SCOOP_COUNT} deg apart")
-    print(f"  covered by the inner lip   {inside * 100:3.0f}%  = {inside * step:4.1f} deg")
-    print(f"  covered by the outer lip   {outside * 100:3.0f}%  = {outside * step:4.1f} deg")
-
-    if blade_hi <= X.DRUM_RADIUS:
-        fail.append("lips do not stand proud of the shell -- nothing bites first")
-    if blade_lo >= bore:
-        fail.append(
-            f"lips stop at r={blade_lo:.3f}, outside the bore at {bore:.3f}: they cut "
-            "but nothing lifts captured soil, so it falls straight back out"
-        )
-    if inside < 0.5:
-        fail.append(f"the inner lip covers only {inside * 100:.0f}% of its mouth: the load "
-                    "can drop straight out. Raise SCOOP_INNER_SPAN or lower SCOOP_INNER_DROP")
-    if outside < 0.5:
-        fail.append(f"the outer lip covers only {outside * 100:.0f}% of its mouth: the load "
-                    "can lift straight out. Raise SCOOP_OUTER_SPAN or lower SCOOP_OUTER_RISE")
-    if narrow <= 0.0:
-        fail.append("the two lips of a mouth never overlap in angle, so there is no channel "
-                    "between them -- just two holes. Raise SCOOP_*_SPAN")
-    elif opening < X.MPM_CLEARANCE:
-        fail.append(
-            f"the channel between the lips opens {opening:.4f} m, under the "
-            f"{X.MPM_CLEARANCE:.3f} m the coupler eats at a {X.MPM_TARGET_VOXEL:.3f} m "
-            "voxel. Soil cannot get in OR out"
-        )
+    g = X.pocket_geometry()
+    print(f"  {int(g['vanes'])} vanes, rake {g['rake_deg']:.0f} deg, attack {g['attack_deg']:.0f} deg")
+    print(f"  each blade sweeps {g['vane_sweep_deg']:.1f} deg inside a "
+          f"{g['pocket_arc_deg']:.1f} deg pocket")
+    if g["shadowed"]:
+        fail.append(f"a vane sweeps {g['vane_sweep_deg']:.1f} deg, more than the "
+                    f"{g['pocket_arc_deg']:.1f} deg pocket it lives in, so adjacent vanes "
+                    "shadow each other. Lower ROTOR_RAKE or ROTOR_VANES")
+    if g["attack_deg"] > 80.0:
+        fail.append(f"attack angle {g['attack_deg']:.0f} deg is nearly head-on; the vane "
+                    "pushes regolith rather than cutting it. Raise ROTOR_RAKE")
+    print(f"  inlet {g['inlet_deg']:.0f} deg, chord {g['inlet_chord']:.3f} m")
+    print(f"  rotor swept volume {g['swept_volume']:.4f} m3 "
+          f"= {g['swept_volume'] * SOIL_DENSITY:.0f} kg of regolith")
 
 
-def check_shell_continuity(fail: list[str]) -> None:
-    """Adjacent shell plates must overlap at the corners."""
-    print("\n=== shell continuity ===")
-    step = 2.0 * math.pi / X.DRUM_FACETS
-    mid_r = X.DRUM_RADIUS - 0.5 * X.DRUM_WALL_T
-    half_arc = mid_r * math.tan(0.5 * step)
-    need = mid_r * math.sin(0.5 * step)      # half the chord: a butt joint
-    print(f"  plate half-arc {half_arc:.5f} vs half-chord {need:.5f} "
-          f"-> overlap {half_arc - need:+.5f} m per joint")
-    if half_arc < need:
-        fail.append("shell plates leave a gap; MPM particles will leak out of the drum")
+def check_shroud_continuity(fail: list[str]) -> None:
+    """Adjacent shroud plates must overlap. A gap is a hole, not a passage."""
+    print("\n=== shroud continuity ===")
+    span = 2.0 * math.pi - X.SHROUD_INLET
+    n = max(int(math.ceil(span / math.radians(20.0))), 6)
+    step = span / n
+    mid_r = 0.5 * (X.SHROUD_IN_R + X.SHROUD_OUT_R)
+    half_arc = mid_r * math.tan(0.5 * step) + 0.002      # matches excavator.py
+    half_chord = mid_r * math.sin(0.5 * step)
+    overlap = half_arc - half_chord
+    print(f"  {n} plates of {math.degrees(step):.1f} deg")
+    print(f"  half-arc {half_arc:.5f} vs half-chord {half_chord:.5f} "
+          f"-> overlap {overlap:+.5f} m per joint")
+    if overlap <= 0.0:
+        fail.append("shroud plates do not overlap; particles leak between them")
 
 
-def check_cavity(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:
-    """Ray-cast around the drum axis and report what the cavity actually looks
-    like. This is the check that caught the boom sitting inside the drum."""
-    print("\n=== drum cavity probe (front drum, 1 deg rays from the axis outward) ===")
+def check_inlet(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:
+    """Ray-cast around the axis to find the one opening in the shroud.
 
-    bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "drum_front_body")
-    origin = d.xpos[bid].copy()
-    rot = d.xmat[bid].reshape(3, 3)
-    drum_geoms = _body_geoms(m, "drum_front_body")
-
-    def sweep(subset: set[int]) -> list[float]:
-        """First hit radius per degree, considering only `subset`."""
-        saved = m.geom_group.copy()
-        for gid in range(m.ngeom):
-            m.geom_group[gid] = 0 if gid in subset else 3
-        mask = np.array([1, 0, 0, 0, 0, 0], dtype=np.uint8)
-        out = []
-        for deg in range(360):
-            phi = math.radians(deg)
-            vec = rot @ np.array([math.cos(phi), 0.0, math.sin(phi)])
-            out.append(mujoco.mj_ray(m, d, origin, vec, mask, 0, -1, np.zeros(1, dtype=np.int32)))
-        m.geom_group[:] = saved
-        return out
-
-    def runs_of(degs: list[int]) -> list[list[int]]:
-        runs: list[list[int]] = []
-        for deg in degs:
-            if runs and deg == runs[-1][-1] + 1:
-                runs[-1].append(deg)
-            else:
-                runs.append([deg])
-        if len(runs) > 1 and runs[0][0] == 0 and runs[-1][-1] == 359:
-            runs[0] = runs.pop() + runs[0]          # wrap
-        return runs
-
-    def is_open(dist: float) -> bool:
-        return dist < 0.0 or dist > X.DRUM_RADIUS + 1e-4
-
-    # A mouth is a gap in the SHELL. Probing against every geom instead would
-    # count the lip curling across its own mouth as if it closed it, which is
-    # exactly backwards: that overlap is the retention, not an obstruction.
-    shell = {g for g in drum_geoms
-             if not any(t in mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g)
-                        for t in ("_out", "_in"))}
-    mouths = runs_of([i for i, r in enumerate(sweep(shell)) if is_open(r)])
-
-    print(f"  {len(mouths)} mouth(s) in the shell, expected SCOOP_COUNT = {X.SCOOP_COUNT}")
-    centres = []
-    for r in mouths:
-        span = [a - 360 if a > 180 and r[0] > r[-1] else a for a in r]
-        centres.append((sum(span) / len(span)) % 360)
-        print(f"    centred {centres[-1]:6.1f} deg, {len(r)} deg wide")
-    if len(mouths) != X.SCOOP_COUNT:
-        fail.append(f"cavity probe found {len(mouths)} mouths, not SCOOP_COUNT={X.SCOOP_COUNT}")
-    if len(centres) == 2:
-        sep = abs((centres[0] - centres[1]) % 360)
-        sep = min(sep, 360 - sep)
-        print(f"    separation {sep:.1f} deg")
-        if abs(sep - 180.0) > 2.0:
-            fail.append(f"the two mouths are {sep:.1f} deg apart, not 180")
-    aperture = sum(len(r) for r in mouths)
-    print(f"  open shell arc {aperture} deg of 360 ({aperture / 3.6:.0f}%) "
-          f"-- DRUM_FACETS is the knob if the drum turns out to be intake-limited")
-
-    # Everything, including the lips: what is left is the clear cavity.
-    profile = sweep(set(drum_geoms))
-    clear = runs_of([i for i, r in enumerate(profile) if is_open(r)])
-    print(f"  unobstructed line to the axis over {sum(len(r) for r in clear)} deg")
-    inside = [r for r in profile if 0.0 < r < X.DRUM_RADIUS]
-    if inside:
-        print(f"  closest structure on any ray: {min(inside):.4f} m from the axis")
-    if not inside:
-        fail.append("nothing reaches inside the shell: the drum has no lifters, "
-                    "so captured soil falls out the next time a mouth swings low")
-
-    # The lip is a chain of boxes approximating a curve. If consecutive boxes
-    # stop overlapping, every joint becomes a notch soil escapes through.
-    worst = math.inf
-    for outer in (True, False):
-        segs = X._lip_segments(0.0, outer)
-        for (x0, z0, h0, _), (x1, z1, h1, _) in zip(segs, segs[1:]):
-            worst = min(worst, (h0 + h1) - math.hypot(x1 - x0, z1 - z0))
-    print(f"  lip segments overlap by {worst:+.4f} m at the tightest joint")
-    if worst < 0.0:
-        fail.append(f"lip segments leave a {-worst:.4f} m notch at a joint")
-
-
-def check_passages(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:
-    """Can the soil actually get in?
-
-    The single most important check in this file, and the one that was missing
-    while the drum quietly refused to take a particle. The MPM coupler inflates
-    every collider by half a voxel PER SIDE, so a geometric gap of g reads as
-    g - voxel to the particles. A 9 mm slot at a 5 cm voxel is not tight, it is
-    a wall -- and a drum that is sealed shut behaves exactly like a drum that is
-    simply bad at digging, which is why this needs measuring rather than
-    eyeballing.
-
-    Lip against cap is skipped: the lip spans the full drum width and meets the
-    end caps by construction. That is a weld, not a passage.
+    The retention argument is that there is exactly one, and that it is where
+    the geometry says. Two openings, or one in the wrong place, and the drum
+    empties wherever the second one points.
     """
-    print("\n=== passages into the drum ===")
-    gids = _body_geoms(m, "drum_front_body")
-    nm = lambda g: mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g)
-    lips = [g for g in gids if "_out" in nm(g) or "_in" in nm(g)]
-    shell = [g for g in gids if "shell" in nm(g)]
-    scoop_of = lambda g: nm(g).split("_scoop")[1].split("_")[0]
+    print("\n=== shroud inlet probe (1 deg rays outward from the axis) ===")
+    ids = [g for g in _subtree_geoms(m, "shroud_front_body")
+           if (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g) or "").find("_arc") >= 0]
+    assert ids, "no shroud arc geoms; has the shroud been built?"
 
-    # Everything soil has to get past on the way in: the channel between a
-    # mouth's own two lips, each lip against the shell, and one scoop's lip
-    # against the next scoop's. Segments of the SAME lip are skipped -- those
-    # touch by design, being a chain approximating one curve.
-    kind = lambda g: "out" if "_out" in nm(g) else "in"
-    # A lip is welded to the shell plate at its own root edge and peels away
-    # from it, so the whole lip is excluded against that plate. Every other
-    # plate is a real passage.
-    def root_plate(g: int) -> int:
-        i = int(scoop_of(g))
-        curl = int(X.SCOOP_CURL)
-        return (i - curl if kind(g) == "out" else i + curl) % X.DRUM_FACETS
+    # Each arc plate spans an angular half-width of atan(half_arc / radius)
+    # about its own centre. A ray escapes when no plate spans it.
+    spans = []
+    for gid in ids:
+        cx, cz = float(m.geom_pos[gid][0]), float(m.geom_pos[gid][2])
+        r = math.hypot(cx, cz)
+        spans.append((math.atan2(cz, cx), math.atan(float(m.geom_size[gid][0]) / r)))
 
-    plate_of = lambda g: int(nm(g).rsplit("shell", 1)[1])
-    pairs = [(a, b) for a in lips for b in shell if plate_of(b) != root_plate(a)]
-    pairs += [(a, b) for i, a in enumerate(lips) for b in lips[i + 1:]
-              if scoop_of(a) != scoop_of(b) or kind(a) != kind(b)]
-    measured = sorted((mujoco.mj_geomDistance(m, d, a, b, DISTMAX, None), nm(a), nm(b))
-                      for a, b in pairs)
+    open_deg = []
+    for deg in range(360):
+        t = math.radians(deg)
+        if not any(abs(math.atan2(math.sin(t - a), math.cos(t - a))) <= half
+                   for a, half in spans):
+            open_deg.append(deg)
 
-    voxel = X.MPM_TARGET_VOXEL
-    print(f"  at the {voxel:.3f} m voxel the coupler eats {voxel:.3f} m of every gap")
-    print(f"  open needs > {X.MPM_CLEARANCE:.3f} m, flowing needs > {X.SCOOP_GAP:.3f} m")
-    for dist, a, b in measured[:3]:
-        verdict = ("SEALED" if dist < X.MPM_CLEARANCE
-                   else "open, tight" if dist < X.SCOOP_GAP else "flows")
-        print(f"    {dist:7.4f} m  {a} <-> {b}   [{verdict}]")
+    runs = _contiguous_runs(open_deg)
+    print(f"  {len(runs)} opening(s), expected 1")
+    for lo, hi in runs:
+        width = (hi - lo) % 360 + 1
+        centre = (lo + 0.5 * (width - 1)) % 360
+        print(f"    centred {centre:6.1f} deg, {width} deg wide")
+    if len(runs) != 1:
+        fail.append(f"the shroud has {len(runs)} openings, not 1. Everything about "
+                    "retention assumes soil can only leave the way it came in")
+    else:
+        lo, hi = runs[0]
+        width = (hi - lo) % 360 + 1
+        want = math.degrees(X.SHROUD_INLET)
+        if abs(width - want) > 12.0:
+            fail.append(f"inlet measures {width} deg against SHROUD_INLET={want:.0f} deg")
 
-    tightest = measured[0][0]
-    if tightest < X.MPM_CLEARANCE:
-        fail.append(
-            f"narrowest passage into the drum is {tightest:.4f} m, under the "
-            f"{X.MPM_CLEARANCE:.3f} m the coupler eats at a {voxel:.3f} m voxel. The drum "
-            "is SEALED: it will cut and throw soil and take none of it, and nothing at "
-            "run time will say so"
-        )
-    elif tightest < X.SCOOP_GAP:
-        print(f"  note: {tightest:.4f} m is open but under {X.SCOOP_GAP:.3f} m, so soil "
-              f"trickles rather than flows. A finer voxel is the real fix -- at 0.03 the "
-              f"same gap reads as {tightest - 0.03:.3f} m clear instead of "
-              f"{tightest - voxel:.3f} m.")
+
+def check_vane_gaps(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:
+    """The way into a pocket is the chord between adjacent vane tips."""
+    print("\n=== way into a pocket ===")
+    g = X.pocket_geometry()
+    v = X.MPM_TARGET_VOXEL
+    print(f"  at the {v:.3f} m voxel the coupler eats {v:.3f} m of every gap")
+    print(f"  open needs > {X.MPM_CLEARANCE:.3f} m, flowing needs > {X.MPM_FLOW:.3f} m")
+    print(f"  vane tip to vane tip  {g['tip_gap']:.4f} m "
+          f"-> {g['tip_gap_clear']:.4f} m clear = {g['tip_gap_grains']:.1f} grains")
+    if g["tip_gap"] <= X.MPM_CLEARANCE:
+        fail.append(f"the gap between vane tips is {g['tip_gap']:.4f} m, which the coupler "
+                    f"closes at a {v:.3f} m voxel. Lower ROTOR_VANES")
+    elif g["tip_gap"] < X.MPM_FLOW:
+        print(f"  note: open but under {X.MPM_FLOW:.3f} m, so regolith trickles rather than "
+              f"flows. ROTOR_VANES is the knob")
+    print(f"  inlet chord           {g['inlet_chord']:.4f} m")
+    if g["inlet_chord"] < X.MPM_FLOW:
+        fail.append(f"the inlet chord is {g['inlet_chord']:.4f} m, under the "
+                    f"{X.MPM_FLOW:.3f} m regolith needs to flow. Widen SHROUD_INLET")
+
+
+def _radial_band(m: mujoco.MjModel, prefix: str) -> tuple[float, float]:
+    """Min and max radius from the spin axis over every geom named `prefix`*.
+
+    The boxes here are ORIENTED: a shroud plate's local x runs along the arc
+    and its z radially, a vane's local x runs along the blade. Treating either
+    half-size as radial reports a plate reaching 2 cm further in than its own
+    inner face, which is the difference between a running fit and an
+    interference. So this works in each box's own frame: farthest point is a
+    corner, nearest is the axis clamped onto the rectangle.
+    """
+    lo, hi = math.inf, 0.0
+    for gid in range(m.ngeom):
+        name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+        if not name.startswith(prefix):
+            continue
+        cx, cz = float(m.geom_pos[gid][0]), float(m.geom_pos[gid][2])
+        hx, hz = float(m.geom_size[gid][0]), float(m.geom_size[gid][2])
+        q = m.geom_quat[gid]
+        # rotation about +y by angle b maps local x_hat -> (cos b, 0, -sin b)
+        b = 2.0 * math.atan2(float(q[2]), float(q[0]))
+        ux, uz = math.cos(b), -math.sin(b)       # local x in the x-z plane
+        vx, vz = math.sin(b), math.cos(b)        # local z in the x-z plane
+        for sx in (-1.0, 1.0):
+            for sz in (-1.0, 1.0):
+                px = cx + sx * hx * ux + sz * hz * vx
+                pz = cz + sx * hx * uz + sz * hz * vz
+                hi = max(hi, math.hypot(px, pz))
+        # nearest point: put the axis in the box frame and clamp
+        ax = -(cx * ux + cz * uz)
+        az = -(cx * vx + cz * vz)
+        dx = max(abs(ax) - hx, 0.0)
+        dz = max(abs(az) - hz, 0.0)
+        lo = min(lo, math.hypot(dx, dz))
+    return lo, hi
+
+
+def _contiguous_runs(degs: list[int]) -> list[tuple[int, int]]:
+    """Group a sorted degree list into wrap-aware contiguous runs."""
+    if not degs:
+        return []
+    runs, start, prev = [], degs[0], degs[0]
+    for x in degs[1:]:
+        if x != prev + 1:
+            runs.append((start, prev))
+            start = x
+        prev = x
+    runs.append((start, prev))
+    if len(runs) > 1 and runs[0][0] == 0 and runs[-1][1] == 359:
+        runs[0] = (runs[-1][0], runs[0][1])
+        runs.pop()
+    return runs
 
 
 def check_clearance(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:
@@ -391,7 +340,7 @@ def check_clearance(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> Non
     for label, fixed in (("wheels", wheels), ("frame", frame)):
         worst = (DISTMAX, "", "", 0.0)
         for angle in np.linspace(lo, hi, 40):
-            for drum_phase in np.linspace(0.0, 2.0 * math.pi / X.DRUM_FACETS, 6):
+            for drum_phase in np.linspace(0.0, X.POCKET_ARC, 6):
                 d.qpos[:] = m.qpos0
                 for a in arm_q:
                     d.qpos[a] = angle
@@ -479,11 +428,11 @@ def check_arm_load(m: mujoco.MjModel, fail: list[str]) -> None:
                 b = m.body_parentid[b]
             moment += m.body_mass[bid] * off[0]
 
-    bore_vol = math.pi * (X.DRUM_RADIUS - X.DRUM_WALL_T) ** 2 * (2.0 * X.DRUM_HALF_LEN)
+    bore_vol = math.pi * X.ROTOR_TIP_R ** 2 * (2.0 * X.ROTOR_HALF_LEN)
     soil = bore_vol * SOIL_DENSITY
     full = moment + soil * X.ARM_LEN
     print(f"  arm + drum moment about the pivot {moment:6.2f} kg-m")
-    print(f"  bore holds {soil:6.1f} kg of regolith per drum")
+    print(f"  the rotor sweeps {soil:6.1f} kg of regolith per drum")
     for label, g in (("earth", EARTH_G), ("lunar", LUNAR_G)):
         print(f"  {label}: empty {moment * g:7.1f} N-m   full {full * g:7.1f} N-m")
     if full * EARTH_G > ARM_EFFORT_LIMIT:
@@ -513,14 +462,14 @@ def main() -> int:
     check_masses(m, fail)
     check_arm_load(m, fail)
     check_reach(fail)
-    check_drum_envelope(m, fail)
-    check_shell_continuity(fail)
-    check_cavity(m, d, fail)
+    check_rotor_envelope(m, fail)
+    check_shroud_continuity(fail)
+    check_inlet(m, d, fail)
+    check_vane_gaps(m, d, fail)
     if distance_works(m, d):
-        check_passages(m, d, fail)
         check_clearance(m, d, fail)
     else:
-        skipped += ["passages into the drum", "arm/drum clearance sweep"]
+        skipped += ["arm/drum clearance sweep"]
 
     print("\n=== result ===")
     for sk in skipped:

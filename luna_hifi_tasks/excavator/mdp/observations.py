@@ -217,9 +217,10 @@ def excavate_obs_spec(
         ObsTerm("arm_pos", num_arms, "boom angle"),
         ObsTerm("arm_vel", num_arms, ""),
         ObsTerm("drum_vel", num_arms, ""),
-        ObsTerm("drum_fill", num_arms, "fraction of bore capacity"),
+        ObsTerm("shroud_pos", num_arms, "inlet angle; the policy aims it"),
+        ObsTerm("drum_fill", num_arms, "fraction of rotor swept capacity"),
         ObsTerm("terrain_scan", terrain_cells, "2-D, drum-centred heights"),
-        ObsTerm("last_action", 4, "[forward, yaw, boom, drum]"),
+        ObsTerm("last_action", 5, "[forward, yaw, boom, drum, shroud]"),
     ]
     return ObsSpec(terms)
 

@@ -34,7 +34,7 @@ from isaaclab_newton.sim.spawners.mpm import MPMGridCfg, MPMParticleMaterialCfg
 
 from isaaclab_contrib.coupling import CouplerEntryCfg, CouplerProxyCfg, CouplerProxyMappingCfg
 
-from ..excavator import ARM_RANGE, DRUM_HALF_LEN, DRUM_RADIUS, DRUM_WALL_T
+from ..excavator import ARM_RANGE, ROTOR_HALF_LEN, ROTOR_TIP_R, SHROUD_RANGE
 from ..excavator_cfg import (
     EXCAVATOR_CFG,
     EXCAVATOR_PRIM_REGEX,
@@ -52,9 +52,10 @@ from ..mdp.observations import NAV_SCAN_CELLS, critic_state_spec, excavate_obs_s
 RIGID_ENTRY = "rover"
 MPM_ENTRY = "soil"
 
-# The drum bore is 34 cm across: seven cells at 0.05. Dropping to 0.03 triples
-# the particle count.
-VOXEL_SIZE = 0.05
+# The way into a pocket is the 0.185 m chord between adjacent vane tips, which
+# at 0.03 is 5.2 grains clear once the coupler has taken its voxel. At 0.05 it
+# is 2.7 and regolith arches across it.
+VOXEL_SIZE = 0.03
 MPM_COLLIDER_MARGIN = 0.5 * VOXEL_SIZE
 MPM_PARTICLES_PER_CELL = 1.0
 MPM_VISUAL_COLOR = (0.62, 0.55, 0.45)
@@ -75,8 +76,8 @@ SOIL_MATERIAL = MPMParticleMaterialCfg(
     yield_pressure=1.0e12,
 )
 
-BORE_RADIUS = DRUM_RADIUS - DRUM_WALL_T
-BORE_HALF_LEN = DRUM_HALF_LEN
+BORE_RADIUS = ROTOR_TIP_R
+BORE_HALF_LEN = ROTOR_HALF_LEN
 BORE_VOLUME = math.pi * BORE_RADIUS ** 2 * (2.0 * BORE_HALF_LEN)
 # ~155 kg, an upper bound: the two lifters displace about 7% of the bore they
 # sweep and granular fill does not pack to 100% of a free volume. A normaliser
@@ -191,12 +192,11 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     bed_x: tuple[float, float] = (-3.0, 5.0)
     bed_y: tuple[float, float] = (-1.0, 1.0)
     bed_depth: float = 0.25
-    # Decides whether the drum can fill. The coupler inflates every collider by
-    # half a voxel per side, eating a whole voxel out of every passage, and
-    # particles spawn one voxel apart. The drum's entry channel opens 0.082 m:
-    # 0.032 m clear at 0.05, under one particle, and soil bridges it; 1.7
-    # particles wide at 0.03, and it flows. Halving the voxel multiplies the
-    # particle count by eight for a given bed.
+    # Decides whether the rotor can fill. The coupler inflates every collider
+    # by half a voxel per side, eating a whole voxel out of every passage, and
+    # particles spawn one voxel apart. The gap between vane tips is 0.185 m:
+    # 5.2 grains clear at 0.03, 2.7 at 0.05. Granular material arches below
+    # about four. Halving the voxel multiplies the particle count by eight.
     voxel_size: float = VOXEL_SIZE
     particles_per_cell: float = MPM_PARTICLES_PER_CELL
     spawn_on_bed: bool = True
@@ -219,14 +219,15 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # not a clean error.
     #
     # Contacts scale with collider count and with how much soil touches them.
-    # This machine carries 119 geoms, 104 of them coupled, against the
+    # The shrouded rotor carries 136 geoms, 106 of them coupled, against the
     # tricycle's 8. A standalone Warp MPM sample has no rigid solver and so
     # neither buffer, which is why it reaches particle counts a coupled scene
     # does not.
     #
-    # A contact is a couple of hundred bytes; 8192 is about 1.6 MB.
-    rigid_njmax: int = 4096
-    rigid_nconmax: int = 8192
+    # A contact is a couple of hundred bytes, so 32768 is about 6.6 MB. There
+    # is no reason to be tight here and overrunning one is an illegal access.
+    rigid_njmax: int = 8192
+    rigid_nconmax: int = 32768
 
     # Active cells per leaf node, as a right shift: 7 is one leaf per 128
     # cells, four times the minimum for 8^3 blocks. Each step down costs 512
@@ -269,10 +270,11 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # sized for max_num_envs and the env asserts num_envs does not exceed it.
     max_num_envs = 32
 
-    # actions: [forward, yaw, boom, drum] in [-1, 1]. Boom and drum are one
-    # command each, applied to BOTH arms / drums -- the counter-rotating dig.
-    action_space = 4
-    observation_space = DIG_OBS.dim      # 153
+    # actions: [forward, yaw, boom, drum, shroud] in [-1, 1]. Boom, drum and
+    # shroud are one command each, applied to both ends -- the counter-rotating
+    # dig, with the inlet aimed together.
+    action_space = 5
+    observation_space = DIG_OBS.dim      # 156
     state_space = DIG_CRITIC.dim         # 199
 
     # --- start state ---
@@ -283,6 +285,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # --- actions ---
     action_smoothing = 0.3
     arm_range = ARM_RANGE
+    shroud_range = SHROUD_RANGE
 
     # --- success ---
     fill_success_fraction = 0.8

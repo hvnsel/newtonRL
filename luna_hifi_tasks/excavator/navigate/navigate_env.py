@@ -74,6 +74,9 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._apply_drive(self._actions[:, 0], self._actions[:, 1])
         self._apply_arms(torch.full((self.num_envs,), self.cfg.arm_hold_angle, device=self.device))
         self._apply_drums(torch.zeros(self.num_envs, device=self.device))
+        # Inlet turned up and held there. The navigator has no actuator with
+        # which to load a drum, the same way it has none to lower an arm.
+        self._apply_shrouds(torch.full((self.num_envs,), math.pi, device=self.device))
 
     # ------------------------------------------------------------------
     # observations

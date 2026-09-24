@@ -94,6 +94,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # dump" -- they lead to different next commands.
         self._shape_done = torch.zeros(E, dtype=torch.bool, device=dev)
         self._drum_full = torch.zeros(E, dtype=torch.bool, device=dev)
+        self._last_terms: dict[str, torch.Tensor] = {}
         # Last step's bed, so a reset can sample the surface the drum will
         # actually meet rather than assuming the bed is still undisturbed.
         self._bed_grid = torch.full(
@@ -394,7 +395,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         all_tau = d.applied_torque.torch
         load_ref = 2.0 * c.target_load_kg
 
-        reward = L.add_all({
+        # Kept so a scripted run can say WHICH term produced a step reward.
+        # A single scalar cannot distinguish "it is digging well" from "one
+        # term is firing on something unrelated".
+        self._last_terms = {
             "fill": c.w_fill * fill_delta / load_ref,
             "depth": c.w_depth * depth_delta / c.cut_volume_ref,
             "success": c.w_success * self._shape_done.float(),
@@ -406,7 +410,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             "energy": -c.w_energy * R.energy_penalty(all_tau, all_vel),
             "action_rate": -c.w_action_rate * R.action_rate_penalty(self._actions, self._prev_actions),
             "time": -c.w_time * torch.ones(self.num_envs, device=self.device),
-        })
+        }
+        reward = L.add_all(self._last_terms)
         self._fill_prev_kg[:] = self._fill_kg
         self._above_prev[:] = above
         self._cut_fresh[:] = False

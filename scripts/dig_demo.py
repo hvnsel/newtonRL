@@ -125,6 +125,21 @@ def _parse(argv):
     return args
 
 
+def _dominant(u, n: int = 2) -> str:
+    """The n reward terms with the largest magnitude this step, for env 0.
+
+    A step reward of +6 with an empty drum says something is firing; it does
+    not say what. This does."""
+    terms = getattr(u, "_last_terms", None)
+    if not terms:
+        return ""
+    ranked = sorted(
+        ((k, float(v[0])) for k, v in terms.items()),
+        key=lambda kv: -abs(kv[1]),
+    )[:n]
+    return "[" + " ".join(f"{k} {v:+.2f}" for k, v in ranked if abs(v) > 1e-3) + "]"
+
+
 def soil_shells(u) -> tuple[torch.Tensor, torch.Tensor]:
     """(in the running clearance, outside the shroud) kg per drum, front and rear.
 
@@ -373,7 +388,7 @@ def main(argv=None) -> int:
                       f"bore=[{fill[0]:6.2f},{fill[1]:6.2f}]  "
                       f"wall=[{wall[0][0]:5.2f},{wall[0][1]:5.2f}]  "
                       f"buried-in={out[0][0]:6.1f}  "
-                      f"rew={float(rew[0]):+6.3f}")
+                      f"rew={float(rew[0]):+6.3f}  {_dominant(u)}")
             if bool(term.any()) or bool(trunc.any()):
                 print(f"  t={t:5.1f}s  episode ended (terminated={bool(term.any())}, "
                       f"truncated={bool(trunc.any())}) -- bed and machine reset")

@@ -16,6 +16,7 @@ import math
 import torch
 
 from ..excavator import WHEEL_RADIUS
+from ..excavator_cfg import MAX_WHEEL_SPEED
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rewards as R
 from ..mdp.terrain import scan_from_raycaster
@@ -150,7 +151,10 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
 
         reward = (
             c.w_progress * L.add("progress", R.progress_reward(self._prev_dist, dist))
-            + c.w_bearing * L.add("bearing", R.bearing_alignment(vec_b))
+            + c.w_bearing * L.add(
+                "bearing",
+                R.bearing_alignment(vec_b, p["base_lin_vel"][:, 0], MAX_WHEEL_SPEED * WHEEL_RADIUS),
+            )
             + c.w_goal * L.add("goal", self._reached.float())
             - c.w_upright * L.add("upright", R.upright_penalty(p["projected_gravity"]))
             - c.w_slip * L.add("slip", R.wheel_slip(wheel_vel, p["base_lin_vel"][:, 0], WHEEL_RADIUS))

@@ -74,6 +74,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
         # Commanded ground height for this episode, world frame.
         self._target_z = torch.zeros(E, device=dev)
+        # Soil still above target last step, and a mask for an episode's first
+        # step, where there is no previous value to difference against.
+        self._above_prev = torch.zeros(E, device=dev)
+        self._cut_fresh = torch.ones(E, dtype=torch.bool, device=dev)
 
         # Load sensor: first-order lag plus a per-episode calibration bias.
         self._fill_filt = torch.zeros(E, 2, device=dev)
@@ -82,7 +86,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._fill_alpha = step_dt / (cfg.fill_sensor_tau + step_dt)
 
         self._log = R.TermLogger(
-            ["fill", "success", "stall", "drift", "upright", "idle_drum", "energy", "action_rate", "time"],
+            ["fill", "depth", "success", "overcut", "spill", "stall", "drift",
+             "upright", "energy", "action_rate", "time"],
             E, dev,
         )
         # InteractiveScene has already spawned the soil from
@@ -105,7 +110,9 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         mat = cfg.scene.soil.spawn.material
         print(
             f"[excavate] particle mass {self._particle_mass:.4f} kg, "
-            f"drum capacity {cfg.drum_capacity_kg:.1f} kg, "
+            f"target load {cfg.target_load_kg:.1f} kg "
+            f"(swept volume would hold {cfg.drum_capacity_kg:.1f}), "
+            f"cut ref {cfg.cut_volume_ref:.4f} m3, "
             f"bed grid {cfg.bed_grid_nx} x {cfg.bed_grid_ny} @ {cfg.voxel_size:.3f} m"
         )
         # Read back off the material the solver got, not off the cfg fields --
@@ -265,32 +272,44 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         d = self.robot.data
 
         pos, env = self._particles()
+        actor_scan, _ = self._scans(self._bed_heightmap(pos, env))
         self._fill_kg = self._compute_fill(pos, env)
         self._fill_filt.mul_(1.0 - self._fill_alpha).add_(self._fill_kg, alpha=self._fill_alpha)
+        cut = self._cut_state(actor_scan)
+
         fill_delta = R.fill_delta_reward(self._fill_kg, self._fill_prev_kg)
-        fill_frac = self._fill_kg / c.drum_capacity_kg
+        fill_frac = self._fill_kg / c.target_load_kg
         if c.fill_success_mode == "all":
             self._success = R.drums_full(fill_frac, c.fill_success_fraction)
-        else:
+        elif c.fill_success_mode == "mean":
             self._success = fill_frac.mean(dim=-1) >= c.fill_success_fraction
+        else:
+            self._success = R.front_drum_full(fill_frac, c.fill_success_fraction)
+
+        above = cut["above_volume"]
+        depth_delta = R.progress_delta(self._above_prev, above, self._cut_fresh)
 
         wheel_cmd_rad = self._forward_cmd / WHEEL_RADIUS
-        drum_vel = d.joint_vel.torch[:, self._drum_ids]
         all_vel = d.joint_vel.torch
         all_tau = d.applied_torque.torch
+        load_ref = 2.0 * c.target_load_kg
 
         reward = (
-            c.w_fill * L.add("fill", fill_delta / (2.0 * c.drum_capacity_kg))
+            c.w_fill * L.add("fill", fill_delta / load_ref)
+            + c.w_depth * L.add("depth", depth_delta / c.cut_volume_ref)
             + c.w_success * L.add("success", self._success.float())
+            - c.w_overcut * L.add("overcut", cut["below_volume"] / c.cut_volume_ref)
+            - c.w_spill * L.add("spill", R.spill_penalty(fill_delta) / load_ref)
             - c.w_stall * L.add("stall", R.stall_penalty(wheel_cmd_rad, p["base_lin_vel"][:, 0], WHEEL_RADIUS))
             - c.w_drift * L.add("drift", R.drift_penalty(p["base_lin_vel"], self._forward_cmd))
             - c.w_upright * L.add("upright", R.upright_penalty(p["projected_gravity"]))
-            - c.w_idle_drum * L.add("idle_drum", R.idle_drum_penalty(drum_vel, fill_delta))
             - c.w_energy * L.add("energy", R.energy_penalty(all_tau, all_vel))
             - c.w_action_rate * L.add("action_rate", R.action_rate_penalty(self._actions, self._prev_actions))
             - c.w_time * L.add("time", torch.ones(self.num_envs, device=self.device))
         )
         self._fill_prev_kg[:] = self._fill_kg
+        self._above_prev[:] = above
+        self._cut_fresh[:] = False
         return reward
 
     # ------------------------------------------------------------------
@@ -330,6 +349,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._target_z[env_ids] = (
             self.scene.env_origins[env_ids, 2] + self.cfg.bed_top - depth
         )
+        self._above_prev[env_ids] = 0.0
+        self._cut_fresh[env_ids] = True
         self._success[env_ids] = False
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0

@@ -135,8 +135,11 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     action_smoothing = 0.3               # EMA: a_t = (1-s) a_cmd + s a_{t-1}
 
     # --- reward weights ---
+    # bearing is scaled by forward speed (see mdp/rewards.bearing_alignment),
+    # so its episode ceiling is ~6 rather than the 300 an ungated cosine paid
+    # for standing still and facing the goal.
     w_progress = 5.0
-    w_bearing = 0.3
+    w_bearing = 0.1
     w_goal = 20.0
     w_upright = 2.0
     w_slip = 0.05

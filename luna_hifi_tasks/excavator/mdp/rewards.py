@@ -79,11 +79,22 @@ def progress_reward(dist_prev: torch.Tensor, dist_now: torch.Tensor) -> torch.Te
     return dist_prev - dist_now
 
 
-def bearing_alignment(goal_vec_b: torch.Tensor) -> torch.Tensor:
-    """Cosine of the angle between body +x and the goal direction, in [-1, 1].
-    +1 means the goal is dead ahead. Undefined at the goal, so it is 0 there."""
+def bearing_alignment(
+    goal_vec_b: torch.Tensor,
+    forward_speed: torch.Tensor,
+    speed_scale: float,
+) -> torch.Tensor:
+    """Alignment with the goal, scaled by how fast the machine is closing on it.
+
+    The cosine alone is a per-step payment for POINTING at the goal, and an
+    episode that terminates on arrival forfeits the rest of it: standing still
+    facing the goal for 500 steps outscored driving there. Multiplying by
+    forward speed, clamped to [0, 1] of the machine's top speed, makes the
+    term zero for a stationary machine and zero for one reversing away.
+    """
     dist = torch.linalg.norm(goal_vec_b, dim=-1)
-    return torch.where(dist > 1e-3, goal_vec_b[:, 0] / dist.clamp_min(1e-3), torch.zeros_like(dist))
+    cos = torch.where(dist > 1e-3, goal_vec_b[:, 0] / dist.clamp_min(1e-3), torch.zeros_like(dist))
+    return cos * (forward_speed / speed_scale).clamp(0.0, 1.0)
 
 
 def goal_reached(
@@ -114,6 +125,25 @@ def world_to_body_xy(vec_w: torch.Tensor, base_yaw: torch.Tensor) -> torch.Tenso
 # ---------------------------------------------------------------------------
 # Excavation
 # ---------------------------------------------------------------------------
+
+
+def progress_delta(
+    prev: torch.Tensor,
+    now: torch.Tensor,
+    fresh: torch.Tensor,
+) -> torch.Tensor:
+    """Reduction from `prev` to `now`, zero where `fresh` marks an episode's
+    first step. Without the mask the opening step scores the whole quantity as
+    if the policy had just created it."""
+    return torch.where(fresh, torch.zeros_like(now), prev - now)
+
+
+def spill_penalty(fill_delta: torch.Tensor) -> torch.Tensor:
+    """Mass lost this step, non-negative. (E,) -> (E,).
+
+    The fill term already scores a loss negatively; this one is the extra
+    asymmetry, so shedding a kilogram costs more than capturing one pays."""
+    return (-fill_delta).clamp_min(0.0)
 
 
 def fill_delta_reward(fill_now: torch.Tensor, fill_prev: torch.Tensor) -> torch.Tensor:
@@ -148,18 +178,16 @@ def drift_penalty(
     return (base_lin_vel_b[:, 0] - forward_cmd_speed).abs() + base_lin_vel_b[:, 1].abs()
 
 
-def idle_drum_penalty(drum_vel: torch.Tensor, fill_delta: torch.Tensor) -> torch.Tensor:
-    """Drum speed spent while capturing nothing. (E, D), (E,) -> (E,).
-    Spinning a drum in the air or churning a full one is wasted energy the
-    fill reward alone would not notice."""
-    spinning = drum_vel.abs().sum(dim=-1)
-    return torch.where(fill_delta <= 0.0, spinning, torch.zeros_like(spinning))
-
-
 def drums_full(fill_fraction: torch.Tensor, threshold: float) -> torch.Tensor:
-    """(E, D) -> (E,). True when EVERY drum has reached the threshold. With
-    symmetric control both fill together; this is the success termination."""
+    """(E, D) -> (E,). True when EVERY drum has reached the threshold."""
     return (fill_fraction >= threshold).all(dim=-1)
+
+
+def front_drum_full(fill_fraction: torch.Tensor, threshold: float) -> torch.Tensor:
+    """(E, D) -> (E,). True when the FRONT drum has reached the threshold.
+    Driving forward the front drum is the one meeting fresh soil; the rear
+    trails through the trench and in a pile-in-front scene never reaches it."""
+    return fill_fraction[:, 0] >= threshold
 
 
 # ---------------------------------------------------------------------------

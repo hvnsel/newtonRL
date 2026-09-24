@@ -43,7 +43,14 @@ from ..excavator_cfg import (
     SOIL_CONTACT_BODIES_REGEX,
     SPAWN_Z,
 )
-from ..mdp.observations import NAV_SCAN_CELLS, critic_state_spec, excavate_obs_spec
+from ..mdp.observations import (
+    DIG_SCAN_CELL,
+    DIG_SCAN_NX,
+    DIG_SCAN_NY,
+    NAV_SCAN_CELLS,
+    critic_state_spec,
+    excavate_obs_spec,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -84,10 +91,9 @@ BORE_HALF_LEN = ROTOR_HALF_LEN
 FOOTPRINT_HALF_X = SHROUD_OUT_R
 FOOTPRINT_HALF_Y = ROTOR_HALF_LEN
 BORE_VOLUME = math.pi * BORE_RADIUS ** 2 * (2.0 * BORE_HALF_LEN)
-# ~155 kg, an upper bound: the two lifters displace about 7% of the bore they
-# sweep and granular fill does not pack to 100% of a free volume. A normaliser
-# -- fill fraction is compared against itself and against
-# fill_success_fraction.
+# The mass the rotor's swept cylinder would hold if it packed solid. Reported
+# at startup and nothing else: a pocket open at the rim holds a fraction of
+# it, so target_load_kg is what fill is normalised and scored against.
 DRUM_CAPACITY_KG = BORE_VOLUME * SOIL_MATERIAL.density
 
 DIG_OBS = excavate_obs_spec()
@@ -271,6 +277,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     bed_grid_ny: int = 0
     bed_particles_per_env: int = 0
     drum_capacity_kg: float = DRUM_CAPACITY_KG
+    # Footprint area times the mean commanded depth. The depth reward divides
+    # by it, so w_depth is "points for one nominal cut".
+    cut_volume_ref: float = 0.04
 
     # The sparse-grid capacities are absolute totals across all envs and do not
     # scale with --num_envs, which Hydra applies after __post_init__. They are
@@ -311,22 +320,29 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     fill_sensor_bias: float = 0.03           # +- fraction, per episode
 
     # --- success ---
-    fill_success_fraction = 0.8
-    # "mean": the pair averages past the threshold. "all": every drum must.
-    # The rear drum trails through the trench the front one cut and fills more
-    # slowly.
-    fill_success_mode = "mean"
+    # 0.6 of target_load_kg is 24 kg on the front drum. The best recorded run
+    # reached 23.6 kg in 30 s.
+    fill_success_fraction = 0.6
+    # "front": the front drum alone. "all": every drum. "mean": the pair
+    # averages past the threshold.
+    fill_success_mode = "front"
 
     # --- reward weights ---
-    w_fill = 10.0                        # per full drum-PAIR of captured soil
+    # Every term is scaled so a whole episode of doing it well is worth tens
+    # of points, not fractions. fill and depth are the two halves of the task:
+    # fill alone lets the policy scrape one strip forever, depth alone lets it
+    # push soil aside and capture none.
+    w_fill = 40.0                        # per 2 x target_load_kg captured
+    w_depth = 20.0                       # per cut_volume_ref brought to target
+    w_overcut = 0.2                      # per cut_volume_ref taken below it
+    w_spill = 20.0                       # asymmetry on top of a negative fill
     w_success = 20.0
     w_stall = 0.5
     w_drift = 1.0                        # the counter-rotation check
     w_upright = 2.0
-    w_idle_drum = 0.02
     w_energy = 1.0e-4
     w_action_rate = 0.05
-    w_time = 0.02
+    w_time = 0.005
 
     # --- termination ---
     max_tilt_rad = math.radians(60.0)
@@ -380,7 +396,23 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         ]
         return "; ".join(bad) if bad else None
 
+    def footprint_cells(self) -> int:
+        """Scan cells inside the drum's footprint. Must match the mask the env
+        builds from the same pattern."""
+        half_x = 0.5 * (DIG_SCAN_NX - 1) * DIG_SCAN_CELL
+        half_y = 0.5 * (DIG_SCAN_NY - 1) * DIG_SCAN_CELL
+        nx = sum(1 for i in range(DIG_SCAN_NX)
+                 if abs(i * DIG_SCAN_CELL - half_x) <= FOOTPRINT_HALF_X)
+        ny = sum(1 for i in range(DIG_SCAN_NY)
+                 if abs(i * DIG_SCAN_CELL - half_y) <= FOOTPRINT_HALF_Y)
+        return nx * ny
+
     def __post_init__(self) -> None:
+        lo, hi = self.cut_depth_range
+        self.cut_volume_ref = (
+            self.footprint_cells() * DIG_SCAN_CELL ** 2 * 0.5 * (lo + hi)
+        )
+
         # --- resolve the bed and write it into the scene -------------------
         margin = 0.5 * self.voxel_size
         lower = (self.bed_x[0], self.bed_y[0], margin)

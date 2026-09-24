@@ -208,6 +208,19 @@ def excavate_obs_spec(
     Window is 2.0 x 1.0 m at 0.125 m, centred on the ACTIVE drum rather than
     the chassis. Finer and smaller than the navigation scan because the
     quantity of interest is the shape of the cutting face, not the route.
+
+    `drum_phase` is (sin, cos) of the vane count times the rotor angle, so it
+    reads phase WITHIN a pocket and is identical for every pocket. Six vanes
+    at 2.9 rad/s put a pocket mouth at the inlet every 0.36 s, which is 9
+    steps at 25 Hz; without this term that cycle is invisible.
+
+    `arm_torque` is the load sensor. Soil the drum is buried in is carried by
+    the ground, so it does not appear here, which is the one thing the
+    particle-counted fill number cannot distinguish.
+
+    `target_height`, `depth_error` and `cut_progress` are the cut command.
+    All three are in the same frame and units as every cell of terrain_scan:
+    height relative to the front drum, clipped to scan_clip.
     """
     terms = [
         ObsTerm("base_lin_vel", 3, "body frame"),
@@ -218,7 +231,13 @@ def excavate_obs_spec(
         ObsTerm("arm_vel", num_arms, ""),
         ObsTerm("drum_vel", num_arms, ""),
         ObsTerm("shroud_pos", num_arms, "inlet angle; the policy aims it"),
-        ObsTerm("drum_fill", num_arms, "fraction of rotor swept capacity"),
+        ObsTerm("drum_phase", 2 * num_arms, "(sin, cos) of vanes * rotor angle"),
+        ObsTerm("arm_torque", num_arms, "joint torque / ARM_EFFORT"),
+        ObsTerm("drum_torque", num_arms, "joint torque / DRUM_EFFORT"),
+        ObsTerm("drum_fill", num_arms, "estimated load / target_load_kg"),
+        ObsTerm("target_height", 1, "commanded ground height, drum-relative"),
+        ObsTerm("depth_error", 1, "footprint mean scan height minus target"),
+        ObsTerm("cut_progress", 1, "fraction of the footprint at or below target"),
         ObsTerm("terrain_scan", terrain_cells, "2-D, drum-centred heights"),
         ObsTerm("last_action", 5, "[forward, yaw, boom, drum, shroud]"),
     ]

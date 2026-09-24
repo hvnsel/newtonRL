@@ -106,6 +106,14 @@ SPIN_LIMIT = math.sqrt(LUNAR_G / ROTOR_TIP_R)
 # means commanding minus the arm angle.
 SHROUD_LIMITS = SHROUD_RANGE
 
+# Actuator effort ceilings. The actuator cfgs below take these, and the
+# observation divides measured joint torque by them, so a policy input and an
+# actuator limit cannot drift apart.
+WHEEL_EFFORT = 120.0
+ARM_EFFORT = 800.0
+DRUM_EFFORT = 350.0
+SHROUD_EFFORT = 200.0
+
 
 def usd_status() -> str | None:
     """None if the converted asset is present and not older than its source.
@@ -152,7 +160,7 @@ EXCAVATOR_CFG = ArticulationCfg(
         # ~362 N-m, which the ground cannot react against.
         "wheels": ImplicitActuatorCfg(
             joint_names_expr=JOINT_WHEELS,
-            effort_limit_sim=120.0,
+            effort_limit_sim=WHEEL_EFFORT,
             velocity_limit_sim=12.0,
             stiffness=0.0,
             damping=25.0,
@@ -164,7 +172,7 @@ EXCAVATOR_CFG = ArticulationCfg(
         # or is driven up out of the cut.
         "arms": ImplicitActuatorCfg(
             joint_names_expr=JOINT_ARMS,
-            effort_limit_sim=800.0,
+            effort_limit_sim=ARM_EFFORT,
             velocity_limit_sim=1.5,
             stiffness=2500.0,
             damping=250.0,
@@ -174,7 +182,7 @@ EXCAVATOR_CFG = ArticulationCfg(
         # the counter-rotating pair buys.
         "drums": ImplicitActuatorCfg(
             joint_names_expr=JOINT_DRUMS,
-            effort_limit_sim=350.0,
+            effort_limit_sim=DRUM_EFFORT,
             velocity_limit_sim=6.0,
             stiffness=0.0,
             damping=40.0,
@@ -185,7 +193,7 @@ EXCAVATOR_CFG = ArticulationCfg(
         # drum, about 40 N-m at capacity. 200 is a 5x margin.
         "shrouds": ImplicitActuatorCfg(
             joint_names_expr=JOINT_SHROUDS,
-            effort_limit_sim=200.0,
+            effort_limit_sim=SHROUD_EFFORT,
             velocity_limit_sim=2.0,
             stiffness=1500.0,
             damping=150.0,

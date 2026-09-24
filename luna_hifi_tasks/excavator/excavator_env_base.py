@@ -29,10 +29,17 @@ from .excavator import (
     JOINT_WHEELS_LEFT,
     JOINT_WHEELS_RIGHT,
     BODY_DRUMS,
+    ROTOR_VANES,
     TRACK,
     WHEEL_RADIUS,
 )
-from .excavator_cfg import MAX_DRUM_SPEED, MAX_WHEEL_SPEED, MAX_YAW_SPEED
+from .excavator_cfg import (
+    ARM_EFFORT,
+    DRUM_EFFORT,
+    MAX_DRUM_SPEED,
+    MAX_WHEEL_SPEED,
+    MAX_YAW_SPEED,
+)
 from .mdp import rewards as R
 from .mdp.terrain import yaw_from_quat
 
@@ -122,6 +129,11 @@ class ExcavatorEnvBase(DirectRLEnv):
 
     def _proprio(self) -> dict[str, torch.Tensor]:
         d = self.robot.data
+        tau = d.applied_torque.torch
+        # Phase WITHIN a pocket: the rotor is ROTOR_VANES-fold symmetric, so
+        # multiplying the joint angle by the vane count makes every pocket
+        # read the same, and (sin, cos) removes the wrap at +-pi.
+        rotor = ROTOR_VANES * d.joint_pos.torch[:, self._drum_ids]
         return {
             "base_lin_vel": d.root_lin_vel_b.torch,
             "base_ang_vel": d.root_ang_vel_b.torch,
@@ -130,7 +142,10 @@ class ExcavatorEnvBase(DirectRLEnv):
             "arm_pos": d.joint_pos.torch[:, self._arm_ids],
             "arm_vel": d.joint_vel.torch[:, self._arm_ids],
             "drum_vel": d.joint_vel.torch[:, self._drum_ids] / MAX_DRUM_SPEED,
+            "drum_phase": torch.cat([torch.sin(rotor), torch.cos(rotor)], dim=-1),
             "shroud_pos": d.joint_pos.torch[:, self._shroud_ids],
+            "arm_torque": tau[:, self._arm_ids] / ARM_EFFORT,
+            "drum_torque": tau[:, self._drum_ids] / DRUM_EFFORT,
         }
 
     def _base_yaw(self) -> torch.Tensor:

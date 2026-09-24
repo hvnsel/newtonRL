@@ -28,6 +28,7 @@ from ..excavator_cfg import MAX_DRUM_SPEED
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rewards as R
 from ..mdp.sensors import drum_fill_mass, mpm_grid_particle_mass, mpm_particle_state, soil_heightmap
+from ..mdp.observations import DIG_SCAN_CELL
 from ..mdp.terrain import dig_scan_pattern, nav_scan_pattern, scan_from_heightfield
 from .excavate_env_cfg import (
     BED_FLOOR_Z,
@@ -35,6 +36,8 @@ from .excavate_env_cfg import (
     BORE_RADIUS,
     DIG_CRITIC,
     DIG_OBS,
+    FOOTPRINT_HALF_X,
+    FOOTPRINT_HALF_Y,
     ExcavatorExcavateEnvCfg,
 )
 
@@ -60,6 +63,23 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
         self._dig_pattern = dig_scan_pattern(dev)
         self._nav_pattern = nav_scan_pattern(dev)
+
+        # Scan cells over the drum, in the drum's frame. 4 x 8 of the 16 x 8
+        # grid, 0.53 x 0.88 m, against a rotor that sweeps 0.37 x 0.95 m.
+        self._footprint = (
+            (self._dig_pattern[:, 0].abs() <= FOOTPRINT_HALF_X)
+            & (self._dig_pattern[:, 1].abs() <= FOOTPRINT_HALF_Y)
+        )
+        self._cell_area = DIG_SCAN_CELL ** 2
+
+        # Commanded ground height for this episode, world frame.
+        self._target_z = torch.zeros(E, device=dev)
+
+        # Load sensor: first-order lag plus a per-episode calibration bias.
+        self._fill_filt = torch.zeros(E, 2, device=dev)
+        self._fill_bias = torch.zeros(E, 2, device=dev)
+        step_dt = cfg.sim.dt * cfg.decimation
+        self._fill_alpha = step_dt / (cfg.fill_sensor_tau + step_dt)
 
         self._log = R.TermLogger(
             ["fill", "success", "stall", "drift", "upright", "idle_drum", "energy", "action_rate", "time"],
@@ -164,6 +184,34 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         )
         return actor, critic
 
+    def _cut_state(self, actor_scan: torch.Tensor) -> dict[str, torch.Tensor]:
+        """The cut command and how far the ground is from meeting it.
+
+        Every height here is in the scan's own frame -- relative to the front
+        drum, clipped to scan_clip -- so target and terrain are directly
+        comparable and the drum's own height cancels out of depth_error.
+        """
+        clip = self.cfg.scan_clip
+        drum_z = self._drum_poses()[0][:, 0, 2]
+        target = (self._target_z - drum_z).clamp(-clip, clip)
+        foot = actor_scan[:, self._footprint]
+        t = target.unsqueeze(-1)
+        return {
+            "target_height": target.unsqueeze(-1),
+            "depth_error": (foot.mean(dim=-1) - target).unsqueeze(-1),
+            "cut_progress": (foot <= t).float().mean(dim=-1, keepdim=True),
+            # m3 of soil still above the target, and taken below it
+            "above_volume": (foot - t).clamp_min(0.0).sum(dim=-1) * self._cell_area,
+            "below_volume": (t - foot).clamp_min(0.0).sum(dim=-1) * self._cell_area,
+        }
+
+    def _fill_observed(self) -> torch.Tensor:
+        """Estimated load as a fraction of target_load_kg, (E, 2)."""
+        c = self.cfg
+        reading = self._fill_filt * (1.0 + self._fill_bias)
+        noise = torch.randn_like(reading) * (c.fill_sensor_noise * reading.abs() + c.fill_sensor_abs_kg)
+        return ((reading + noise) / c.target_load_kg).clamp(-0.5, 3.0)
+
     # ------------------------------------------------------------------
     # observations
     # ------------------------------------------------------------------
@@ -172,8 +220,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         p = self._proprio()
         pos, env = self._particles()
         actor_scan, critic_scan = self._scans(self._bed_heightmap(pos, env))
-        fill_frac = self._fill_kg / self.cfg.drum_capacity_kg
-
+        cut = self._cut_state(actor_scan)
         policy = DIG_OBS.assemble({
             "base_lin_vel": p["base_lin_vel"],
             "base_ang_vel": p["base_ang_vel"],
@@ -183,7 +230,13 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             "arm_vel": p["arm_vel"],
             "drum_vel": p["drum_vel"],
             "shroud_pos": p["shroud_pos"],
-            "drum_fill": fill_frac,
+            "drum_phase": p["drum_phase"],
+            "arm_torque": p["arm_torque"],
+            "drum_torque": p["drum_torque"],
+            "drum_fill": self._fill_observed(),
+            "target_height": cut["target_height"],
+            "depth_error": cut["depth_error"],
+            "cut_progress": cut["cut_progress"],
             "terrain_scan": actor_scan,
             "last_action": self._actions,
         })
@@ -213,6 +266,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
         pos, env = self._particles()
         self._fill_kg = self._compute_fill(pos, env)
+        self._fill_filt.mul_(1.0 - self._fill_alpha).add_(self._fill_kg, alpha=self._fill_alpha)
         fill_delta = R.fill_delta_reward(self._fill_kg, self._fill_prev_kg)
         fill_frac = self._fill_kg / c.drum_capacity_kg
         if c.fill_success_mode == "all":
@@ -267,6 +321,15 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self.soil.reset(env_ids)
         self._fill_kg[env_ids] = 0.0
         self._fill_prev_kg[env_ids] = 0.0
+        self._fill_filt[env_ids] = 0.0
+        b = self.cfg.fill_sensor_bias
+        self._fill_bias[env_ids] = (torch.rand(n, 2, device=self.device) * 2.0 - 1.0) * b
+
+        lo, hi = self.cfg.cut_depth_range
+        depth = lo + (hi - lo) * torch.rand(n, device=self.device)
+        self._target_z[env_ids] = (
+            self.scene.env_origins[env_ids, 2] + self.cfg.bed_top - depth
+        )
         self._success[env_ids] = False
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0

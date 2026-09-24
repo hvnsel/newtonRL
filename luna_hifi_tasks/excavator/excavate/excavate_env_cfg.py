@@ -34,7 +34,7 @@ from isaaclab_newton.sim.spawners.mpm import MPMGridCfg, MPMParticleMaterialCfg
 
 from isaaclab_contrib.coupling import CouplerEntryCfg, CouplerProxyCfg, CouplerProxyMappingCfg
 
-from ..excavator import ARM_RANGE, ROTOR_HALF_LEN, ROTOR_TIP_R, SHROUD_RANGE
+from ..excavator import ARM_RANGE, ROTOR_HALF_LEN, ROTOR_TIP_R, SHROUD_OUT_R, SHROUD_RANGE
 from ..excavator_cfg import (
     EXCAVATOR_CFG,
     EXCAVATOR_PRIM_REGEX,
@@ -78,6 +78,11 @@ SOIL_MATERIAL = MPMParticleMaterialCfg(
 
 BORE_RADIUS = ROTOR_TIP_R
 BORE_HALF_LEN = ROTOR_HALF_LEN
+
+# The ground the drum is working. Scan cells inside this rectangle, in the
+# drum's own frame, are the ones a cut has to bring down to the target height.
+FOOTPRINT_HALF_X = SHROUD_OUT_R
+FOOTPRINT_HALF_Y = ROTOR_HALF_LEN
 BORE_VOLUME = math.pi * BORE_RADIUS ** 2 * (2.0 * BORE_HALF_LEN)
 # ~155 kg, an upper bound: the two lifters displace about 7% of the bore they
 # sweep and granular fill does not pack to 100% of a free volume. A normaliser
@@ -276,7 +281,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # shroud are one command each, applied to both ends -- the counter-rotating
     # dig, with the inlet aimed together.
     action_space = 5
-    observation_space = DIG_OBS.dim      # 156
+    observation_space = DIG_OBS.dim      # 167
     state_space = DIG_CRITIC.dim         # 199
 
     # --- start state ---
@@ -288,6 +293,22 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     action_smoothing = 0.3
     arm_range = ARM_RANGE
     shroud_range = SHROUD_RANGE
+
+    # --- cut command ---
+    # The planner hands down a target ground height. Here it is sampled per
+    # episode, as a depth below the undisturbed bed surface.
+    cut_depth_range: tuple[float, float] = (0.04, 0.12)
+
+    # --- load sensor ---
+    # What the policy reads in place of the particle count. Boom torque is how
+    # a machine weighs its load: a first-order lag, noise proportional to the
+    # reading, and a calibration bias held for the episode. The exact figure
+    # stays on the critic as drum_fill_mass.
+    target_load_kg: float = 40.0
+    fill_sensor_tau: float = 0.3             # s
+    fill_sensor_noise: float = 0.05          # fraction of the reading
+    fill_sensor_abs_kg: float = 0.5
+    fill_sensor_bias: float = 0.03           # +- fraction, per episode
 
     # --- success ---
     fill_success_fraction = 0.8

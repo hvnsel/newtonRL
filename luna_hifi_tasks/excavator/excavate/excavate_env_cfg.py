@@ -344,9 +344,26 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     shroud_range = SHROUD_RANGE
 
     # --- cut command ---
-    # The planner hands down a target ground height. Here it is sampled per
-    # episode, as a depth below the undisturbed bed surface.
+    # The planner hands down a target PLANE. Here it is sampled per episode:
+    # a depth below the surface the drum will meet, plus a gradient.
     cut_depth_range: tuple[float, float] = (0.04, 0.12)
+
+    # Rise over run the planner may command, clipped rather than left free.
+    # 0.30 is about 17 degrees. The clip is not a physics claim -- it stops a
+    # planner spending its sample budget discovering that a 60 degree ramp is
+    # impossible. Where the machine actually stalls is learned inside it.
+    cut_gradient_max: float = 0.30
+    # Fraction of episodes that get a non-zero gradient. The rest are flat
+    # cuts, which is what most of the work is.
+    cut_ramp_fraction: float = 0.5
+    # Lateral gradient, as a fraction of cut_gradient_max. Small, because the
+    # planner is supposed to align the approach pose with the ramp; it is
+    # non-zero so the policy learns that a lateral residual means yaw.
+    cut_lateral_fraction: float = 0.3
+
+    # Residual volume, as a fraction of cut_volume_ref, at or below which the
+    # commanded shape counts as achieved and the episode ends.
+    shape_success_fraction: float = 0.10
 
     # --- load sensor ---
     # What the policy reads in place of the particle count. Boom torque is how

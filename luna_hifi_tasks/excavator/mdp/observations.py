@@ -244,9 +244,21 @@ def excavate_obs_spec(
     the ground, so it does not appear here, which is the one thing the
     particle-counted fill number cannot distinguish.
 
-    `target_height`, `depth_error` and `cut_progress` are the cut command.
-    All three are in the same frame and units as every cell of terrain_scan:
-    height relative to the front drum, clipped to scan_clip.
+    The cut command is a PLANE, not an arbitrary height field. The rotor is a
+    cylinder, so its cutting edge is a straight line across the whole swath
+    and the depth it takes is constant across that swath by construction: the
+    machine can ramp along its direction of travel by raising the boom as it
+    advances, and cannot tilt a cut sideways. A command it has no mechanism to
+    execute costs a policy its sample budget and teaches it nothing.
+
+    So three numbers. `target_level` is in the same frame and units as every
+    cell of terrain_scan -- height relative to the front drum, clipped to
+    scan_clip -- and the two gradients are dimensionless rise over run in the
+    BODY frame.
+
+    `grad_lateral` is the one the drum cannot cut away, and it is here on
+    purpose: the policy has yaw authority, so a lateral residual is the signal
+    that the machine is misaligned with the ramp and should turn.
     """
     terms = [
         ObsTerm("base_lin_vel", 3, "body frame"),
@@ -261,7 +273,9 @@ def excavate_obs_spec(
         ObsTerm("arm_torque", num_arms, "joint torque / ARM_EFFORT"),
         ObsTerm("drum_torque", num_arms, "joint torque / DRUM_EFFORT"),
         ObsTerm("drum_fill", num_arms, "estimated load / target_load_kg"),
-        ObsTerm("target_height", 1, "commanded ground height, drum-relative"),
+        ObsTerm("target_level", 1, "plane height under the drum, drum-relative"),
+        ObsTerm("grad_forward", 1, "commanded rise/run along body +x"),
+        ObsTerm("grad_lateral", 1, "commanded rise/run along body +y"),
         ObsTerm("depth_error", 1, "footprint mean scan height minus target"),
         ObsTerm("cut_progress", 1, "fraction of the footprint at or below target"),
         ObsTerm("terrain_scan", terrain_cells, "2-D, drum-centred heights"),

@@ -114,6 +114,15 @@ def heading_error_sin_cos(goal_yaw: torch.Tensor, base_yaw: torch.Tensor) -> tor
     return torch.stack([torch.sin(err), torch.cos(err)], dim=-1)
 
 
+def body_to_world_xy(vec_b: torch.Tensor, base_yaw: torch.Tensor) -> torch.Tensor:
+    """Rotate a body-frame xy vector out into the world yaw frame. The inverse
+    of world_to_body_xy. (E, 2) -> (E, 2)."""
+    c, s = torch.cos(base_yaw), torch.sin(base_yaw)
+    x = c * vec_b[:, 0] - s * vec_b[:, 1]
+    y = s * vec_b[:, 0] + c * vec_b[:, 1]
+    return torch.stack([x, y], dim=-1)
+
+
 def world_to_body_xy(vec_w: torch.Tensor, base_yaw: torch.Tensor) -> torch.Tensor:
     """Rotate a world-frame xy vector into the yaw frame. (E, 2) -> (E, 2)."""
     c, s = torch.cos(base_yaw), torch.sin(base_yaw)

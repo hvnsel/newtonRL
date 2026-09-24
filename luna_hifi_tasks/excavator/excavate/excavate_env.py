@@ -38,6 +38,7 @@ from ..mdp.terrain import (
     nav_near_pattern,
     sample_height_grid,
     scan_from_heightfield,
+    scan_points_world,
 )
 from .excavate_env_cfg import (
     BED_FLOOR_Z,
@@ -68,7 +69,6 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._particle_mass = mpm_grid_particle_mass(cfg.scene.soil.spawn)
         self._fill_kg = torch.zeros(E, 2, device=dev)
         self._fill_prev_kg = torch.zeros(E, 2, device=dev)
-        self._success = torch.zeros(E, dtype=torch.bool, device=dev)
 
         self._dig_pattern = dig_scan_pattern(dev)
         # The critic's window matches navigate's, so one critic layout serves
@@ -84,8 +84,16 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         )
         self._cell_area = DIG_SCAN_CELL ** 2
 
-        # Commanded ground height for this episode, world frame.
-        self._target_z = torch.zeros(E, device=dev)
+        # The commanded cut, as a plane in the world frame:
+        #   z(X, Y) = _target_z0 + _target_grad . ([X, Y] - _target_xy)
+        self._target_xy = torch.zeros(E, 2, device=dev)
+        self._target_z0 = torch.zeros(E, device=dev)
+        self._target_grad = torch.zeros(E, 2, device=dev)
+        # Which of the two exits ended the episode. The level above needs to
+        # tell "the shape is cut" from "the drum is full, come back after a
+        # dump" -- they lead to different next commands.
+        self._shape_done = torch.zeros(E, dtype=torch.bool, device=dev)
+        self._drum_full = torch.zeros(E, dtype=torch.bool, device=dev)
         # Last step's bed, so a reset can sample the surface the drum will
         # actually meet rather than assuming the bed is still undisturbed.
         self._bed_grid = torch.full(
@@ -221,27 +229,58 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         comparable and the drum's own height cancels out of depth_error.
         """
         clip = self.cfg.scan_clip
-        drum_z = self._drum_poses()[0][:, 0, 2]
-        target = (self._target_z - drum_z).clamp(-clip, clip)
+        front = self._drum_poses()[0][:, 0]
+        drum_z = front[:, 2]
+
+        floor = self.scene.env_origins[:, 2] + BED_FLOOR_Z
+
+        def plane_at(xy: torch.Tensor) -> torch.Tensor:
+            """World z of the commanded plane at world xy, never below the
+            hard floor. Trailing dims free.
+
+            The clamp is what keeps a descending ramp achievable: at the
+            0.30 gradient cap the plane drops below the floor after about
+            half a metre of travel, and the ground there cannot follow it, so
+            without this the shape can never be matched and the episode can
+            only time out.
+            """
+            nd = xy.dim() - 2
+            rel = xy - self._target_xy.view(-1, *([1] * nd), 2)
+            z = self._target_z0.view(-1, *([1] * nd)) + (
+                rel * self._target_grad.view(-1, *([1] * nd), 2)
+            ).sum(dim=-1)
+            return torch.maximum(z, floor.view(-1, *([1] * nd)))
+
+        # The plane sampled at the same cells the scan was taken at, then put
+        # in the scan's own frame so the drum's height cancels out of every
+        # comparison below.
+        pts = scan_points_world(
+            front, self.robot.data.root_quat_w.torch, self._dig_pattern
+        )[:, self._footprint]
+        t = (plane_at(pts) - drum_z.unsqueeze(-1)).clamp(-clip, clip)
+        level = (plane_at(front[:, :2]) - drum_z).clamp(-clip, clip)
+        grad_b = R.world_to_body_xy(self._target_grad, self._base_yaw())
         foot = actor_scan[:, self._footprint]
-        t = target.unsqueeze(-1)
         return {
-            "target_height": target.unsqueeze(-1),
-            "depth_error": (foot.mean(dim=-1) - target).unsqueeze(-1),
+            "target_level": level.unsqueeze(-1),
+            "grad_forward": grad_b[:, 0:1],
+            "grad_lateral": grad_b[:, 1:2],
+            "depth_error": (foot - t).mean(dim=-1, keepdim=True),
             "cut_progress": (foot <= t).float().mean(dim=-1, keepdim=True),
             # m3 of soil still above the target, and taken below it
             "above_volume": (foot - t).clamp_min(0.0).sum(dim=-1) * self._cell_area,
             "below_volume": (t - foot).clamp_min(0.0).sum(dim=-1) * self._cell_area,
         }
 
-    def _surface_z(
+    def _drum_spawn_ground(
         self,
         env_ids: torch.Tensor,
         spawn_xy: torch.Tensor,
         yaw: torch.Tensor,
         arm_angle: torch.Tensor,
-    ) -> torch.Tensor:
-        """World z of the soil surface where the front drum will come down.
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """(world xy, world z) of the soil surface where the front drum will
+        come down. The xy is the anchor the commanded plane is measured from.
 
         Sampled from the bed as it stood at the end of the previous episode,
         so a carried-over bed gets a target below what it has already lost
@@ -249,15 +288,15 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         """
         c = self.cfg
         reach = PIVOT_X + ARM_LEN * torch.cos(arm_angle)
-        q = torch.stack([
+        xy = torch.stack([
             spawn_xy[:, 0] + reach * torch.cos(yaw),
             spawn_xy[:, 1] + reach * torch.sin(yaw),
-        ], dim=-1).unsqueeze(1)
+        ], dim=-1)
         h = sample_height_grid(
-            self._bed_grid[env_ids], q, self.scene.env_origins[env_ids],
+            self._bed_grid[env_ids], xy.unsqueeze(1), self.scene.env_origins[env_ids],
             c.bed_grid_lower, c.voxel_size, c.bed_top,
         )[:, 0]
-        return self.scene.env_origins[env_ids, 2] + h
+        return xy, self.scene.env_origins[env_ids, 2] + h
 
     def _fill_observed(self) -> torch.Tensor:
         """Estimated load as a fraction of target_load_kg, (E, 2)."""
@@ -289,7 +328,9 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             "arm_torque": p["arm_torque"],
             "drum_torque": p["drum_torque"],
             "drum_fill": self._fill_observed(),
-            "target_height": cut["target_height"],
+            "target_level": cut["target_level"],
+            "grad_forward": cut["grad_forward"],
+            "grad_lateral": cut["grad_lateral"],
             "depth_error": cut["depth_error"],
             "cut_progress": cut["cut_progress"],
             "terrain_scan": degrade_scan(
@@ -332,13 +373,20 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         fill_delta = R.fill_delta_reward(self._fill_kg, self._fill_prev_kg)
         fill_frac = self._fill_kg / c.target_load_kg
         if c.fill_success_mode == "all":
-            self._success = R.drums_full(fill_frac, c.fill_success_fraction)
+            self._drum_full = R.drums_full(fill_frac, c.fill_success_fraction)
         elif c.fill_success_mode == "mean":
-            self._success = fill_frac.mean(dim=-1) >= c.fill_success_fraction
+            self._drum_full = fill_frac.mean(dim=-1) >= c.fill_success_fraction
         else:
-            self._success = R.front_drum_full(fill_frac, c.fill_success_fraction)
+            self._drum_full = R.front_drum_full(fill_frac, c.fill_success_fraction)
 
         above = cut["above_volume"]
+        # Shape achieved: the ground matches the commanded plane both ways.
+        # Gated on _cut_fresh so an episode whose target is already met does
+        # not end before the machine has taken a step.
+        residual = above + cut["below_volume"]
+        self._shape_done = (
+            residual <= c.shape_success_fraction * c.cut_volume_ref
+        ) & ~self._cut_fresh
         depth_delta = R.progress_delta(self._above_prev, above, self._cut_fresh)
 
         wheel_cmd_rad = self._forward_cmd / WHEEL_RADIUS
@@ -349,7 +397,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         reward = L.add_all({
             "fill": c.w_fill * fill_delta / load_ref,
             "depth": c.w_depth * depth_delta / c.cut_volume_ref,
-            "success": c.w_success * self._success.float(),
+            "success": c.w_success * self._shape_done.float(),
             "overcut": -c.w_overcut * cut["below_volume"] / c.cut_volume_ref,
             "spill": -c.w_spill * R.spill_penalty(fill_delta) / load_ref,
             "stall": -c.w_stall * R.stall_penalty(wheel_cmd_rad, p["base_lin_vel"][:, 0], WHEEL_RADIUS),
@@ -370,7 +418,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        return self._failed() | self._success, time_out
+        return self._failed() | self._shape_done | self._drum_full, time_out
 
     # ------------------------------------------------------------------
     # reset
@@ -379,6 +427,13 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
+        # Read before the flags are cleared below. The level above has to tell
+        # "the shape is cut" from "the drum is full, come back after a dump":
+        # they lead to different next commands.
+        exits = {
+            "Episode/shape_done": float(self._shape_done[env_ids].float().mean()),
+            "Episode/drum_full": float(self._drum_full[env_ids].float().mean()),
+        }
         super()._reset_idx(env_ids)
 
         n, dev, c = env_ids.numel(), self.device, self.cfg
@@ -417,14 +472,28 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
         lo, hi = c.cut_depth_range
         depth = lo + (hi - lo) * torch.rand(n, device=dev)
+        anchor_xy, surface = self._drum_spawn_ground(env_ids, spawn_xy, yaw, arm)
         floor = self.scene.env_origins[env_ids, 2] + BED_FLOOR_Z
-        self._target_z[env_ids] = (
-            self._surface_z(env_ids, spawn_xy, yaw, arm) - depth
-        ).clamp_min(floor)
+        self._target_xy[env_ids] = anchor_xy
+        self._target_z0[env_ids] = (surface - depth).clamp_min(floor)
+
+        # Gradient sampled in the BODY frame and rotated out, so "forward" is
+        # the direction the machine is actually pointing when it starts.
+        grad = torch.stack([
+            jitter(c.cut_gradient_max),
+            jitter(c.cut_gradient_max * c.cut_lateral_fraction),
+        ], dim=-1)
+        ramp = (torch.rand(n, device=dev) < c.cut_ramp_fraction).unsqueeze(-1)
+        self._target_grad[env_ids] = R.body_to_world_xy(
+            torch.where(ramp, grad, torch.zeros_like(grad)), yaw
+        )
+
         self._above_prev[env_ids] = 0.0
         self._cut_fresh[env_ids] = True
-        self._success[env_ids] = False
+        self._shape_done[env_ids] = False
+        self._drum_full[env_ids] = False
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
 
         self.extras["log"] = self._log.flush(env_ids)
+        self.extras["log"].update(exits)

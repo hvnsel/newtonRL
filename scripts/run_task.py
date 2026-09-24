@@ -199,10 +199,13 @@ def main(argv=None) -> int:
         from luna_hifi_tasks.excavator.mdp.observations import excavate_obs_spec, navigate_obs_spec
 
         sp = excavate_obs_spec() if is_dig else navigate_obs_spec()
-        sl = sp.slice_of("terrain_scan")
-        scan = obs["policy"][:, sl]
-        print(f"\n=== terrain scan ===\n  min {scan.min():.3f} max {scan.max():.3f} std {scan.std():.4f}")
-        _check(float(scan.std()) > 1e-4, "terrain scan varies across cells (sensor is seeing the ground)", failures)
+        names = ["terrain_scan"] if is_dig else ["far_scan", "near_scan"]
+        print("\n=== terrain scan ===")
+        for name in names:
+            scan = obs["policy"][:, sp.slice_of(name)]
+            print(f"  {name:<11} min {scan.min():.3f} max {scan.max():.3f} std {scan.std():.4f}")
+            _check(float(scan.std()) > 1e-4,
+                   f"{name} varies across cells (sensor is seeing the ground)", failures)
 
         if is_dig:
             print("\n=== dig: lower arms, spin drums, drive slowly ===")

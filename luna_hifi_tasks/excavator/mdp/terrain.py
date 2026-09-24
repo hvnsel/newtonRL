@@ -22,10 +22,14 @@ from .observations import (
     DIG_SCAN_CELL,
     DIG_SCAN_NX,
     DIG_SCAN_NY,
-    NAV_SCAN_CELL,
-    NAV_SCAN_FORWARD_BIAS,
-    NAV_SCAN_NX,
-    NAV_SCAN_NY,
+    NAV_FAR_BIAS,
+    NAV_FAR_CELL,
+    NAV_FAR_NX,
+    NAV_FAR_NY,
+    NAV_NEAR_BIAS,
+    NAV_NEAR_CELL,
+    NAV_NEAR_NX,
+    NAV_NEAR_NY,
 )
 from .sensors import soil_heightmap
 
@@ -54,8 +58,38 @@ def scan_pattern(
     return torch.stack([gx.reshape(-1), gy.reshape(-1)], dim=-1)
 
 
-def nav_scan_pattern(device="cpu") -> torch.Tensor:
-    return scan_pattern(NAV_SCAN_NX, NAV_SCAN_NY, NAV_SCAN_CELL, NAV_SCAN_FORWARD_BIAS, device)
+def nav_far_pattern(device="cpu") -> torch.Tensor:
+    return scan_pattern(NAV_FAR_NX, NAV_FAR_NY, NAV_FAR_CELL, NAV_FAR_BIAS, device)
+
+
+def nav_near_pattern(device="cpu") -> torch.Tensor:
+    return scan_pattern(NAV_NEAR_NX, NAV_NEAR_NY, NAV_NEAR_CELL, NAV_NEAR_BIAS, device)
+
+
+def degrade_scan(
+    scan: torch.Tensor,           # (E, N) heights
+    pattern: torch.Tensor,        # (N, 2) local offsets the scan was taken at
+    noise_std: float,
+    dropout: float,
+    range_ref: float,
+    invalid_value: float,
+) -> torch.Tensor:
+    """Model a depth sensor: noise and dropout that grow with range.
+
+    Stereo depth error goes as the square of distance, so a single figure for
+    the whole window is wrong at both ends. Both terms scale with 1 + r/
+    range_ref, which is linear rather than quadratic and errs toward the
+    optimistic. A dropped cell reads `invalid_value`, outside the clipped
+    range of any real height.
+    """
+    if noise_std <= 0.0 and dropout <= 0.0:
+        return scan
+    scale = 1.0 + torch.linalg.norm(pattern, dim=-1).unsqueeze(0) / range_ref
+    out = scan + torch.randn_like(scan) * (noise_std * scale)
+    if dropout > 0.0:
+        miss = torch.rand_like(scan) < (dropout * scale).clamp(0.0, 1.0)
+        out = torch.where(miss, torch.full_like(out, invalid_value), out)
+    return out
 
 
 def dig_scan_pattern(device="cpu") -> torch.Tensor:

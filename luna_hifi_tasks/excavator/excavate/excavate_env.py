@@ -19,19 +19,23 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from isaaclab_newton.assets import MPMObject
 
-from ..excavator import ARM_LEN, PIVOT_X, WHEEL_RADIUS
+from ..excavator import ARM_LEN, PIVOT_X, ROTOR_VANES, WHEEL_RADIUS
 from ..excavator_cfg import MAX_DRUM_SPEED
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rewards as R
 from ..mdp.sensors import drum_fill_mass, mpm_grid_particle_mass, mpm_particle_state, soil_heightmap
 from ..mdp.observations import DIG_SCAN_CELL
 from ..mdp.terrain import (
+    degrade_scan,
     dig_scan_pattern,
-    nav_scan_pattern,
+    nav_far_pattern,
+    nav_near_pattern,
     sample_height_grid,
     scan_from_heightfield,
 )
@@ -67,7 +71,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._success = torch.zeros(E, dtype=torch.bool, device=dev)
 
         self._dig_pattern = dig_scan_pattern(dev)
-        self._nav_pattern = nav_scan_pattern(dev)
+        # The critic's window matches navigate's, so one critic layout serves
+        # both tiers.
+        self._far_pattern = nav_far_pattern(dev)
+        self._near_pattern = nav_near_pattern(dev)
 
         # Scan cells over the drum, in the drum's frame. 4 x 8 of the 16 x 8
         # grid, 0.53 x 0.88 m, against a rotor that sweeps 0.37 x 0.95 m.
@@ -187,20 +194,22 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
     def _scans(self, bed: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """(actor scan at the front drum, critic scan around the chassis).
-        One rasterisation, sampled twice."""
+        One rasterisation, sampled three times."""
         c = self.cfg
         d = self.robot.data
         quat = d.root_quat_w.torch
-        dpos, _ = self._drum_poses()
-        front = dpos[:, 0]
-        actor = scan_from_heightfield(
-            bed, front, quat, self._dig_pattern, self.scene.env_origins,
-            c.bed_grid_lower, c.voxel_size, front[:, 2], clip=c.scan_clip,
-        )
         chassis = d.root_pos_w.torch
-        critic = scan_from_heightfield(
-            bed, chassis, quat, self._nav_pattern, self.scene.env_origins,
-            c.bed_grid_lower, c.voxel_size, chassis[:, 2], clip=c.scan_clip,
+        front = self._drum_poses()[0][:, 0]
+
+        def sample(origin, pattern):
+            return scan_from_heightfield(
+                bed, origin, quat, pattern, self.scene.env_origins,
+                c.bed_grid_lower, c.voxel_size, origin[:, 2], clip=c.scan_clip,
+            )
+
+        actor = sample(front, self._dig_pattern)
+        critic = torch.cat(
+            [sample(chassis, self._far_pattern), sample(chassis, self._near_pattern)], dim=-1
         )
         return actor, critic
 
@@ -262,6 +271,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     # ------------------------------------------------------------------
 
     def _get_observations(self) -> dict:
+        c = self.cfg
         p = self._proprio()
         pos, env = self._particles()
         actor_scan, critic_scan = self._scans(self._bed_heightmap(pos, env))
@@ -282,7 +292,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             "target_height": cut["target_height"],
             "depth_error": cut["depth_error"],
             "cut_progress": cut["cut_progress"],
-            "terrain_scan": actor_scan,
+            "terrain_scan": degrade_scan(
+                actor_scan, self._dig_pattern, c.scan_noise_std, c.scan_dropout,
+                c.scan_range_ref, c.scan_invalid,
+            ),
             "last_action": self._actions,
         })
 
@@ -376,7 +389,12 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         yaw = jitter(c.spawn_yaw_jitter)
         xy_off = torch.stack([jitter(c.spawn_x_jitter), jitter(c.spawn_y_jitter)], dim=-1)
         arm = c.arm_start_angle + jitter(c.arm_start_jitter)
-        spawn_xy = self._reset_robot(env_ids, yaw, arm, xy_off)
+        # Rotor phase over one pocket. Every env started at phase 0, which is
+        # a variable correlated across the whole batch now that the policy
+        # observes it.
+        pocket = 2.0 * math.pi / ROTOR_VANES
+        drum = torch.rand(n, device=dev) * pocket
+        spawn_xy = self._reset_robot(env_ids, yaw, arm, xy_off, drum)
 
         # Soil returns to its spawn cells every soil_reset_every episodes. In
         # between the env keeps the ground it has worked, which is the only

@@ -36,10 +36,13 @@ from ..excavator_cfg import (
     LUNAR_GRAVITY,
 )
 from ..mdp.observations import (
-    NAV_SCAN_CELL,
+    NAV_FAR_BIAS,
+    NAV_FAR_CELL,
+    NAV_FAR_SIZE,
+    NAV_NEAR_BIAS,
+    NAV_NEAR_CELL,
+    NAV_NEAR_SIZE,
     NAV_SCAN_CELLS,
-    NAV_SCAN_FORWARD_BIAS,
-    NAV_SCAN_SIZE,
     critic_state_spec,
     navigate_obs_spec,
 )
@@ -78,15 +81,31 @@ class NavigateSceneCfg(InteractiveSceneCfg):
 
     excavator: ArticulationCfg = EXCAVATOR_CFG
 
-    # 16 x 12 rays at 0.25 m, pushed 0.5 m ahead of the chassis, rotated by
-    # yaw only. NAV_SCAN_SIZE is (NX-1)*cell so the count is exactly 192 --
-    # GridPatternCfg puts a ray at both ends of each axis.
-    height_scanner = RayCasterCfg(
+    # Two windows, rotated by yaw only. The sizes are (NX-1)*cell because
+    # GridPatternCfg puts a ray at both ends of each axis, so NX*cell would
+    # give one extra row and column against the declared observation width.
+    #
+    # far: 16 x 8 at 0.45 m, 2.40 m forward. Reaches x = 5.775, four metres
+    # past the front of the machine.
+    far_scanner = RayCasterCfg(
         prim_path=CHASSIS_PRIM,
-        offset=RayCasterCfg.OffsetCfg(pos=(NAV_SCAN_FORWARD_BIAS, 0.0, SCANNER_HEIGHT)),
+        offset=RayCasterCfg.OffsetCfg(pos=(NAV_FAR_BIAS, 0.0, SCANNER_HEIGHT)),
         ray_alignment="yaw",
         pattern_cfg=patterns.GridPatternCfg(
-            resolution=NAV_SCAN_CELL, size=NAV_SCAN_SIZE, ordering="xy"
+            resolution=NAV_FAR_CELL, size=NAV_FAR_SIZE, ordering="xy"
+        ),
+        debug_vis=False,
+        mesh_prim_paths=["/World/ground"],
+        global_world_only=True,
+    )
+
+    # near: 12 x 8 at 0.20 m, 1.30 m forward. 1.40 m wide, the wheel track.
+    near_scanner = RayCasterCfg(
+        prim_path=CHASSIS_PRIM,
+        offset=RayCasterCfg.OffsetCfg(pos=(NAV_NEAR_BIAS, 0.0, SCANNER_HEIGHT)),
+        ray_alignment="yaw",
+        pattern_cfg=patterns.GridPatternCfg(
+            resolution=NAV_NEAR_CELL, size=NAV_NEAR_SIZE, ordering="xy"
         ),
         debug_vis=False,
         mesh_prim_paths=["/World/ground"],
@@ -116,8 +135,8 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
     # actions: [forward, yaw] in [-1, 1]. No arm or drum actuator is wired.
     action_space = 2
-    observation_space = NAV_OBS.dim      # 215
-    state_space = NAV_CRITIC.dim         # 199, critic only
+    observation_space = NAV_OBS.dim      # 247
+    state_space = NAV_CRITIC.dim         # 231, critic only
 
     # --- goals ---
     goal_dist_range = (2.0, 5.0)         # initial sampling band, metres
@@ -177,8 +196,14 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     arm_hold_angle = ARM_STOW_ANGLE
 
     # --- scan ---
+    # Actor only; the critic sees both windows clean. Noise and dropout grow
+    # with range, so the far window is degraded harder than the near one, and
+    # a dropped cell reads scan_invalid rather than a plausible height.
     scan_clip = 1.0
-    scan_noise_std = 0.0                 # actor only; critic sees the clean scan
+    scan_noise_std = 0.02                # m, at scan_range_ref
+    scan_dropout = 0.02                  # probability, at scan_range_ref
+    scan_range_ref = 4.0                 # m
+    scan_invalid = -2.0                  # outside +- scan_clip
 
     def __post_init__(self) -> None:
         cell = min(self.scene.terrain.terrain_generator.size)

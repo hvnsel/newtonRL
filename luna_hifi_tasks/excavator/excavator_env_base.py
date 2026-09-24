@@ -179,6 +179,7 @@ class ExcavatorEnvBase(DirectRLEnv):
         yaw: torch.Tensor,
         arm_angle: float | torch.Tensor,
         xy_offset: torch.Tensor | None = None,
+        drum_angle: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Put the machine at its env origin (+ `xy_offset`) facing `yaw`, arms
         at `arm_angle`, everything else at rest. Returns the world xy written.
@@ -209,6 +210,8 @@ class ExcavatorEnvBase(DirectRLEnv):
             jpos[:, self._arm_ids] = arm_angle.unsqueeze(-1)
         else:
             jpos[:, self._arm_ids] = arm_angle
+        if drum_angle is not None:
+            jpos[:, self._drum_ids] = drum_angle.unsqueeze(-1)
         self.robot.write_joint_state_to_sim(jpos, jvel, None, env_ids)
 
         self._forward_cmd[env_ids] = 0.0

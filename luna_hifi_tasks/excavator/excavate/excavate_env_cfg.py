@@ -362,7 +362,15 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     max_env_excursion = 6.0
 
     # --- scan ---
+    # Actor only; the critic sees the bed clean. Smaller figures than the
+    # navigator's because the window is 2 x 1 m at the drum rather than metres
+    # out, and scan_invalid sits outside +- scan_clip so a dropped cell cannot
+    # be read as a height.
     scan_clip = 1.0
+    scan_noise_std = 0.015               # m, at scan_range_ref
+    scan_dropout = 0.02                  # probability, at scan_range_ref
+    scan_range_ref = 1.0                 # m
+    scan_invalid = -2.0
 
     # Scales the wheel and drum inertia MPM sees; the lagged-feedback
     # stability knob. Lower it if the machine chatters on the bed.

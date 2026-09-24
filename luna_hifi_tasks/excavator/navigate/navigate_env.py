@@ -19,7 +19,7 @@ from ..excavator import WHEEL_RADIUS
 from ..excavator_cfg import MAX_WHEEL_SPEED
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rewards as R
-from ..mdp.terrain import scan_from_raycaster
+from ..mdp.terrain import degrade_scan, nav_far_pattern, nav_near_pattern, scan_from_raycaster
 from .navigate_env_cfg import NAV_CRITIC, NAV_OBS, SCANNER_HEIGHT, ExcavatorNavigateEnvCfg
 
 
@@ -50,6 +50,11 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         # observation layout identical to the MPM tier
         self._drum_fill = torch.zeros(E, 2, device=dev)
 
+        # Local offsets each scan was taken at, so degradation can scale with
+        # range instead of applying one figure across the whole window.
+        self._far_pattern = nav_far_pattern(dev)
+        self._near_pattern = nav_near_pattern(dev)
+
         self._log = R.TermLogger(
             ["progress", "bearing", "goal", "upright", "slip", "action_rate", "energy", "time", "fill_change"],
             E, dev,
@@ -61,7 +66,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
 
     def _setup_scene(self):
         super()._setup_scene()
-        self.scanner = self.scene["height_scanner"]
+        self.far_scanner = self.scene["far_scanner"]
+        self.near_scanner = self.scene["near_scanner"]
         self.terrain = self.scene.terrain
         # max_init_terrain_level puts envs on rows 0-2 of 6 and nothing else
         # moves them, so without this call the three hardest rows are built at
@@ -106,32 +112,40 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         dist = torch.linalg.norm(vec_b, dim=-1)
         return vec_b, dist, R.heading_error_sin_cos(self._goal_yaw, yaw)
 
-    def _terrain_scan(self) -> torch.Tensor:
-        d = self.scanner.data
-        return scan_from_raycaster(
-            d.pos_w.torch, d.ray_hits_w.torch, SCANNER_HEIGHT, clip=self.cfg.scan_clip
-        )
+    def _terrain_scan(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """(far, near), both chassis-relative heights in the yaw frame."""
+        out = []
+        for scanner in (self.far_scanner, self.near_scanner):
+            d = scanner.data
+            out.append(scan_from_raycaster(
+                d.pos_w.torch, d.ray_hits_w.torch, SCANNER_HEIGHT, clip=self.cfg.scan_clip
+            ))
+        return out[0], out[1]
 
     def _get_observations(self) -> dict:
         p = self._proprio()
+        c = self.cfg
         vec_b, dist, heading = self._goal_in_body()
-        scan = self._terrain_scan()
+        far, near = self._terrain_scan()
 
-        actor_scan = scan
-        if self.cfg.scan_noise_std > 0.0:
-            actor_scan = scan + torch.randn_like(scan) * self.cfg.scan_noise_std
+        def degrade(scan, pattern):
+            return degrade_scan(
+                scan, pattern, c.scan_noise_std, c.scan_dropout,
+                c.scan_range_ref, c.scan_invalid,
+            )
 
         policy = NAV_OBS.assemble({
             "base_lin_vel": p["base_lin_vel"],
             "base_ang_vel": p["base_ang_vel"],
             "projected_gravity": p["projected_gravity"],
-            "goal_vec_b": vec_b / self.cfg.goal_dist_max,
+            "goal_vec_b": vec_b / c.goal_dist_max,
             "goal_heading": heading,
             "wheel_vel": p["wheel_vel"],
             "arm_pos": p["arm_pos"],
             "drum_fill": self._drum_fill,
             "last_action": self._actions,
-            "terrain_scan": actor_scan,
+            "far_scan": degrade(far, self._far_pattern),
+            "near_scan": degrade(near, self._near_pattern),
         })
 
         wheel_vel = self.robot.data.joint_vel.torch
@@ -141,7 +155,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             R.wheel_slip(wheel_vel[:, self._right_ids], v_fwd, WHEEL_RADIUS),
         ], dim=-1)
         critic = NAV_CRITIC.assemble({
-            "terrain_scan_true": scan,
+            "terrain_scan_true": torch.cat([far, near], dim=-1),
             "drum_fill_mass": self._drum_fill,
             "base_lin_vel_w": self.robot.data.root_lin_vel_w.torch,
             "slip": slip,

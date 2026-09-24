@@ -23,12 +23,31 @@ import torch
 # imported by the terrain sensor so the two can never disagree.
 # ---------------------------------------------------------------------------
 
-# Navigation: far enough ahead to stop and turn, coarse enough that every cell
-# is a feature the machine can actually act on.
-NAV_SCAN_NX, NAV_SCAN_NY = 16, 12
-NAV_SCAN_CELL = 0.25
-NAV_SCAN_FORWARD_BIAS = 0.5     # metres the window is pushed ahead of the chassis
-NAV_SCAN_CELLS = NAV_SCAN_NX * NAV_SCAN_NY
+# Navigation, two windows.
+#
+# Stereo range error grows as the square of distance, so far data is coarse
+# whether or not the model says so; real rovers carry body-mounted hazcams for
+# the near field and a mast camera for the far one. These two mirror that.
+#
+# The far window is sized from stopping distance. With the arms stowed the
+# front of the machine reaches x = 1.78 m, it halts in 1.10 m from 1.5 m/s,
+# and a 16 x 8 grid at 0.45 m pushed 2.40 m forward ends at x = 5.775 -- four
+# metres of ground ahead of the machine, 2.7 s at full speed.
+NAV_FAR_NX, NAV_FAR_NY = 16, 8
+NAV_FAR_CELL = 0.45
+NAV_FAR_BIAS = 2.40
+NAV_FAR_CELLS = NAV_FAR_NX * NAV_FAR_NY
+
+# The near window is sized from the wheels. 12 x 8 at 0.20 m is 1.40 m wide
+# against a machine 1.35 m over the tyres, so one cell is one wheel width and
+# every cell is ground a wheel might land on.
+NAV_NEAR_NX, NAV_NEAR_NY = 12, 8
+NAV_NEAR_CELL = 0.20
+NAV_NEAR_BIAS = 1.30
+NAV_NEAR_CELLS = NAV_NEAR_NX * NAV_NEAR_NY
+
+# Total navigation scan width, which is also what the critic gets clean.
+NAV_SCAN_CELLS = NAV_FAR_CELLS + NAV_NEAR_CELLS
 
 # Excavation: the cutting face, at the FRONT drum. With symmetric arm control
 # the policy cannot act differently on the two ends, and driving forward the
@@ -42,7 +61,8 @@ DIG_SCAN_CELLS = DIG_SCAN_NX * DIG_SCAN_NY
 # arange(-size/2, size/2 + eps, res) yields size/res + 1 points. For exactly
 # NX x NY rays the pattern size must be (NX-1)*cell, not NX*cell, which would
 # give 17 x 13 = 221 rays against a 192-wide term.
-NAV_SCAN_SIZE = ((NAV_SCAN_NX - 1) * NAV_SCAN_CELL, (NAV_SCAN_NY - 1) * NAV_SCAN_CELL)
+NAV_FAR_SIZE = ((NAV_FAR_NX - 1) * NAV_FAR_CELL, (NAV_FAR_NY - 1) * NAV_FAR_CELL)
+NAV_NEAR_SIZE = ((NAV_NEAR_NX - 1) * NAV_NEAR_CELL, (NAV_NEAR_NY - 1) * NAV_NEAR_CELL)
 DIG_SCAN_SIZE = ((DIG_SCAN_NX - 1) * DIG_SCAN_CELL, (DIG_SCAN_NY - 1) * DIG_SCAN_CELL)
 
 
@@ -157,7 +177,8 @@ class ObsSpec:
 
 
 def navigate_obs_spec(
-    terrain_cells: int = NAV_SCAN_CELLS,
+    far_cells: int = NAV_FAR_CELLS,
+    near_cells: int = NAV_NEAR_CELLS,
     num_arms: int = 2,
     num_wheels: int = 4,
 ) -> ObsSpec:
@@ -169,11 +190,15 @@ def navigate_obs_spec(
     can never anticipate a pit. A blind navigator is not a simpler version of
     this skill, it is a different and worse one.
 
-    Window is 4.0 x 3.0 m at 0.25 m, chassis-centred and slightly forward-
-    biased. That is sized from stopping distance: ~1.1 m to halt from 1.5 m/s,
-    on a machine that is itself 3.4 m long. Cell size is set by the features
-    that matter -- a 1.0 m drum cuts a 1.0 m swath, so sub-0.25 m detail is
-    below what the machine can act on.
+    Two windows, because routing and foot placement want different things:
+    far_scan reaches 4.0 m past the front of the machine for choosing a line,
+    near_scan resolves one wheel width for choosing where to put a wheel.
+
+    A cell the sensor did not measure reads scan_invalid, which sits outside
+    the clipped range of a real height and so needs no separate mask. A
+    raycast never misses; a stereo pair in a lunar shadow returns nothing, and
+    a policy handed a map that is always right learns to trust ground it
+    cannot see.
     """
     terms = [
         ObsTerm("base_lin_vel", 3, "body frame"),
@@ -185,7 +210,8 @@ def navigate_obs_spec(
         ObsTerm("arm_pos", num_arms, "held stowed here, but it moves the CG"),
         ObsTerm("drum_fill", num_arms, "0 on the rigid tier; keeps the layout"),
         ObsTerm("last_action", 2, "[forward, yaw]"),
-        ObsTerm("terrain_scan", terrain_cells, "2-D, chassis-relative heights"),
+        ObsTerm("far_scan", far_cells, "16x8 at 0.45 m, chassis-relative heights"),
+        ObsTerm("near_scan", near_cells, "12x8 at 0.20 m, one cell per wheel width"),
     ]
     return ObsSpec(terms)
 

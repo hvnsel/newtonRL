@@ -137,16 +137,26 @@ def main(argv=None) -> int:
         from isaaclab_visualizers.newton import NewtonGLVisualizerCfg
 
         show_particles = "Excavate" in args.task
+        if show_particles:
+            # Frame where the work happens. The machine starts at the origin
+            # and the bed sits metres ahead of it, so a camera aimed at the
+            # origin puts the soil at the edge of the view or out of it.
+            bed_cx = 0.5 * (env_cfg.bed_x[0] + env_cfg.bed_x[1])
+            lookat = (0.5 * bed_cx, 0.0, 0.3)
+            eye = (lookat[0] + 4.0, 4.0, 2.5)
+        else:
+            lookat, eye = (0.0, 0.0, 0.5), (7.0, 7.0, 4.5)
         env_cfg.sim.visualizer_cfgs = [
             NewtonGLVisualizerCfg(
                 show_particles=show_particles,
                 particle_color=(0.62, 0.55, 0.45) if show_particles else None,
-                eye=(7.0, 7.0, 4.5),
-                lookat=(0.0, 0.0, 0.5),
+                eye=eye,
+                lookat=lookat,
             )
         ]
         print("[smoke] watch mode: Newton GL window, "
-              f"{env_cfg.scene.num_envs} env, particles={show_particles}")
+              f"{env_cfg.scene.num_envs} env, particles={show_particles}, "
+              f"eye {eye} -> {lookat}")
 
     args.device = env_cfg.sim.device
     env_cfg.validate()

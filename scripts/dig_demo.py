@@ -41,11 +41,17 @@ from luna_hifi_tasks.excavator.excavator import (
     DIG_DRUM_SIGN,
     CHASSIS_Z,
     MAST_TOP_Z,
+    PIVOT_X,
     ROTOR_TIP_R,
     SHROUD_OUT_R,
     VANE_TIP_GAP,
+    WHEEL_RADIUS,
 )
-from luna_hifi_tasks.excavator.excavator_cfg import MAX_DRUM_SPEED, SPIN_LIMIT
+from luna_hifi_tasks.excavator.excavator_cfg import (
+    MAX_DRUM_SPEED,
+    MAX_WHEEL_SPEED,
+    SPIN_LIMIT,
+)
 
 CHANNEL_OPENING = VANE_TIP_GAP
 from luna_hifi_tasks.excavator.excavate.excavate_env_cfg import BORE_HALF_LEN
@@ -89,7 +95,11 @@ def _parse(argv):
     p.add_argument("--drum", type=float, default=0.4 * DIG_DRUM_SIGN,
                    help="drum command once spinning; |cmd| > ~0.5 flings rather than scoops. "
                         f"The loading sign for this lip is {DIG_DRUM_SIGN:+.0f}")
-    p.add_argument("--drive", type=float, default=0.25, help="forward command once crawling")
+    # 0.05 is 0.075 m/s, which takes 12 s to cross a 0.9 m bed. The old 0.25
+    # was 0.375 m/s: the machine left the soil 1.4 s into the drive phase and
+    # everything after that was a drum turning in the hole it had just made.
+    p.add_argument("--drive", type=float, default=0.05,
+                   help="forward command once crawling; 1.0 is 1.5 m/s")
 
     # Explicit flags rather than Hydra overrides: `env.soil_cohesion=1500` sets
     # the cfg field, but the MPM material was built from it in __post_init__,
@@ -275,6 +285,21 @@ def main(argv=None) -> int:
         print(f"  shroud inlet held at minus the arm angle, so it stays "
               f"pointed at the ground")
         print(f"  machine stands {'ON the bed' if u.cfg.spawn_on_bed else 'beside the pile'}")
+        # Where the drum actually is against where the soil actually is. A bed
+        # the machine is already past, or crosses in a second, reads exactly
+        # like a drum that will not hold a load.
+        drum_x = PIVOT_X + ARM_LEN * math.cos(angle)
+        lead = drum_x + SHROUD_OUT_R
+        ahead = u.cfg.bed_x[1] - lead
+        speed = args.drive * MAX_WHEEL_SPEED * WHEEL_RADIUS
+        print(f"  bed spans x {u.cfg.bed_x[0]:.2f} .. {u.cfg.bed_x[1]:.2f} m; at the dig "
+              f"angle the drum axis is at {drum_x:.2f}, leading edge {lead:.2f}")
+        if ahead <= 0.0:
+            print(f"  !! the drum is already {-ahead:.2f} m PAST the far edge. Move bed_x "
+                  f"forward or it cannot pick anything up")
+        else:
+            print(f"  {ahead:.2f} m of bed ahead of it; crawling {speed:.3f} m/s "
+                  f"clears it in {ahead / max(speed, 1e-6):.1f} s")
         # Off the material the solver was handed, not off the cfg fields.
         mat = u.cfg.scene.soil.spawn.material
         print(f"  soil: density {mat.density:.0f} kg/m3, friction {mat.friction:.2f}, "

@@ -518,10 +518,15 @@ class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
     deep bed's. dig_demo.py solves for it from a cut depth.
     """
 
-    # Depth is what matters: at 0.10 m only 0.04 m of the drum bore sits inside
-    # the soil column; at 0.16 m it is 0.09 m. The footprint shrinks to keep
-    # the particle count flat.
-    bed_x: tuple[float, float] = (1.1, 2.0)
+    # Depth is what matters: at 0.10 m only 0.04 m of the rotor sits inside the
+    # soil column; at 0.16 m it is 0.09 m.
+    #
+    # The near edge is set from where the drum actually is. At the dig angle
+    # the drum axis sits at PIVOT_X + ARM_LEN*cos(arm) = 1.65 m and its leading
+    # edge at 1.86, so a bed starting at 1.1 puts the machine most of the way
+    # across it before it has begun. Starting at 1.80 means the drum enters at
+    # the near edge and has the whole bed ahead of it.
+    bed_x: tuple[float, float] = (1.80, 2.70)
     bed_y: tuple[float, float] = (-0.55, 0.55)
     bed_depth: float = 0.16
     spawn_on_bed: bool = False
@@ -550,9 +555,9 @@ class ExcavatorExcavateMicroEnvCfg(ExcavatorExcavateSmallEnvCfg):
 
     voxel_size: float = 0.03
 
-    # A strip worth cutting. The contact buffers, not the particle count, are
-    # what overruns first.
-    bed_x: tuple[float, float] = (1.05, 1.95)
+    # A strip worth cutting, starting where the drum's leading edge reaches at
+    # the dig angle so the machine has the whole metre ahead of it.
+    bed_x: tuple[float, float] = (1.80, 2.80)
     bed_y: tuple[float, float] = (-0.50, 0.50)
     bed_depth: float = 0.21
     spawn_on_bed: bool = False

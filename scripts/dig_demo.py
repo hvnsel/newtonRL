@@ -68,6 +68,9 @@ def _parse(argv):
     p.add_argument("--t_lower", type=float, default=1.5, help="start lowering the boom")
     p.add_argument("--t_spin", type=float, default=5.0, help="start the drums")
     p.add_argument("--t_drive", type=float, default=7.0, help="start crawling forward")
+    p.add_argument("--t_dump", type=float, default=None,
+                   help="turn the inlet up and reverse the rotor at this time; "
+                        "off by default. Fill should FALL after it")
 
     # Depth of the SHELL below the soil surface, in metres, not a boom command:
     # the command reaching a given depth depends on the bed depth and on
@@ -268,7 +271,9 @@ def main(argv=None) -> int:
         print(f"\n=== bed ===\n  {u.cfg.bed_particles_per_env} particles/env, "
               f"grid {u.cfg.bed_grid_nx} x {u.cfg.bed_grid_ny}, "
               f"surface at z = {u.cfg.bed_top:.3f} m")
-        print(f"  drum capacity {u.cfg.drum_capacity_kg:.1f} kg each")
+        print(f"  rotor sweeps {u.cfg.drum_capacity_kg:.1f} kg each")
+        print(f"  shroud inlet held at minus the arm angle, so it stays "
+              f"pointed at the ground")
         print(f"  machine stands {'ON the bed' if u.cfg.spawn_on_bed else 'beside the pile'}")
         # Off the material the solver was handed, not off the cfg fields.
         mat = u.cfg.scene.soil.spawn.material
@@ -294,6 +299,7 @@ def main(argv=None) -> int:
                   "Expect fill to fall, not rise.")
 
         boom, angle = boom_command_for_cut(u.cfg, args.cut)
+        lo_arm, hi_arm = u.cfg.arm_range
         if args.boom is not None:
             boom = args.boom
             print(f"  boom command {boom:+.3f} (given directly, --cut ignored)\n")
@@ -311,7 +317,8 @@ def main(argv=None) -> int:
             print()
 
         obs, _ = env.reset()
-        action = torch.zeros(u.num_envs, 4, device=u.device)
+        action = torch.zeros(u.num_envs, u.cfg.action_space, device=u.device)
+        slo, shi = u.cfg.shroud_range
         # Throughput, because every training estimate for this task is
         # (env-steps needed) / (env-steps per second) and the second term is
         # the one nobody has. Wall clock over the whole run, so it includes
@@ -329,18 +336,29 @@ def main(argv=None) -> int:
             spin = _ramp(t, args.t_spin, 1.0)
             drive = _ramp(t, args.t_drive, 1.5)
 
-            now = ("settle" if t < args.t_lower else
+            dumping = args.t_dump is not None and t >= args.t_dump
+            now = ("dump" if dumping else
+                   "settle" if t < args.t_lower else
                    "lower" if t < args.t_spin else
                    "spin" if t < args.t_drive else "drive")
             if now != phase:
                 phase = now
                 print(f"[{t:5.1f}s] phase: {phase}")
 
-            action[:, 0] = args.drive * drive
+            action[:, 0] = 0.0 if dumping else args.drive * drive
             action[:, 1] = 0.0
             # Boom starts at the cfg's stow angle and ramps to the dig command.
-            action[:, 2] = -1.0 + (boom + 1.0) * lower
-            action[:, 3] = args.drum * spin
+            # Dumping lifts it clear of the bed first.
+            action[:, 2] = -1.0 if dumping else -1.0 + (boom + 1.0) * lower
+            # Reversing the rotor runs the vanes backwards, which should empty
+            # the pockets rather than fill them.
+            action[:, 3] = -args.drum if dumping else args.drum * spin
+            # The shroud carries the inlet. Holding it at MINUS the arm angle
+            # keeps the inlet pointing at the ground while the boom pitches; to
+            # dump, turn it up and let the pockets fall open.
+            arm_now = lo_arm + 0.5 * (float(action[0, 2]) + 1.0) * (hi_arm - lo_arm)
+            want = shi if dumping else -arm_now
+            action[:, 4] = max(-1.0, min(1.0, want / max(shi, 1e-6)))
 
             obs, rew, term, trunc, _ = env.step(action)
             peak = torch.maximum(peak, u._fill_kg)

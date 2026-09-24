@@ -193,10 +193,17 @@ def main(argv=None) -> int:
 
         if is_dig:
             print("\n=== dig: lower arms, spin drums, drive slowly ===")
-            dig = torch.zeros(u.num_envs, 4, device=u.device)
-            dig[:, 0] = 0.3      # forward
-            dig[:, 2] = 0.9      # boom well down
-            dig[:, 3] = 1.0      # drums at full dig speed
+            from luna_hifi_tasks.excavator.excavator import DIG_DRUM_SIGN
+
+            dig = torch.zeros(u.num_envs, u.cfg.action_space, device=u.device)
+            lo, hi = u.cfg.arm_range
+            slo, shi = u.cfg.shroud_range
+            dig[:, 0] = 0.3                     # forward
+            dig[:, 2] = 0.9                     # boom well down
+            dig[:, 3] = DIG_DRUM_SIGN           # rotors at the loading sign
+            # Inlet held at minus the arm angle, so it points at the ground.
+            arm = lo + 0.5 * (0.9 + 1.0) * (hi - lo)
+            dig[:, 4] = max(-1.0, min(1.0, -arm / max(shi, 1e-6)))
             fill0 = u._fill_kg.clone()
             for i in range(args.steps):
                 obs, *_ = env.step(dig)

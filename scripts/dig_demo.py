@@ -285,21 +285,6 @@ def main(argv=None) -> int:
         print(f"  shroud inlet held at minus the arm angle, so it stays "
               f"pointed at the ground")
         print(f"  machine stands {'ON the bed' if u.cfg.spawn_on_bed else 'beside the pile'}")
-        # Where the drum actually is against where the soil actually is. A bed
-        # the machine is already past, or crosses in a second, reads exactly
-        # like a drum that will not hold a load.
-        drum_x = PIVOT_X + ARM_LEN * math.cos(angle)
-        lead = drum_x + SHROUD_OUT_R
-        ahead = u.cfg.bed_x[1] - lead
-        speed = args.drive * MAX_WHEEL_SPEED * WHEEL_RADIUS
-        print(f"  bed spans x {u.cfg.bed_x[0]:.2f} .. {u.cfg.bed_x[1]:.2f} m; at the dig "
-              f"angle the drum axis is at {drum_x:.2f}, leading edge {lead:.2f}")
-        if ahead <= 0.0:
-            print(f"  !! the drum is already {-ahead:.2f} m PAST the far edge. Move bed_x "
-                  f"forward or it cannot pick anything up")
-        else:
-            print(f"  {ahead:.2f} m of bed ahead of it; crawling {speed:.3f} m/s "
-                  f"clears it in {ahead / max(speed, 1e-6):.1f} s")
         # Off the material the solver was handed, not off the cfg fields.
         mat = u.cfg.scene.soil.spawn.material
         print(f"  soil: density {mat.density:.0f} kg/m3, friction {mat.friction:.2f}, "
@@ -325,6 +310,24 @@ def main(argv=None) -> int:
 
         boom, angle = boom_command_for_cut(u.cfg, args.cut)
         lo_arm, hi_arm = u.cfg.arm_range
+
+        # Where the drum actually is against where the soil actually is. A bed
+        # the machine is already past, or crosses in a second, reads exactly
+        # like a drum that will not hold a load. Needs `angle`, so it lives
+        # here rather than up with the rest of the bed report.
+        drum_x = PIVOT_X + ARM_LEN * math.cos(angle)
+        lead = drum_x + SHROUD_OUT_R
+        ahead = u.cfg.bed_x[1] - lead
+        speed = args.drive * MAX_WHEEL_SPEED * WHEEL_RADIUS
+        print(f"\n=== drum against the bed ===")
+        print(f"  bed spans x {u.cfg.bed_x[0]:.2f} .. {u.cfg.bed_x[1]:.2f} m; at the dig "
+              f"angle the drum axis is at {drum_x:.2f}, leading edge {lead:.2f}")
+        if ahead <= 0.0:
+            print(f"  !! the drum is already {-ahead:.2f} m PAST the far edge. Move bed_x "
+                  f"forward or it cannot pick anything up")
+        else:
+            print(f"  {ahead:.2f} m of bed ahead of it; crawling {speed:.3f} m/s "
+                  f"clears it in {ahead / max(speed, 1e-6):.1f} s")
         if args.boom is not None:
             boom = args.boom
             print(f"  boom command {boom:+.3f} (given directly, --cut ignored)\n")

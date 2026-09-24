@@ -5,7 +5,10 @@ Two files, and which one you touch decides whether you have to rebuild the USD.
 | | |
 |---|---|
 | **`luna_hifi_tasks/excavator/excavator.py`** | the machine itself. **Changing anything here means re-running the converter** before the change reaches a run. |
-| **`luna_hifi_tasks/excavator/excavate/excavate_env_cfg.py`** | the scene: soil, bed, solver. Takes effect on the next run. |
+| **`luna_hifi_tasks/excavator/excavate/excavate_env_cfg.py`** | the scene: soil, bed, solver, rewards. Takes effect on the next run. |
+| **`.../navigate/navigate_env_cfg.py`** | the rigid tier: terrain, goals, curriculum, scans. |
+| **`.../*/agents/rsl_rl_ppo_cfg.py`** | the learner: rollout length, discount, network. |
+| **`luna_hifi_tasks/excavator/mdp/observations.py`** | every observation width, and the scan geometry both tiers share. **Changing a term invalidates every checkpoint** -- the spec hashes for that reason. |
 
 `scripts/dig_demo.py` exposes the most-swept scene knobs as flags so you do not
 have to edit anything to try a value.
@@ -50,6 +53,66 @@ crawl takes to clear it.
 Crawl speed is `--drive` x `MAX_WHEEL_SPEED` x `WHEEL_RADIUS`, so `--drive 0.05`
 is 0.075 m/s and crosses a 0.9 m bed in twelve seconds. Anything above about
 0.1 leaves the soil before the drum has filled.
+
+In training the bed is *not* restored every episode. `soil_reset_every` (8)
+episodes pass before an env's particles go back to their spawn cells, so what
+the machine digs in between is ground it has already worked -- the MPM grid is
+one spawner shared by every env, so that is the only thing making one env's bed
+differ from another's. Set it to 1 for a repeatable run. The Small and Micro
+beds already do, because a scripted demo needs the same pile each time.
+
+---
+
+## Training
+
+| what | where | now | note |
+|---|---|---|---|
+| control rate | `decimation` | `4` dig, `8` nav | both 25 Hz; sim stays 100/200 Hz |
+| episode | `episode_length_s` | `20.0` | 500 steps |
+| discount | `gamma` | `0.997` dig, `0.995` nav | horizon 333 / 200 steps |
+| rollout | `num_steps_per_env` | `256` dig, `64` nav | 4096 / 65536 samples per update |
+| envs | `scene.num_envs` | `16` dig, `1024` nav | dig is capped at `max_num_envs` 32 by the grid capacities |
+
+`gamma` and `decimation` are bound together. The effective horizon is
+`1/(1-gamma)` steps, which has to reach across the task: a cut takes 10-20 s,
+which is 250-500 steps at 25 Hz. At 50 Hz and `gamma` 0.99 the horizon was 100
+steps, 2 s, and the end of a cut was outside what the value function could see.
+Change one and recompute the other.
+
+### Reward weights
+
+All on `excavate_env_cfg.py` / `navigate_env_cfg.py` as `w_<term>`. Do not read
+them on their own -- what the policy optimises is the sum over an episode:
+
+```
+isaaclab -p scripts/reward_audit.py --task Luna-Excavator-Excavate --episodes 40
+```
+
+That prints every term's episode total under a do-nothing policy and under a
+random walk. If doing nothing scores higher, the reward is broken whatever the
+weights look like.
+
+| what | where | now | note |
+|---|---|---|---|
+| what a full drum is | `target_load_kg` | `40` | normalises fill everywhere. NOT the swept volume, which an open-rimmed pocket never fills |
+| a nominal cut | `cut_volume_ref` | derived | footprint area x mean `cut_depth_range`; `w_depth` is points per cut |
+| commanded depth | `cut_depth_range` | `(0.04, 0.12)` | sampled per episode below the local surface |
+| success threshold | `fill_success_fraction` | `0.6` | of `target_load_kg`, front drum only. Ends the episode |
+
+### Sensing
+
+| what | where | now | note |
+|---|---|---|---|
+| far scan | `NAV_FAR_*` | 16x8 @ 0.45, bias 2.40 | 4.0 m past the front of the machine |
+| near scan | `NAV_NEAR_*` | 12x8 @ 0.20, bias 1.30 | 1.40 m wide, the wheel track |
+| dig scan | `DIG_SCAN_*` | 16x8 @ 0.125 | drum-centred |
+| sensor noise | `scan_noise_std`, `scan_dropout` | `0.02` / `0.02` nav | both scale with range; a dropped cell reads `scan_invalid` |
+| load sensor | `fill_sensor_*` | tau 0.3 s, 5% | the actor's `drum_fill`; the critic keeps the exact figure |
+
+The far window is sized from stopping distance. With the arms stowed the front
+of the machine reaches x = 1.78 m and it halts in 1.10 m from 1.5 m/s, so the
+window has to end well past 2.9 m. Shorten the bias or the cell and check that
+number again.
 
 ## The rotor
 

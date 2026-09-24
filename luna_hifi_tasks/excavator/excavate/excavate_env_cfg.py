@@ -169,8 +169,10 @@ class ExcavateSceneCfg(InteractiveSceneCfg):
 
 @configclass
 class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
-    decimation = 2                      # 100 Hz sim, 50 Hz policy -- the validated MPM rate
-    episode_length_s = 12.0
+    # 100 Hz sim, 25 Hz policy, 500 steps per episode. A loaded cut runs
+    # 10-20 s, and gamma in agents/rsl_rl_ppo_cfg.py is set against that.
+    decimation = 4
+    episode_length_s = 20.0
 
     sim: SimulationCfg = SimulationCfg(
         dt=1.0 / 100.0,

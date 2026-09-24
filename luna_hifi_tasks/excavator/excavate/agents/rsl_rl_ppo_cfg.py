@@ -1,8 +1,13 @@
 # agents/rsl_rl_ppo_cfg.py
 #
-# Same shape as the navigate runner. Longer rollouts per update because MPM
-# steps are expensive and few envs run at once, so each iteration should
-# extract as much as it can from the samples it has.
+# Same shape as the navigate runner, with a longer rollout. The MPM tier is
+# capped at 32 envs by the sparse-grid capacities, so batch size has to come
+# from rollout length: 16 envs x 256 steps is 4096 samples per update and
+# 1024 per minibatch.
+#
+# gamma 0.997 is an effective horizon of 333 steps, 13 s at 25 Hz, against a
+# 500-step episode. At 0.99 it was 100 steps and the end of a cut was outside
+# what the value function could see.
 
 from isaaclab.utils.configclass import configclass
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
@@ -10,7 +15,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class ExcavatorExcavatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 48
+    num_steps_per_env = 256
     max_iterations = 3000
     save_interval = 100
     experiment_name = "excavator_excavate"
@@ -19,7 +24,7 @@ class ExcavatorExcavatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     clip_actions = 1.0
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.8,
+        init_noise_std=0.5,
         actor_hidden_dims=[256, 128, 64],
         critic_hidden_dims=[256, 128, 64],
         activation="elu",
@@ -35,7 +40,7 @@ class ExcavatorExcavatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         num_mini_batches=4,
         learning_rate=3.0e-4,
         schedule="adaptive",
-        gamma=0.99,
+        gamma=0.997,
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,

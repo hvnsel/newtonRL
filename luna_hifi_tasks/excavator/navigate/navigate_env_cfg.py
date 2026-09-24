@@ -96,9 +96,8 @@ class NavigateSceneCfg(InteractiveSceneCfg):
 
 @configclass
 class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
-    # 200 Hz physics, policy at 50 Hz. Twice the tricycle's rate: heavier
-    # machine, grousered cylinders on a triangle mesh.
-    decimation = 4
+    # 200 Hz physics, policy at 25 Hz, 500 steps per episode.
+    decimation = 8
     episode_length_s = 20.0
 
     sim: SimulationCfg = SimulationCfg(

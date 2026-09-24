@@ -294,9 +294,22 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     state_space = DIG_CRITIC.dim         # 199
 
     # --- start state ---
+    # Jitter is set from what navigate is allowed to hand over: it declares
+    # success at goal_dist_tol 0.5 m in any direction and goal_heading_tol_rad
+    # 0.35, so a skill trained inside those numbers meets poses it has never
+    # seen, laterally in particular.
     arm_start_angle = -0.20              # drums ~0.44 m up, clear of the bed
-    spawn_yaw_jitter = 0.15              # rad
-    spawn_x_jitter = 0.30                # m
+    arm_start_jitter = 0.10              # rad
+    spawn_yaw_jitter = 0.40              # rad
+    spawn_x_jitter = 0.55                # m
+    spawn_y_jitter = 0.55                # m
+
+    # Episodes an env keeps its bed before every particle goes back to its
+    # spawn cell. The MPM grid is one spawner shared by all envs, so a bed
+    # cannot be made to differ at spawn time; letting it carry over is what
+    # makes one env's ground differ from another's, and it is the ground the
+    # machine will actually meet -- terrain it has already worked.
+    soil_reset_every: int = 8
 
     # --- actions ---
     action_smoothing = 0.3
@@ -589,6 +602,15 @@ class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
     # Cohesive enough that a cut clod survives the trip into the bore. 0
     # sprays; ~800 holds together; too much and the drum cannot cut in.
     soil_cohesion: float = 800.0
+
+    # This bed is a 1.1 m wide strip and the machine is run against it by a
+    # scripted demo. The training jitter would put the drum beside the pile,
+    # and a carried-over bed would leave the demo nothing to cut.
+    spawn_x_jitter: float = 0.15
+    spawn_y_jitter: float = 0.0
+    spawn_yaw_jitter: float = 0.05
+    arm_start_jitter: float = 0.0
+    soil_reset_every: int = 1
 
     max_num_envs = 1
     episode_length_s = 30.0

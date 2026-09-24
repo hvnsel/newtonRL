@@ -23,13 +23,18 @@ import torch
 
 from isaaclab_newton.assets import MPMObject
 
-from ..excavator import WHEEL_RADIUS
+from ..excavator import ARM_LEN, PIVOT_X, WHEEL_RADIUS
 from ..excavator_cfg import MAX_DRUM_SPEED
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rewards as R
 from ..mdp.sensors import drum_fill_mass, mpm_grid_particle_mass, mpm_particle_state, soil_heightmap
 from ..mdp.observations import DIG_SCAN_CELL
-from ..mdp.terrain import dig_scan_pattern, nav_scan_pattern, scan_from_heightfield
+from ..mdp.terrain import (
+    dig_scan_pattern,
+    nav_scan_pattern,
+    sample_height_grid,
+    scan_from_heightfield,
+)
 from .excavate_env_cfg import (
     BED_FLOOR_Z,
     BORE_HALF_LEN,
@@ -74,6 +79,14 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
         # Commanded ground height for this episode, world frame.
         self._target_z = torch.zeros(E, device=dev)
+        # Last step's bed, so a reset can sample the surface the drum will
+        # actually meet rather than assuming the bed is still undisturbed.
+        self._bed_grid = torch.full(
+            (E, cfg.bed_grid_ny, cfg.bed_grid_nx), cfg.bed_top, device=dev
+        )
+        # Episodes since this env's soil was last returned to its spawn cells,
+        # staggered so the envs do not all refresh on the same episode.
+        self._soil_age = torch.randint(0, max(cfg.soil_reset_every, 1), (E,), device=dev)
         # Soil still above target last step, and a mask for an episode's first
         # step, where there is no previous value to difference against.
         self._above_prev = torch.zeros(E, device=dev)
@@ -212,6 +225,31 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             "below_volume": (t - foot).clamp_min(0.0).sum(dim=-1) * self._cell_area,
         }
 
+    def _surface_z(
+        self,
+        env_ids: torch.Tensor,
+        spawn_xy: torch.Tensor,
+        yaw: torch.Tensor,
+        arm_angle: torch.Tensor,
+    ) -> torch.Tensor:
+        """World z of the soil surface where the front drum will come down.
+
+        Sampled from the bed as it stood at the end of the previous episode,
+        so a carried-over bed gets a target below what it has already lost
+        rather than one it has met before the machine moves.
+        """
+        c = self.cfg
+        reach = PIVOT_X + ARM_LEN * torch.cos(arm_angle)
+        q = torch.stack([
+            spawn_xy[:, 0] + reach * torch.cos(yaw),
+            spawn_xy[:, 1] + reach * torch.sin(yaw),
+        ], dim=-1).unsqueeze(1)
+        h = sample_height_grid(
+            self._bed_grid[env_ids], q, self.scene.env_origins[env_ids],
+            c.bed_grid_lower, c.voxel_size, c.bed_top,
+        )[:, 0]
+        return self.scene.env_origins[env_ids, 2] + h
+
     def _fill_observed(self) -> torch.Tensor:
         """Estimated load as a fraction of target_load_kg, (E, 2)."""
         c = self.cfg
@@ -272,7 +310,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         d = self.robot.data
 
         pos, env = self._particles()
-        actor_scan, _ = self._scans(self._bed_heightmap(pos, env))
+        self._bed_grid = self._bed_heightmap(pos, env)
+        actor_scan, _ = self._scans(self._bed_grid)
         self._fill_kg = self._compute_fill(pos, env)
         self._fill_filt.mul_(1.0 - self._fill_alpha).add_(self._fill_kg, alpha=self._fill_alpha)
         cut = self._cut_state(actor_scan)
@@ -329,26 +368,41 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             env_ids = torch.arange(self.num_envs, device=self.device)
         super()._reset_idx(env_ids)
 
-        n = env_ids.numel()
-        yaw = (torch.rand(n, device=self.device) * 2.0 - 1.0) * self.cfg.spawn_yaw_jitter
-        xy_off = torch.zeros(n, 2, device=self.device)
-        xy_off[:, 0] = (torch.rand(n, device=self.device) * 2.0 - 1.0) * self.cfg.spawn_x_jitter
-        self._reset_robot(env_ids, yaw, self.cfg.arm_start_angle, xy_off)
+        n, dev, c = env_ids.numel(), self.device, self.cfg
 
-        # Every particle back to its spawn position, zero velocity. The drums
-        # start clear of the bed, so fill is genuinely zero here.
-        self.soil.reset(env_ids)
+        def jitter(scale: float) -> torch.Tensor:
+            return (torch.rand(n, device=dev) * 2.0 - 1.0) * scale
+
+        yaw = jitter(c.spawn_yaw_jitter)
+        xy_off = torch.stack([jitter(c.spawn_x_jitter), jitter(c.spawn_y_jitter)], dim=-1)
+        arm = c.arm_start_angle + jitter(c.arm_start_jitter)
+        spawn_xy = self._reset_robot(env_ids, yaw, arm, xy_off)
+
+        # Soil returns to its spawn cells every soil_reset_every episodes. In
+        # between the env keeps the ground it has worked, which is the only
+        # thing that makes one env's bed differ from another's.
+        self._soil_age[env_ids] += 1
+        stale = env_ids[self._soil_age[env_ids] >= c.soil_reset_every]
+        if stale.numel() > 0:
+            self.soil.reset(stale)
+            self._soil_age[stale] = 0
+            self._bed_grid[stale] = c.bed_top
+
+        # The drums start clear of the bed, so fill is genuinely zero here
+        # whether or not the soil was reset.
         self._fill_kg[env_ids] = 0.0
         self._fill_prev_kg[env_ids] = 0.0
         self._fill_filt[env_ids] = 0.0
-        b = self.cfg.fill_sensor_bias
-        self._fill_bias[env_ids] = (torch.rand(n, 2, device=self.device) * 2.0 - 1.0) * b
+        self._fill_bias[env_ids] = (
+            torch.rand(n, 2, device=dev) * 2.0 - 1.0
+        ) * c.fill_sensor_bias
 
-        lo, hi = self.cfg.cut_depth_range
-        depth = lo + (hi - lo) * torch.rand(n, device=self.device)
+        lo, hi = c.cut_depth_range
+        depth = lo + (hi - lo) * torch.rand(n, device=dev)
+        floor = self.scene.env_origins[env_ids, 2] + BED_FLOOR_Z
         self._target_z[env_ids] = (
-            self.scene.env_origins[env_ids, 2] + self.cfg.bed_top - depth
-        )
+            self._surface_z(env_ids, spawn_xy, yaw, arm) - depth
+        ).clamp_min(floor)
         self._above_prev[env_ids] = 0.0
         self._cut_fresh[env_ids] = True
         self._success[env_ids] = False

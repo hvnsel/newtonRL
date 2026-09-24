@@ -177,7 +177,7 @@ class ExcavatorEnvBase(DirectRLEnv):
         self,
         env_ids: torch.Tensor,
         yaw: torch.Tensor,
-        arm_angle: float,
+        arm_angle: float | torch.Tensor,
         xy_offset: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Put the machine at its env origin (+ `xy_offset`) facing `yaw`, arms
@@ -205,7 +205,10 @@ class ExcavatorEnvBase(DirectRLEnv):
 
         jpos = self.robot.data.default_joint_pos.torch[env_ids].clone()
         jvel = torch.zeros_like(jpos)
-        jpos[:, self._arm_ids] = arm_angle
+        if isinstance(arm_angle, torch.Tensor):
+            jpos[:, self._arm_ids] = arm_angle.unsqueeze(-1)
+        else:
+            jpos[:, self._arm_ids] = arm_angle
         self.robot.write_joint_state_to_sim(jpos, jvel, None, env_ids)
 
         self._forward_cmd[env_ids] = 0.0

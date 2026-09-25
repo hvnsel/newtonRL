@@ -51,7 +51,10 @@ def _parse(argv):
     p.add_argument("--max_steps", type=int, default=200_000,
                    help="give up after this many env steps per policy")
     add_launcher_args(p)
-    p.set_defaults(device=None, visualizer=["none"])
+    # Matches run_task and dig_demo. Nothing ever populates
+    # visualizer_cfgs here, so naming a valid type costs nothing and no
+    # window opens; "none" is not a type this build accepts.
+    p.set_defaults(device=None, visualizer=["newton_gl"])
     args, hydra_args = setup_preset_cli(p, argv)
     sys.argv = [sys.argv[0]] + hydra_args
     return args

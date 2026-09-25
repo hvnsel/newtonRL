@@ -126,13 +126,21 @@ def _report(results: dict[str, tuple[dict[str, float], int, float]]) -> None:
     print(f"{'episodes':<16}" + "  ".join(f"{results[k][1]:>12d}" for k in results))
     print(f"{'mean length':<16}" + "  ".join(f"{results[k][2]:>12.0f}" for k in results))
 
-    zero, walk = (sum(results[k][0].values()) for k in ("zero", "walk"))
+    # A RANDOM policy losing to a stationary one is correct -- it flails,
+    # drifts and overcuts. What matters is whether the terms that pay for
+    # doing the task are visible next to the ones that charge for trying,
+    # because that ratio is what a policy has to climb.
+    pos = {k: sum(v for v in results[k][0].values() if v > 0) for k in results}
+    neg = {k: -sum(v for v in results[k][0].values() if v < 0) for k in results}
+    share = pos["walk"] / max(neg["walk"], 1e-9)
     print()
-    if zero >= walk:
-        print(f"  BROKEN: doing nothing scores {zero:.2f} against {walk:.2f} for moving.")
-        print("          No amount of training fixes a reward whose optimum is idling.")
+    if share < 0.10:
+        print(f"  BROKEN: a random walk earns {pos['walk']:.2f} against {neg['walk']:.2f} "
+              f"in penalties ({share:.0%}).")
+        print("          The signal is buried; scale the dominant penalty down.")
     else:
-        print(f"  OK: moving scores {walk:.2f} against {zero:.2f} for doing nothing.")
+        print(f"  OK: a random walk earns {pos['walk']:.2f} against {neg['walk']:.2f} "
+              f"in penalties ({share:.0%}). The signal is visible.")
 
     for kind, (terms, _, _) in results.items():
         pos = {n: v for n, v in terms.items() if v > 0}

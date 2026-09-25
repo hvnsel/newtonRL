@@ -412,7 +412,11 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # speed is not achieved, which a random policy does constantly. energy
     # rose with the wheel and drum torque now available.
     w_stall = 0.025
-    w_drift = 0.05                       # the counter-rotation check
+    # Re-measured at 0.05: still -15.50, the largest term in the function and
+    # larger than fill at +4.55. A skid-steer turning drags its wheels
+    # sideways by construction, so this charges for every yaw as well as for
+    # the counter-rotation shove it was written for.
+    w_drift = 0.01                       # the counter-rotation check
     w_upright = 2.0
     w_energy = 1.0e-5
     w_action_rate = 0.05

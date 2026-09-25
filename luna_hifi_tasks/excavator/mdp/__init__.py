@@ -1,8 +1,7 @@
 # MDP building blocks for the excavator tasks.
 #
-# Deliberately free of isaaclab / newton imports so the maths stays testable
-# without a GPU. The one place that touches the Newton API is
-# sensors.particle_state_adapter, and it is isolated for exactly that reason.
+# Free of isaaclab and newton imports, so the maths runs without a GPU. The
+# Newton API surface is the two adapters at the bottom of sensors.py.
 
 from .sensors import (  # noqa: F401  re-exports
     drum_fill_fraction,

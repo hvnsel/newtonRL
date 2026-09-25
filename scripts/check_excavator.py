@@ -5,49 +5,37 @@
 #   pip install "mujoco>=3.13"
 #   python scripts/check_excavator.py
 #
-# It needs its OWN environment, not Isaac Lab's. The two requirements cannot
-# both be met in one: mj_geomDistance only measures anything from mujoco 3.13,
-# while MJWarp -- the rigid solver the excavator runs on -- is built against a
-# specific older one. Changing it inside Isaac Lab's venv is a physics change
-# dressed as a tooling fix, and it breaks the sim outright.
+# It runs in its own environment, separate from Isaac Lab's. mj_geomDistance
+# measures from mujoco 3.13, while MJWarp, the rigid solver the excavator runs
+# on, is built against ~=3.11.
 #
-# Which version the venv wants is NOT what pip's resolver says. It quotes
-# isaacsim-core's declaration (mujoco==3.8.0 on the 6.0 line), which a newer
-# newton supersedes. The authority is newton's own runtime check, printed on
-# every run:
+# The version Isaac Lab's venv wants is the one newton's runtime check prints,
+# not the one pip's resolver quotes from isaacsim-core:
 #
 #   RuntimeWarning: MuJoCo dependency version mismatch with Newton's declared
 #   requirements: mujoco==3.8.0 (requires ~=3.11.0)
-#
-# Follow that line. Installing isaacsim-core's 3.8.0 against newton 1.5.1 and
-# mujoco-warp 3.11 crashes in mujoco_warp.put_model with a None array shape,
-# because a field the newer mujoco-warp expects does not exist in 3.8.
 #
 #   python -m venv .venv-geom
 #   .venv-geom/bin/pip install -e ".[assets]"     # declares mujoco>=3.13
 #   .venv-geom/bin/python scripts/check_excavator.py
 #
-# Nothing here imports the package -- excavator.py is loaded straight off disk
-# below -- so the install is only for the dependency.
+# excavator.py is loaded straight off disk below, so the install is only for
+# the dependency.
 #
-# The next place these numbers show up is a converted USD inside a physics
-# solver, where a 2 cm interpenetration presents as an unstable policy.
+# The checks:
 #
-#   mass table        a body with no inertia NaNs the solver
+#   mass table        every body carrying a joint has inertia
 #   swept envelopes   what the vanes and the shroud reach, measured in each
-#                     box's own frame. A shroud plate's width runs along the
-#                     arc, not radially, so treating a half-size as radial
-#                     reports an interference fit where there is a running one.
-#   shell continuity  adjacent plates must overlap; a gap is a hole MPM
-#                     particles leak through
-#   inlet probe       ray-cast around the drum axis to confirm the shroud has
-#                     exactly one opening, where the geometry says. Two, and
-#                     the drum empties wherever the second one points.
+#                     box's own frame, since a shroud plate's width runs along
+#                     the arc rather than radially
+#   shell continuity  adjacent plates overlap, leaving no hole for MPM
+#                     particles
+#   inlet probe       ray-cast around the drum axis, confirming the shroud has
+#                     exactly one opening, where the geometry says
 #   clearance sweep   arm swept through ARM_RANGE against the wheels and
-#                     frame. MuJoCo never tests a body against its own parent
-#                     and Isaac articulations default to self-collision off,
-#                     so neither simulator reports an arm passing through a
-#                     drum.
+#                     frame. MuJoCo does not test a body against its own
+#                     parent and Isaac articulations default to
+#                     self_collision=False, so the pairs are walked directly.
 #
 # Exit status is 1 if any check fails.
 
@@ -62,11 +50,9 @@ import pathlib
 import mujoco
 import numpy as np
 
-# excavator.py is loaded straight off disk rather than as
-# luna_hifi_tasks.excavator.excavator, because the package __init__ registers
-# the gym tasks and drags in Isaac Lab. This check needs MuJoCo and nothing
-# else, and it is most useful on the machine where you are editing the
-# geometry, which is not necessarily the machine that can run Isaac.
+# Loaded straight off disk rather than as
+# luna_hifi_tasks.excavator.excavator, whose package __init__ registers the
+# gym tasks and pulls in Isaac Lab. This check needs MuJoCo alone.
 _SRC = pathlib.Path(__file__).resolve().parents[1] / "luna_hifi_tasks" / "excavator" / "excavator.py"
 _spec = importlib.util.spec_from_file_location("_excavator_geometry", _SRC)
 X = importlib.util.module_from_spec(_spec)
@@ -74,16 +60,13 @@ _spec.loader.exec_module(X)
 
 DISTMAX = 1.0
 
-# mj_geomDistance is what every clearance and passage number here is built on,
-# and on some MuJoCo builds it silently returns 0.0 for every pair instead of
-# failing. That turns this script from a safety net into a liar: it reported a
-# sealed drum and two clearance breaches on a model whose analytic geometry was
-# provably fine. So it gets probed before it is trusted.
+# mj_geomDistance carries every clearance and passage number here, and on
+# some MuJoCo builds it returns 0.0 for every pair, so it is probed first.
 MIN_MUJOCO = "3.13"
 
-# Clearance below this is reported as a failure. The arm and the wheels overlap
-# in y -- the drum is wider than the gap between the tyres -- so the only thing
-# keeping them apart is separation in x, bought by MAST_OFFSET_X.
+# Clearance below this is a failure. The arm and the wheels overlap in y,
+# since the drum is wider than the gap between the tyres, so what keeps them
+# apart is separation in x, set by MAST_OFFSET_X.
 MIN_CLEARANCE = 0.03
 
 
@@ -129,15 +112,11 @@ def _subtree_geoms(m: mujoco.MjModel, body: str) -> list[int]:
 
 
 def distance_works(m: mujoco.MjModel, d: mujoco.MjData) -> bool:
-    """Does mj_geomDistance actually measure anything on this build?
+    """Whether mj_geomDistance measures anything on this build.
 
-    Probed against a pair whose separation is obvious from the model's own
-    frames -- the deck and a shroud end plate are the better part of a metre
-    apart -- so a zero here cannot be a real contact.
-
-    The probe pair is named, so renaming a geom silently disarms it. It asserts
-    rather than assuming: a disarmed probe reports every clearance as 0.0000
-    and fails a model that is fine, which is worse than no probe at all.
+    Probed against the deck and a shroud end plate, which the model's own
+    frames put the better part of a metre apart. The pair is named, so the
+    lookup asserts.
     """
     a = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "deck")
     b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "shroud_front_end_l")
@@ -230,11 +209,9 @@ def check_shroud_continuity(fail: list[str]) -> None:
 
 
 def check_inlet(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> None:
-    """Ray-cast around the axis to find the one opening in the shroud.
+    """Ray-cast around the axis to find the openings in the shroud.
 
-    The retention argument is that there is exactly one, and that it is where
-    the geometry says. Two openings, or one in the wrong place, and the drum
-    empties wherever the second one points.
+    Retention rests on there being exactly one, where the geometry says.
     """
     print("\n=== shroud inlet probe (1 deg rays outward from the axis) ===")
     ids = [g for g in _subtree_geoms(m, "shroud_front_body")
@@ -297,12 +274,10 @@ def check_vane_gaps(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> Non
 def _radial_band(m: mujoco.MjModel, prefix: str) -> tuple[float, float]:
     """Min and max radius from the spin axis over every geom named `prefix`*.
 
-    The boxes here are ORIENTED: a shroud plate's local x runs along the arc
-    and its z radially, a vane's local x runs along the blade. Treating either
-    half-size as radial reports a plate reaching 2 cm further in than its own
-    inner face, which is the difference between a running fit and an
-    interference. So this works in each box's own frame: farthest point is a
-    corner, nearest is the axis clamped onto the rectangle.
+    The boxes are oriented: a shroud plate's local x runs along the arc and
+    its z radially, a vane's local x along the blade. Measured in each box's
+    own frame, so the farthest point is a corner and the nearest is the axis
+    clamped onto the rectangle.
     """
     lo, hi = math.inf, 0.0
     for gid in range(m.ngeom):
@@ -363,10 +338,8 @@ def check_clearance(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> Non
     frame = _body_geoms(m, X.BODY_CHASSIS)
 
     def skip(g1: str, g2: str) -> bool:
-        # The arm pivot sits INSIDE the mast that carries it, so the root of
-        # each boom overlaps its own mast at every angle. That is how a pivot
-        # is built, not a fault, and it is the only overlap in the machine
-        # that is intentional.
+        # The arm pivot sits inside the mast that carries it, so each boom's
+        # root overlaps its own mast at every angle.
         return g2.startswith("mast_") and g1 == f"arm_{g2[5:]}_boom"
 
     for label, fixed in (("wheels", wheels), ("frame", frame)):
@@ -394,8 +367,8 @@ def check_clearance(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> Non
             fail.append(f"swept clearance to the {label} is {worst[0]:.4f} m "
                         f"< {MIN_CLEARANCE} ({worst[1]} vs {worst[2]})")
 
-    # The yoke straddles the drum, so it is the one pair that is NOT filtered
-    # out by geometry: check it explicitly, at every drum phase.
+    # The yoke straddles the drum, so that pair is checked explicitly, at
+    # every drum phase.
     print("\n=== yoke vs drum (parent/child: no simulator will report this) ===")
     for side in ("front", "rear"):
         yoke = _body_geoms(m, f"arm_{side}_body")
@@ -423,19 +396,15 @@ def check_clearance(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> Non
 
 
 # Kept in step by hand with the actuators in excavator_cfg.py and the soil in
-# excavate/excavate_env_cfg.py. Duplicated rather than imported because both of
-# those pull in Isaac Lab, and the point of this script is to run without it.
+# excavate/excavate_env_cfg.py, which both pull in Isaac Lab.
 ARM_EFFORT_LIMIT = 800.0        # N-m, excavator_cfg.py "arms"
 SOIL_DENSITY = 1800.0           # kg/m3
 EARTH_G, LUNAR_G = 9.81, 1.62
 
 
 def check_arm_load(m: mujoco.MjModel, fail: list[str]) -> None:
-    """Static hold torque at the arm pivot, empty and with both drums full.
-
-    Measured off the model's own mass table rather than quoted, because the
-    arm actuator is sized from these numbers and the drum mass moves whenever
-    the blades do.
+    """Static hold torque at the arm pivot, empty and with both drums full,
+    off the model's own mass table. The arm actuator is sized from these.
     """
     print("\n=== arm hold torque (worst case: boom horizontal) ===")
     pivot = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "arm_front_body")

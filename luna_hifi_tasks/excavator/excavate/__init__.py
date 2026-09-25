@@ -35,10 +35,8 @@ gym.register(
     },
 )
 
-# Same task again at a 0.03 m voxel on a small pad under the front drum. The
-# 0.05 m presets physically cannot fill the drum: the coupler eats a whole
-# voxel out of every passage and the entry channel is left narrower than one
-# particle, so soil is scooped and then stops in the lip. See
+# Same task at a 0.03 m voxel on a small pad under the front drum, which is
+# the spacing at which the drum's entry channel passes regolith. See
 # ExcavatorExcavateMicroEnvCfg.
 gym.register(
     id="Luna-Excavator-Excavate-Micro",

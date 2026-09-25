@@ -1,13 +1,11 @@
 # agents/rsl_rl_ppo_cfg.py
 #
-# Same shape as the navigate runner, with a longer rollout. The MPM tier is
-# capped at 32 envs by the sparse-grid capacities, so batch size has to come
-# from rollout length: 16 envs x 256 steps is 4096 samples per update and
-# 1024 per minibatch.
+# Same shape as the navigate runner, with a longer rollout. The MPM tier runs
+# tens of envs, so the batch comes from rollout length: 16 envs x 256 steps is
+# 4096 samples per update and 1024 per minibatch.
 #
 # gamma 0.997 is an effective horizon of 333 steps, 13 s at 25 Hz, against a
-# 500-step episode. At 0.99 it was 100 steps and the end of a cut was outside
-# what the value function could see.
+# 500-step episode and a cut that runs 10-20 s.
 
 from isaaclab.utils.configclass import configclass
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg

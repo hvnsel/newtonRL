@@ -58,10 +58,9 @@ def _parse(argv):
     # Kitless default, matching Isaac Lab's own checkpoint-free agents.
     p.set_defaults(device=None, visualizer=["newton_gl"])
 
-    # resolve_task_config runs Hydra, and Hydra re-reads sys.argv. So this
-    # script's own flags have to be split off first and the REMAINDER handed
-    # over, or Hydra rejects --task and friends as unrecognised. Same two lines
-    # isaaclab_rl's simple_agents uses, for the same reason.
+    # resolve_task_config runs Hydra, which re-reads sys.argv, so this
+    # script's own flags are split off first and the remainder handed over.
+    # The same two lines isaaclab_rl's simple_agents uses.
     args, hydra_args = setup_preset_cli(p, argv)
     sys.argv = [sys.argv[0]] + hydra_args
     return args
@@ -77,9 +76,7 @@ def main(argv=None) -> int:
     args = _parse(argv)
     torch.manual_seed(0)
 
-    # Before anything spawns: a missing or stale asset otherwise surfaces as a
-    # FileNotFoundError deep inside InteractiveScene, or -- worse -- as a
-    # perfectly clean run of the PREVIOUS drum.
+    # Checked before anything spawns.
     from luna_hifi_tasks.excavator.excavator_cfg import usd_status
 
     problem = usd_status()
@@ -91,16 +88,13 @@ def main(argv=None) -> int:
     # work here too, e.g.  env.scene.num_envs=4  (no leading dashes).
     env_cfg, _ = resolve_task_config(args.task, "")
 
-    # This script uses plain argparse, not the Hydra CLI, so `--env.*` overrides
-    # do NOT reach it. Anything adjustable has to be an explicit flag and get
-    # applied to the config object here.
+    # Plain argparse rather than the Hydra CLI, so anything adjustable is an
+    # explicit flag applied to the config object here.
     if args.num_envs is not None:
         env_cfg.scene.num_envs = args.num_envs
         # The sparse-grid capacities are absolute totals sized from
-        # max_num_envs, not from scene.num_envs, so asking for 2 environments
-        # otherwise allocates the grid for all 32 and runs out of device
-        # memory on anything but a datacentre card. __post_init__ is what
-        # derives the capacities, so it has to run again.
+        # max_num_envs, and __post_init__ is what derives them, so both are
+        # set to the run's env count and it is run again.
         if hasattr(env_cfg, "max_num_envs"):
             env_cfg.max_num_envs = args.num_envs
             env_cfg.__post_init__()
@@ -122,25 +116,22 @@ def main(argv=None) -> int:
             gen.num_rows = rows
         if cols is not None:
             gen.num_cols = cols
-        # max_init_terrain_level is clamped to num_rows - 1 internally, but keep
-        # the config self-consistent so it reads honestly in the log.
+        # max_init_terrain_level is clamped to num_rows - 1 internally; this
+        # keeps the config reading the same as what runs.
         env_cfg.scene.terrain.max_init_terrain_level = min(
             env_cfg.scene.terrain.max_init_terrain_level, gen.num_rows - 1
         )
         print(f"[smoke] terrain {gen.num_rows} x {gen.num_cols} sub-terrains of {gen.size} m")
 
     if args.watch:
-        # visualizer_cfgs defaults to an empty list and the --visualizer flag
-        # only filters what the config already declares, so a viewer has to be
-        # added here. play_mode() would do it, but nothing calls play_mode on
-        # this path.
+        # visualizer_cfgs defaults to an empty list and --visualizer filters
+        # what the config declares, so a viewer is added here.
         from isaaclab_visualizers.newton import NewtonGLVisualizerCfg
 
         show_particles = "Excavate" in args.task
         if show_particles:
-            # Frame where the work happens. The machine starts at the origin
-            # and the bed sits metres ahead of it, so a camera aimed at the
-            # origin puts the soil at the edge of the view or out of it.
+            # Aimed at the bed, which sits metres ahead of the machine's
+            # start at the origin.
             bed_cx = 0.5 * (env_cfg.bed_x[0] + env_cfg.bed_x[1])
             lookat = (0.5 * bed_cx, 0.0, 0.3)
             eye = (lookat[0] + 4.0, 4.0, 2.5)
@@ -174,11 +165,9 @@ def main(argv=None) -> int:
               "drum body ids", u._drum_body_ids)
         print("  shroud ids", u._shroud_ids)
         if is_dig:
-            # Which prims the MPM coupling regex actually matched. The shroud
-            # hangs off the ARM rather than the drum, so it is the one body
-            # most likely to fall outside the pattern -- and a shroud that is
-            # not coupled retains nothing while looking like a geometry
-            # failure.
+            # Which prims the MPM coupling regex matched. The shroud hangs
+            # off the arm rather than the drum, one level out from the
+            # rotor.
             import re as _re
 
             pattern = _re.compile(u.cfg.soil_contact_regex)
@@ -199,10 +188,8 @@ def main(argv=None) -> int:
                 print("   the fallback -- 4 wheels + 2 rotors + 2 shrouds should be 8)")
         else:
             # The rigid tier has no coupler; its sensors are the two ray
-            # casters. GridPatternCfg puts a ray at BOTH ends of each axis, so
-            # a size of NX*cell rather than (NX-1)*cell silently yields one
-            # extra row and column and the observation no longer matches its
-            # declared width.
+            # casters. GridPatternCfg puts a ray at both ends of each axis, so
+            # the ray counts are what confirm the (NX-1)*cell sizes.
             from luna_hifi_tasks.excavator.mdp.observations import (
                 NAV_FAR_CELLS, NAV_NEAR_CELLS,
             )
@@ -249,9 +236,8 @@ def main(argv=None) -> int:
 
             dig = torch.zeros(u.num_envs, u.cfg.action_space, device=u.device)
             _, shi = u.cfg.shroud_range
-            # Solved from the scene rather than hard-coded: the command that
-            # reaches a given depth depends on the bed and on whether the
-            # machine stands on it or beside it.
+            # Solved from the scene: the command that reaches a given depth
+            # depends on the bed and on whether the machine stands on it.
             cut = 0.08
             boom, arm = u.cfg.boom_command_for_cut(cut)
             dig[:, 0] = 0.05                    # 0.075 m/s, the crawl dig_demo uses
@@ -265,10 +251,9 @@ def main(argv=None) -> int:
             def _where(tag: str) -> None:
                 """Drum, soil and drive state, all in the env frame.
 
-                Fill reading zero has three unrelated causes -- the drum is
-                not in the soil, the soil is not where the cfg says, or the
-                machine never moved -- and they are indistinguishable from
-                the fill number alone.
+                Separates the three things a zero fill reading can mean: the
+                drum is not in the soil, the soil is not where the cfg says,
+                or the machine never moved.
                 """
                 from luna_hifi_tasks.excavator.excavate.excavate_env_cfg import (
                     BORE_HALF_LEN, BORE_RADIUS,
@@ -281,9 +266,9 @@ def main(argv=None) -> int:
                 dpos, dquat = u._drum_poses()
                 d = dpos[0, 0] - org
                 chassis = u.robot.data.root_pos_w.torch[0] - org
-                # Same test the fill sensor uses, in the drum's own frame, at
-                # the bore and at a shell 0.15 m wider. Soil in the shell but
-                # not the bore means the drum is beside it, not in it.
+                # The fill sensor's own test, in the drum frame, at the bore
+                # and at a shell 0.15 m wider. Soil in the shell but not the
+                # bore means the drum is beside it.
                 def mass(radius: float) -> float:
                     return float(drum_fill_mass(
                         pos, env, u._particle_mass, dpos[:, 0], dquat[:, 0],
@@ -322,9 +307,8 @@ def main(argv=None) -> int:
                 if i % 50 == 0:
                     print(f"  step {i:4d}  fill kg {u._fill_kg.mean(0).tolist()}  "
                           f"arm {u.robot.data.joint_pos.torch[0, u._arm_ids].tolist()}")
-            # Peak, not end minus start: a machine that crosses the bed and
-            # carries on sheds its load, and what is under test is whether the
-            # particle adapter reads real particles at all.
+            # Peak over the run, since a machine that crosses the bed and
+            # carries on sheds its load.
             _where("end")
             print(f"  peak fill per env: {peak.tolist()}")
             _check(bool((peak > 1.0).any()), "drum fill rose with drums in the bed (particle adapter reads real particles)", failures)

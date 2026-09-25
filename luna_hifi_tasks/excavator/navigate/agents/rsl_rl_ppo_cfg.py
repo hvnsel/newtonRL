@@ -1,18 +1,16 @@
 # agents/rsl_rl_ppo_cfg.py
 #
-# Same "policy" style config as the tricycle, which Isaac Lab converts into
-# rsl_rl's model configs at start-up (isaaclab_rl.rsl_rl.utils).
+# A "policy" style config, which Isaac Lab converts into rsl_rl's model
+# configs at start-up (isaaclab_rl.rsl_rl.utils).
 #
-# Two things differ from the tricycle and both matter:
-#   * observation normalisation is ON. 215 inputs spanning body velocities,
-#     unit vectors and metres of terrain relief do not share a scale.
+#   * observation normalisation is on, over 247 inputs spanning body
+#     velocities, unit vectors and metres of terrain relief.
 #   * obs_groups routes the env's "critic" observation group to the critic
-#     only. That is the asymmetric actor-critic: the critic sees the clean
-#     scan and true slip, the actor sees what a rover could sense.
+#     alone, which is the asymmetric actor-critic: the critic reads the clean
+#     scan and true slip, the actor what a rover could sense.
 #
 # gamma 0.995 is an effective horizon of 200 steps, 8 s at 25 Hz, against a
-# 500-step episode. A goal reached 2.5 s out is discounted to 0.73 rather
-# than the 0.29 that gamma 0.99 at 50 Hz gave.
+# 500-step episode. A goal reached 2.5 s out discounts to 0.73.
 
 from isaaclab.utils.configclass import configclass
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg

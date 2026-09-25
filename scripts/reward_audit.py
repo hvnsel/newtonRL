@@ -6,19 +6,15 @@
 #   isaaclab -p scripts/reward_audit.py --task Luna-Excavator-Navigate --episodes 200
 #   isaaclab -p scripts/reward_audit.py --task Luna-Excavator-Excavate --episodes 40
 #
-# A reward weight on its own says nothing. What a policy optimises is the sum
-# over an episode, which depends on the weight, on the typical magnitude of
-# the term, on how many steps it is paid over, and on whether the episode ends
-# early. Two columns are printed:
+# What a policy optimises is a term's episode total, which is its weight
+# times its typical magnitude times the steps it is paid over. Two columns are
+# printed:
 #
-#   zero   every action held at 0
+#   zero   every action held at 0, the null baseline
 #   walk   a smoothed random walk over the action space
 #
-# `zero` is the null baseline. If it scores at or above `walk`, doing nothing
-# beats attempting the task and no amount of training fixes that.
-#
-# Terms come from the env's own TermLogger, so they are already signed and
-# weighted and their sum is the episode return.
+# Terms come from the env's own TermLogger, already signed and weighted, so
+# their sum is the episode return.
 
 from __future__ import annotations
 
@@ -53,9 +49,8 @@ def _parse(argv):
     p.add_argument("--max_steps", type=int, default=200_000,
                    help="give up after this many env steps per policy")
     add_launcher_args(p)
-    # Matches run_task and dig_demo. Nothing ever populates
-    # visualizer_cfgs here, so naming a valid type costs nothing and no
-    # window opens; "none" is not a type this build accepts.
+    # visualizer_cfgs is empty on this path, so the named type selects
+    # nothing and no window opens. "none" is not a type this build accepts.
     p.set_defaults(device=None, visualizer=["newton_gl"])
     args, hydra_args = setup_preset_cli(p, argv)
     sys.argv = [sys.argv[0]] + hydra_args
@@ -93,8 +88,8 @@ def _collect(env, kind: str, episodes: int, sigma: float, max_steps: int):
             totals[key[len("Episode_Reward/"):]] = totals.get(key[len("Episode_Reward/"):], 0.0) + value * k
         seen += k
         print(f"\r  {kind}: {seen}/{episodes} episodes, {steps} steps", end="", flush=True)
-        # The walk keeps its state across an episode boundary otherwise, so a
-        # fresh episode would start wherever the last one left the action.
+        # A fresh episode starts the walk from zero rather than wherever the
+        # last one left the action.
         if kind == "walk":
             action[done] = 0.0
 
@@ -126,10 +121,9 @@ def _report(results: dict[str, tuple[dict[str, float], int, float]]) -> None:
     print(f"{'episodes':<16}" + "  ".join(f"{results[k][1]:>12d}" for k in results))
     print(f"{'mean length':<16}" + "  ".join(f"{results[k][2]:>12.0f}" for k in results))
 
-    # A RANDOM policy losing to a stationary one is correct -- it flails,
-    # drifts and overcuts. What matters is whether the terms that pay for
-    # doing the task are visible next to the ones that charge for trying,
-    # because that ratio is what a policy has to climb.
+    # The verdict is on signal share: how much the terms that pay for doing
+    # the task come to next to the ones that charge for trying. A random walk
+    # scoring below a stationary policy is expected.
     pos = {k: sum(v for v in results[k][0].values() if v > 0) for k in results}
     neg = {k: -sum(v for v in results[k][0].values() if v < 0) for k in results}
     share = pos["walk"] / max(neg["walk"], 1e-9)
@@ -167,10 +161,8 @@ def main(argv=None) -> int:
     if args.num_envs is not None:
         env_cfg.scene.num_envs = args.num_envs
         # The sparse-grid capacities are absolute totals sized from
-        # max_num_envs, not from scene.num_envs, so asking for 2 environments
-        # otherwise allocates the grid for all 32 and runs out of device
-        # memory on anything but a datacentre card. __post_init__ is what
-        # derives the capacities, so it has to run again.
+        # max_num_envs, and __post_init__ is what derives them, so both are
+        # set to the run's env count and it is run again.
         if hasattr(env_cfg, "max_num_envs"):
             env_cfg.max_num_envs = args.num_envs
             env_cfg.__post_init__()
@@ -185,9 +177,9 @@ def main(argv=None) -> int:
         try:
             u = env.unwrapped
             ep_len = int(u.max_episode_length)
-            # zero holds every action at 0, so every episode of it is the same
-            # episode. One round of envs is the whole sample. --episodes is
-            # for the walk, which is the only pass with anything to average.
+            # zero holds every action at 0, so every episode of it is the
+            # same episode and one round of envs is the whole sample.
+            # --episodes sizes the walk.
             plan = {"zero": u.num_envs, "walk": max(args.episodes, u.num_envs)}
             rounds = sum(-(-n // u.num_envs) for n in plan.values())
             print(f"[audit] {args.task}  {u.num_envs} envs  {ep_len} steps/episode  "
@@ -196,9 +188,8 @@ def main(argv=None) -> int:
                   f"-> {rounds * ep_len:,} env-steps total")
             results = {}
             for kind in POLICIES:
-                # zero is the null baseline: every action held at 0, so the
-                # machine spawns and sits there. That is the point of it --
-                # if it outscores the walk, the reward rewards idling.
+                # zero is the null baseline: the machine spawns and sits
+                # there.
                 print(f"[audit] {kind} "
                       + ("(actions held at 0 -- nothing should move)" if kind == "zero"
                          else "(smoothed random walk)"), flush=True)

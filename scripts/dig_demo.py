@@ -12,10 +12,9 @@
 #   isaaclab -p scripts/dig_demo.py
 #   isaaclab -p scripts/dig_demo.py --cut 0.05 --drive 0.35 --seconds 40
 #
-# The output that matters is the FILL READOUT. drum_fill_mass is the entire
-# excavation reward; a broken particle adapter returns zero, which in training
-# looks exactly like a policy that has not learned to dig. Here the drums are
-# provably in the soil, so fill must rise.
+# The output to watch is the fill readout. The drums are in the soil by
+# construction here, so drum_fill_mass rising is what says the particle
+# adapter reads real particles.
 #
 # Pass --no_window to run it as a plain assertion with no viewer.
 
@@ -63,9 +62,8 @@ def _parse(argv):
     p.add_argument("--task", default=TASK, help=f"default {TASK}")
     p.add_argument("--num_envs", type=int, default=1)
     p.add_argument("--seconds", type=float, default=30.0, help="simulated seconds to run")
-    # NOT --headless: AppLauncher guards that name as a SimulationApp config
-    # key (it never adds the flag, but _check_argparser_config_params rejects a
-    # parser that already carries it).
+    # Not --headless: AppLauncher guards that name as a SimulationApp config
+    # key and _check_argparser_config_params rejects a parser carrying it.
     p.add_argument("--no_window", action="store_true", help="skip the viewer; just run the checks")
 
     # Phase boundaries, in simulated seconds.
@@ -76,43 +74,36 @@ def _parse(argv):
                    help="turn the inlet up and reverse the rotor at this time; "
                         "off by default. Fill should FALL after it")
 
-    # Depth of the SHELL below the soil surface, in metres, not a boom command:
-    # the command reaching a given depth depends on the bed depth and on
-    # whether the machine stands on the soil or beside it, and
-    # cfg.boom_command_for_cut() solves it from the env's own config.
-    #
-    # Measured to the SHROUD, which is the outermost thing on the drum and the
-    # first to touch anything. cut_diagnosis() reports the margin per run.
+    # Depth of the shroud below the soil surface, in metres, which
+    # cfg.boom_command_for_cut() turns into a boom command against the env's
+    # own bed. The shroud is the outermost part of the drum, and
+    # cut_diagnosis() reports the margin per run.
     p.add_argument("--cut", type=float, default=0.10,
                    help="how deep the SHROUD should cut below the surface, metres")
     p.add_argument("--boom", type=float, default=None,
                    help="raw boom command, overriding --cut")
-    # 1.0 is 8 rad/s, 2.0 m/s at the lip, which throws soil clear of the drum;
-    # 0.4 is 0.8 m/s and scoops. DIG_DRUM_SIGN is the loading sign, derived
-    # from the lip handedness; the other sign dumps.
+    # 1.0 is 8 rad/s, 2.0 m/s at the lip, which throws soil clear of the
+    # drum; 0.4 is 0.8 m/s and scoops. DIG_DRUM_SIGN is the loading sign,
+    # derived from the lip handedness; the other sign dumps.
     p.add_argument("--drum", type=float, default=0.4 * DIG_DRUM_SIGN,
                    help="drum command once spinning; |cmd| > ~0.5 flings rather than scoops. "
                         f"The loading sign for this lip is {DIG_DRUM_SIGN:+.0f}")
-    # 0.05 is 0.075 m/s, which takes 12 s to cross a 0.9 m bed. The old 0.25
-    # was 0.375 m/s: the machine left the soil 1.4 s into the drive phase and
-    # everything after that was a drum turning in the hole it had just made.
+    # 0.05 is 0.075 m/s, 12 s to cross a 0.9 m bed.
     p.add_argument("--drive", type=float, default=0.05,
                    help="forward command once crawling; 1.0 is 1.5 m/s")
 
-    # Explicit flags rather than Hydra overrides: `env.soil_cohesion=1500` sets
-    # the cfg field, but the MPM material was built from it in __post_init__,
-    # which Hydra runs after. These set the field and re-run
-    # apply_soil_material().
+    # Explicit flags rather than Hydra overrides. Hydra runs after
+    # __post_init__, which is where the MPM material is built from the cfg
+    # fields, so these set the field and re-run apply_soil_material().
     p.add_argument("--cohesion", type=float, default=None,
                    help="soil yield_stress in Pa; 0 sprays, ~800 holds a cut together")
     p.add_argument("--friction", type=float, default=None, help="soil friction, ~tan(phi)")
     p.add_argument("--density", type=float, default=None, help="soil density, kg/m3")
-    # The channel opens 0.122 m, the coupler eats a whole voxel of it and
-    # particles spawn one voxel apart, so this sets how many grains wide the
-    # way in is. Granular material arches across an orifice narrower than about
-    # four of them however hard it is driven.
+    # The channel opens 0.122 m and the coupler takes a voxel of it, so this
+    # sets how many grains wide the way in is. Granular material arches across
+    # an orifice narrower than about four.
     #   0.03 -> 3.0 grains   0.025 -> 3.9   0.02 -> 5.0
-    # Finer costs particles as the cube.
+    # Particle count goes as the inverse cube.
     p.add_argument("--voxel", type=float, default=None,
                    help="MPM voxel; sets how many grains wide the drum's entry channel is")
 
@@ -126,10 +117,7 @@ def _parse(argv):
 
 
 def _dominant(u, n: int = 2) -> str:
-    """The n reward terms with the largest magnitude this step, for env 0.
-
-    A step reward of +6 with an empty drum says something is firing; it does
-    not say what. This does."""
+    """The n reward terms with the largest magnitude this step, for env 0."""
     terms = getattr(u, "_last_terms", None)
     if not terms:
         return ""
@@ -141,18 +129,16 @@ def _dominant(u, n: int = 2) -> str:
 
 
 def soil_shells(u) -> tuple[torch.Tensor, torch.Tensor]:
-    """(in the running clearance, outside the shroud) kg per drum, front and rear.
+    """(in the running clearance, outside the shroud) kg per drum, front and
+    rear.
 
-    Three radial bands, because one number cannot tell the interesting states
-    apart:
+    Three radial bands:
 
-        r < 0.185   the rotor's swept cylinder. This is fill, and the only
-                    thing that counts.
+        r < 0.185   the rotor's swept cylinder, which is fill
         0.185-0.212 the running clearance and the shroud wall: soil wedged
-                    between vane tips and shroud rather than held in a pocket.
-        > 0.212     outside the drum altogether -- soil the shroud happens to
-                    be buried in. It rises whenever the drum is in the ground
-                    and means nothing.
+                    between vane tips and shroud rather than held in a pocket
+        > 0.212     outside the drum, soil the shroud is buried in, which
+                    rises whenever the drum is in the ground
     """
     pos, env = u._particles()
     dpos, dquat = u._drum_poses()
@@ -170,13 +156,11 @@ def soil_shells(u) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def cut_diagnosis(cfg, cut: float) -> list[str]:
-    """Whether the bed can actually supply the requested cut.
+    """Whether the bed can supply the requested cut.
 
-    The bed is a finite slab on a rigid floor, so `cut` is not free: past a
-    point the drum is no longer cutting soil, it is grinding on the hidden slab
-    that holds the particles up, and the run looks like a dig that will not
-    load. `cut` refers to the SHROUD, which is the outermost thing on the drum
-    and the first to touch anything.
+    The bed is a finite slab on a rigid floor, so past a depth the drum grinds
+    on the slab holding the particles up. `cut` is to the shroud, the
+    outermost part of the drum.
     """
     wall = SHROUD_OUT_R - ROTOR_TIP_R
     floor = cfg.bed_top - cfg.bed_depth
@@ -202,9 +186,8 @@ def cut_diagnosis(cfg, cut: float) -> list[str]:
 
 
 def _ramp(t: float, t0: float, duration: float = 1.5) -> float:
-    """0 before t0, 1 after t0 + duration, linear between. Ramping rather than
-    stepping keeps the arm from slamming into the bed and the drums from
-    spiking the coupler on their first step."""
+    """0 before t0, 1 after t0 + duration, linear between. Eases the arm into
+    the bed and the drums up to speed."""
     if t <= t0:
         return 0.0
     return min((t - t0) / duration, 1.0)
@@ -214,9 +197,7 @@ def main(argv=None) -> int:
     args = _parse(argv)
     torch.manual_seed(0)
 
-    # Before anything spawns: a missing or stale asset otherwise surfaces as a
-    # FileNotFoundError deep inside InteractiveScene, or -- worse -- as a
-    # perfectly clean run of the PREVIOUS drum.
+    # Checked before anything spawns.
     from luna_hifi_tasks.excavator.excavator_cfg import usd_status
 
     problem = usd_status()
@@ -237,9 +218,9 @@ def main(argv=None) -> int:
         value = getattr(args, flag)
         if value is not None:
             setattr(env_cfg, field, value)
-    # Unconditional: this both applies the flags above and repairs any Hydra
-    # override that landed on a soil_* field after __post_init__ had already
-    # built the material from it. The env raises if the two still disagree.
+    # Applies the flags above, and any Hydra override that landed on a soil_*
+    # field after __post_init__ built the material. The env raises if the two
+    # still disagree.
     env_cfg.apply_soil_material()
 
     if not args.no_window:
@@ -299,10 +280,8 @@ def main(argv=None) -> int:
         boom, angle = u.cfg.boom_command_for_cut(args.cut)
         lo_arm, hi_arm = u.cfg.arm_range
 
-        # Where the drum actually is against where the soil actually is. A bed
-        # the machine is already past, or crosses in a second, reads exactly
-        # like a drum that will not hold a load. Needs `angle`, so it lives
-        # here rather than up with the rest of the bed report.
+        # Where the drum is against where the soil is. Needs `angle`, so it
+        # sits here rather than with the rest of the bed report.
         drum_x = PIVOT_X + ARM_LEN * math.cos(angle)
         lead = drum_x + SHROUD_OUT_R
         ahead = u.cfg.bed_x[1] - lead
@@ -320,10 +299,9 @@ def main(argv=None) -> int:
             boom = args.boom
             print(f"  boom command {boom:+.3f} (given directly, --cut ignored)\n")
         else:
-            # --cut is measured to the SHROUD. The rotor sits inside it, so
-            # the vane tips reach shallower than the number asked for, and
-            # that is the number to watch: it decides how much of the rotor is
-            # actually in soil.
+            # --cut is to the shroud. The rotor sits inside it, so the vane
+            # tips reach shallower, and that depth is how much of the rotor is
+            # in soil.
             wall = SHROUD_OUT_R - ROTOR_TIP_R
             print(f"  to cut {args.cut:.3f} m -> arm {angle:+.3f} rad "
                   f"-> boom command {boom:+.3f}")
@@ -335,11 +313,8 @@ def main(argv=None) -> int:
         obs, _ = env.reset()
         action = torch.zeros(u.num_envs, u.cfg.action_space, device=u.device)
         slo, shi = u.cfg.shroud_range
-        # Throughput, because every training estimate for this task is
-        # (env-steps needed) / (env-steps per second) and the second term is
-        # the one nobody has. Wall clock over the whole run, so it includes
-        # the MPM solve, the coupler and the reward -- which is what a trainer
-        # actually pays for.
+        # Wall clock over the whole run, so the throughput figure includes
+        # the MPM solve, the coupler and the reward.
         t_start = time.perf_counter()
 
         peak = torch.zeros(u.num_envs, 2, device=u.device)

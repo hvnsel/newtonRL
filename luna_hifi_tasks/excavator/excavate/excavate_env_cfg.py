@@ -404,10 +404,17 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     w_overcut = 0.2                      # per cut_volume_ref taken below it
     w_spill = 20.0                       # asymmetry on top of a negative fill
     w_success = 20.0
-    w_stall = 0.5
-    w_drift = 1.0                        # the counter-rotation check
+    # Measured over four episodes of a random walk, against fill +7.68 and
+    # depth +2.02: drift came to -238.58, stall to -101.97 and energy to
+    # -37.25. drift was meant to catch the counter-rotation shove and instead
+    # charges for every yaw, because a skid-steer turning IS lateral motion
+    # the policy did not command forward. stall fires whenever a commanded
+    # speed is not achieved, which a random policy does constantly. energy
+    # rose with the wheel and drum torque now available.
+    w_stall = 0.025
+    w_drift = 0.05                       # the counter-rotation check
     w_upright = 2.0
-    w_energy = 1.0e-4
+    w_energy = 1.0e-5
     w_action_rate = 0.05
     w_time = 0.005
 

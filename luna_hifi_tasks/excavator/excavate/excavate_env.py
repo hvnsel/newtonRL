@@ -288,12 +288,18 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # whether the machine cut a trench or never moved.
         bed_z = self._bed_grid + self.scene.env_origins[:, 2].view(-1, 1, 1)
         plane_z = self._plane_over_grid()
-        cell_residual = torch.where(
-            self._work_mask, bed_z - plane_z, torch.zeros_like(bed_z)
-        )
+        # A cell with no particles rasterises to BED_FLOOR_Z, which is
+        # indistinguishable from one excavated to bedrock. Counting those as
+        # overcut charges the machine for ground it never touched: on a
+        # pile-in-front bed most of the work area is bare floor, and a machine
+        # holding every action at zero scored -156 for it.
+        floor = (self.scene.env_origins[:, 2] + BED_FLOOR_Z).view(-1, 1, 1)
+        soil = self._work_mask & (bed_z > floor + 0.5 * self.cfg.voxel_size)
+        cell_residual = torch.where(soil, bed_z - plane_z, torch.zeros_like(bed_z))
         area = self._grid_cell_area
         cells = self._work_mask.flatten(1).sum(-1).clamp_min(1)
         done = (self._work_mask & (bed_z <= plane_z)).flatten(1).sum(-1)
+        # Bare floor inside the work area is finished by definition.
         self._work_done = (done / cells).float()
         return {
             "target_level": level.unsqueeze(-1),

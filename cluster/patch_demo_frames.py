@@ -11,15 +11,15 @@
       /workspace/isaaclab/isaaclab.sh -p "$LUNA_SCRATCH/mpm_frames.py" \
       --max_steps 400 --device cuda:0 --viz newton_gl
 
-Isaac Lab 3.x ships a video recorder, but the environment base class builds it
-and env.step() drives it; the demos construct a SimulationContext directly and
-never make an environment, so the demos have no --video. The recorder's frame
-source, visualizer.render_rgb_array(), is exposed on every rendering
-visualizer, and the demo loop already calls sim.render().
+Isaac Lab 3.x's video recorder is built by the environment base class and
+driven by env.step(), and the demos construct a SimulationContext directly
+without an environment, so they carry no --video. The recorder's frame source,
+visualizer.render_rgb_array(), is exposed on every rendering visualizer, and
+the demo loop already calls sim.render().
 
 FRAME_EVERY=1 captures every step. The demos run at dt=1/100, so 400 steps is
-four seconds of simulated time, a thirteen second clip at 30 fps. Rendering
-every step is slow enough to look like a hang.
+four seconds of simulated time, a thirteen second clip at 30 fps, and takes
+long enough to look like a hang.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def _save_frame(sim, count: int) -> None:
             Image.fromarray(arr).save(path)
         print("[FRAME] %s %s" % (path, arr.shape), flush=True)
         return
-    # Naming what IS active turns "no image appeared" into a one-word fix.
+    # Names the visualizers that are active.
     active = [getattr(v.cfg, "visualizer_type", "?") for v in getattr(sim, "visualizers", [])]
     print("[FRAME] no visualizer exposed render_rgb_array; active: %s" % (active or ["none"]), flush=True)
 '''
@@ -85,8 +85,8 @@ def patch(path: Path) -> None:
         raise SystemExit(f"{path}: no run_simulator() -- is this an MPM demo?")
     if OLD_TAIL not in src:
         raise SystemExit(
-            f"{path}: the demo loop is not shaped as expected. Upstream changed it; "
-            "re-read run_simulator() and move the _save_frame call after sim.render()."
+            f"{path}: the demo loop is not shaped as expected. Re-read "
+            "run_simulator() and move the _save_frame call after sim.render()."
         )
     src = src.replace(ANCHOR, HELPER.strip() + "\n\n\n" + ANCHOR, 1)
     src = src.replace(OLD_TAIL, NEW_TAIL, 1)

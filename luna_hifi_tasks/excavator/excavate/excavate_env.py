@@ -6,12 +6,11 @@
 #
 # The shroud is the fixed outer half of each drum, carrying the inlet. It
 # hinges on the drum axis with its own actuator, so the policy aims the inlet
-# independently of where the arm is pointing: down into the cut to load,
-# turned up to hold, turned over the hopper to dump.
+# independently of the arm: down into the cut to load, turned up to hold,
+# turned over the hopper to dump.
 #
-# The reward is captured soil: mass of particles inside each drum's bore, in
-# the drum's own frame. A target-heightmap match is the planner's objective
-# one level up.
+# The reward is captured soil, the mass of particles inside each drum's bore
+# in the drum's own frame, plus progress toward the commanded cut plane.
 #
 # Step order in DirectRLEnv: _pre_physics_step -> _apply_action (x decimation)
 # -> _get_dones -> _get_rewards -> _reset_idx -> _get_observations. Fill is
@@ -101,22 +100,21 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._target_xy = torch.zeros(E, 2, device=dev)
         self._target_z0 = torch.zeros(E, device=dev)
         self._target_grad = torch.zeros(E, 2, device=dev)
-        # Which of the two exits ended the episode. The level above needs to
-        # tell "the shape is cut" from "the drum is full, come back after a
-        # dump" -- they lead to different next commands.
+        # Which of the two exits ended the episode: the shape is cut, or the
+        # drum is full and wants a dump.
         self._shape_done = torch.zeros(E, dtype=torch.bool, device=dev)
         self._drum_full = torch.zeros(E, dtype=torch.bool, device=dev)
         self._last_terms: dict[str, torch.Tensor] = {}
-        # Last step's bed, so a reset can sample the surface the drum will
-        # actually meet rather than assuming the bed is still undisturbed.
+        # Last step's bed, which a reset samples for the surface the drum
+        # comes down on.
         self._bed_grid = torch.full(
             (E, cfg.bed_grid_ny, cfg.bed_grid_nx), cfg.bed_top, device=dev
         )
         # Episodes since this env's soil was last returned to its spawn cells,
         # staggered so the envs do not all refresh on the same episode.
         self._soil_age = torch.randint(0, max(cfg.soil_reset_every, 1), (E,), device=dev)
-        # Soil still above target last step, and a mask for an episode's first
-        # step, where there is no previous value to difference against.
+        # Soil still above target last step, and a mask for an episode's
+        # first step, which has no previous value to difference against.
         self._above_prev = torch.zeros(E, device=dev)
         self._cut_fresh = torch.ones(E, dtype=torch.bool, device=dev)
 
@@ -132,10 +130,9 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             E, dev,
         )
         # InteractiveScene has already spawned the soil from
-        # cfg.scene.soil.spawn.material. A soil_* field changed after
-        # __post_init__ -- which is what a Hydra override does -- never reached
-        # that material, so the run would use the old soil while reporting the
-        # new number.
+        # cfg.scene.soil.spawn.material. A soil_* field set after
+        # __post_init__, which is what a Hydra override does, reaches the cfg
+        # and not that material.
         mismatch = cfg.soil_material_mismatch()
         if mismatch is not None:
             raise RuntimeError(
@@ -156,8 +153,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             f"cut ref {cfg.cut_volume_ref:.4f} m3, "
             f"bed grid {cfg.bed_grid_nx} x {cfg.bed_grid_ny} @ {cfg.voxel_size:.3f} m"
         )
-        # Read back off the material the solver got, not off the cfg fields --
-        # the whole point is that those two can disagree.
+        # Read off the material the solver got, rather than the cfg fields.
         print(
             f"[excavate] soil AS SPAWNED: density {mat.density:.0f} kg/m3, "
             f"friction {mat.friction:.2f}, cohesion (yield_stress) {mat.yield_stress:.0f} Pa, "
@@ -248,14 +244,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         floor = self.scene.env_origins[:, 2] + BED_FLOOR_Z
 
         def plane_at(xy: torch.Tensor) -> torch.Tensor:
-            """World z of the commanded plane at world xy, never below the
+            """World z of the commanded plane at world xy, clamped to the
             hard floor. Trailing dims free.
 
-            The clamp is what keeps a descending ramp achievable: at the
-            0.30 gradient cap the plane drops below the floor after about
-            half a metre of travel, and the ground there cannot follow it, so
-            without this the shape can never be matched and the episode can
-            only time out.
+            At the 0.30 gradient cap an unclamped plane drops below the floor
+            after about half a metre of travel.
             """
             nd = xy.dim() - 2
             rel = xy - self._target_xy.view(-1, *([1] * nd), 2)
@@ -264,11 +257,9 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             ).sum(dim=-1)
             return torch.maximum(z, floor.view(-1, *([1] * nd)))
 
-        # The plane sampled at the same cells the scan was taken at, in the
-        # SAME convention every scan backend uses: reference height minus
-        # ground height, so a lower surface reads larger. Written the other way
-        # round the drum's height does not cancel out of the difference, it
-        # doubles, and lowering an empty boom scores as if it were digging.
+        # The plane sampled at the cells the scan was taken at, in the
+        # convention every scan backend uses: reference height minus ground
+        # height, so a lower surface reads larger.
         pts = scan_points_world(
             front, self.robot.data.root_quat_w.torch, self._dig_pattern
         )[:, self._footprint]
@@ -276,30 +267,26 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         level = (drum_z - plane_at(front[:, :2])).clamp(-clip, clip)
         grad_b = R.world_to_body_xy(self._target_grad, self._base_yaw())
         foot = actor_scan[:, self._footprint]
-        # t - foot is (drum - target) - (drum - ground) = ground - target.
-        # Positive means soil still standing above the commanded plane, and
-        # the drum's height is gone from it.
+        # t - foot is (drum - target) - (drum - ground) = ground - target, so
+        # the drum's own height cancels. Positive is soil still standing above
+        # the commanded plane.
         residual = t - foot
 
-        # Progress is measured over the WORK AREA -- a fixed patch of world,
-        # not the window under the drum. Summed over an episode the window
-        # version telescopes to above(first step) - above(last step), two
-        # snapshots taken in two different places, which scores the same
-        # whether the machine cut a trench or never moved.
+        # Progress is measured over the work area, a patch fixed in the world
+        # for the episode, so the sum of the per-step differences is the total
+        # volume the machine removed from it.
         bed_z = self._bed_grid + self.scene.env_origins[:, 2].view(-1, 1, 1)
         plane_z = self._plane_over_grid()
-        # A cell with no particles rasterises to BED_FLOOR_Z, which is
-        # indistinguishable from one excavated to bedrock. Counting those as
-        # overcut charges the machine for ground it never touched: on a
-        # pile-in-front bed most of the work area is bare floor, and a machine
-        # holding every action at zero scored -156 for it.
+        # A cell with no particles rasterises to BED_FLOOR_Z, the same height
+        # as one excavated to bedrock, so cells at the floor are excluded from
+        # both volumes.
         floor = (self.scene.env_origins[:, 2] + BED_FLOOR_Z).view(-1, 1, 1)
         soil = self._work_mask & (bed_z > floor + 0.5 * self.cfg.voxel_size)
         cell_residual = torch.where(soil, bed_z - plane_z, torch.zeros_like(bed_z))
         area = self._grid_cell_area
         cells = self._work_mask.flatten(1).sum(-1).clamp_min(1)
         done = (self._work_mask & (bed_z <= plane_z)).flatten(1).sum(-1)
-        # Bare floor inside the work area is finished by definition.
+        # Bare floor inside the work area counts as finished.
         self._work_done = (done / cells).float()
         return {
             "target_level": level.unsqueeze(-1),
@@ -321,12 +308,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         yaw: torch.Tensor,
         arm_angle: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """(world xy, world z) of the soil surface where the front drum will
-        come down. The xy is the anchor the commanded plane is measured from.
+        """(world xy, world z) of the soil surface where the front drum comes
+        down. The xy is the anchor the commanded plane is measured from.
 
         Sampled from the bed as it stood at the end of the previous episode,
-        so a carried-over bed gets a target below what it has already lost
-        rather than one it has met before the machine moves.
+        so a carried-over bed gets a target below the ground it has left.
         """
         c = self.cfg
         reach = PIVOT_X + ARM_LEN * torch.cos(arm_angle)
@@ -452,9 +438,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             self._drum_full = R.front_drum_full(fill_frac, c.fill_success_fraction)
 
         above = cut["above_volume"]
-        # Shape achieved: the ground matches the commanded plane both ways.
-        # Gated on _cut_fresh so an episode whose target is already met does
-        # not end before the machine has taken a step.
+        # Shape achieved: the ground matches the commanded plane both ways,
+        # after at least one step.
         residual = above + cut["below_volume"]
         self._shape_done = (
             residual <= c.shape_success_fraction * c.cut_volume_ref
@@ -466,9 +451,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         all_tau = d.applied_torque.torch
         load_ref = 2.0 * c.target_load_kg
 
-        # Kept so a scripted run can say WHICH term produced a step reward.
-        # A single scalar cannot distinguish "it is digging well" from "one
-        # term is firing on something unrelated".
+        # Signed weighted terms, kept so a scripted run can read a step
+        # reward term by term.
         self._last_terms = {
             "fill": c.w_fill * fill_delta / load_ref,
             "depth": c.w_depth * depth_delta / c.cut_volume_ref,
@@ -503,9 +487,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
-        # Read before the flags are cleared below. The level above has to tell
-        # "the shape is cut" from "the drum is full, come back after a dump":
-        # they lead to different next commands.
+        # Read before the flags are cleared below.
         exits = {
             "Episode/shape_done": float(self._shape_done[env_ids].float().mean()),
             "Episode/drum_full": float(self._drum_full[env_ids].float().mean()),
@@ -520,16 +502,15 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         yaw = jitter(c.spawn_yaw_jitter)
         xy_off = torch.stack([jitter(c.spawn_x_jitter), jitter(c.spawn_y_jitter)], dim=-1)
         arm = c.arm_start_angle + jitter(c.arm_start_jitter)
-        # Rotor phase over one pocket. Every env started at phase 0, which is
-        # a variable correlated across the whole batch now that the policy
-        # observes it.
+        # Rotor phase, sampled over one pocket so drum_phase is decorrelated
+        # across the batch.
         pocket = 2.0 * math.pi / ROTOR_VANES
         drum = torch.rand(n, device=dev) * pocket
         spawn_xy = self._reset_robot(env_ids, yaw, arm, xy_off, drum)
 
         # Soil returns to its spawn cells every soil_reset_every episodes. In
-        # between the env keeps the ground it has worked, which is the only
-        # thing that makes one env's bed differ from another's.
+        # between the env keeps the ground it has worked, which is what makes
+        # one env's bed differ from another's.
         self._soil_age[env_ids] += 1
         stale = env_ids[self._soil_age[env_ids] >= c.soil_reset_every]
         if stale.numel() > 0:
@@ -537,8 +518,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             self._soil_age[stale] = 0
             self._bed_grid[stale] = c.bed_top
 
-        # The drums start clear of the bed, so fill is genuinely zero here
-        # whether or not the soil was reset.
+        # The drums start clear of the bed, so fill is zero whether or not
+        # the soil was reset.
         self._fill_kg[env_ids] = 0.0
         self._fill_prev_kg[env_ids] = 0.0
         self._fill_filt[env_ids] = 0.0
@@ -553,8 +534,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._target_xy[env_ids] = anchor_xy
         self._target_z0[env_ids] = (surface - depth).clamp_min(floor)
 
-        # Gradient sampled in the BODY frame and rotated out, so "forward" is
-        # the direction the machine is actually pointing when it starts.
+        # Gradient sampled in the body frame and rotated out, so forward is
+        # the direction the machine starts pointing.
         grad = torch.stack([
             jitter(c.cut_gradient_max),
             jitter(c.cut_gradient_max * c.cut_lateral_fraction),

@@ -8,10 +8,9 @@
 #   particles    -- rasterise live MPM particles, then sample the same way.
 #                   The deformable tier, where excavation trains.
 #
-# Both return an identical tensor: (num_envs, ny*nx) of CHASSIS-RELATIVE
-# heights in the robot's yaw frame. A policy cannot tell which backend produced
-# its observation, so a skill trained on procedural terrain runs unmodified on
-# MPM soil and the fidelity tier is a config choice.
+# Both return the same tensor: (num_envs, ny*nx) of chassis-relative heights
+# in the robot's yaw frame, as reference_z minus ground_z, so a lower surface
+# reads larger. A skill trained on one backend runs unmodified on the other.
 
 from __future__ import annotations
 
@@ -48,9 +47,8 @@ def scan_pattern(
 ) -> torch.Tensor:
     """Local (x, y) offsets of the scan grid. Returns (ny*nx, 2).
 
-    Row-major in (y, x) so a reshape to (ny, nx) is a picture of the ground
-    with +x to the right -- which matters only for debugging, but debugging a
-    terrain observation without that is miserable.
+    Row-major in (y, x), so a reshape to (ny, nx) is a picture of the ground
+    with +x to the right.
     """
     xs = (torch.arange(nx, device=device, dtype=torch.float32) - (nx - 1) / 2) * cell + forward_bias
     ys = (torch.arange(ny, device=device, dtype=torch.float32) - (ny - 1) / 2) * cell
@@ -76,11 +74,8 @@ def degrade_scan(
 ) -> torch.Tensor:
     """Model a depth sensor: noise and dropout that grow with range.
 
-    Stereo depth error goes as the square of distance, so a single figure for
-    the whole window is wrong at both ends. Both terms scale with 1 + r/
-    range_ref, which is linear rather than quadratic and errs toward the
-    optimistic. A dropped cell reads `invalid_value`, outside the clipped
-    range of any real height.
+    Both terms scale with 1 + r/range_ref. A dropped cell reads
+    `invalid_value`, which sits outside the clipped range of a real height.
     """
     if noise_std <= 0.0 and dropout <= 0.0:
         return scan
@@ -99,9 +94,7 @@ def dig_scan_pattern(device="cpu") -> torch.Tensor:
 def yaw_from_quat(q: torch.Tensor) -> torch.Tensor:
     """Yaw only, from an (x, y, z, w) quaternion. Returns (E,).
 
-    Order matters and is Isaac Lab 3.x's xyzw, not 2.x's wxyz. A swapped order
-    here does not raise -- it yields a yaw that is wrong by a rotation, and the
-    terrain scan silently samples the ground somewhere the machine is not.
+    The order is Isaac Lab 3.x's xyzw.
     """
     x, y, z, w = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
     return torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
@@ -114,11 +107,8 @@ def scan_points_world(
 ) -> torch.Tensor:
     """Place the scan pattern in the world. Returns (E, N, 2) of xy.
 
-    Rotated by YAW ONLY, deliberately. Using the full orientation tilts the
-    sampling grid whenever the machine pitches or rolls, so the same terrain
-    reads differently depending on the chassis attitude and the policy has to
-    learn to undo its own suspension geometry. Every height scanner worth
-    copying does it this way.
+    Rotated by yaw only, so the sampling grid stays flat as the machine
+    pitches and rolls and the same terrain always reads the same.
     """
     yaw = yaw_from_quat(quat_w)
     c, s = torch.cos(yaw), torch.sin(yaw)
@@ -144,8 +134,7 @@ def sample_height_grid(
     """Bilinear sample of a per-env height grid. Returns (E, N).
 
     Query points outside the grid return `outside_value` rather than the
-    clamped edge height. Clamping invents a flat plateau extending to infinity
-    past the bed, which a policy will happily learn to drive onto.
+    clamped edge height.
     """
     E, ny, nx = grid.shape
     local = query_xy - env_origins[:, None, :2]
@@ -208,12 +197,10 @@ def scan_from_raycaster(
 ) -> torch.Tensor:
     """Rigid tier, live. Same output as the other two backends.
 
-    Isaac Lab's own height_scan observation is
-        sensor_z - hit_z - offset
-    and with the sensor mounted `sensor_height_offset` above the chassis that
-    is exactly chassis_z - ground_z, the quantity scan_from_heightfield
-    returns. A ray that misses everything comes back with an inf/huge hit, so
-    the clip is load-bearing here, not cosmetic.
+    Isaac Lab's height_scan observation is sensor_z - hit_z - offset, which
+    with the sensor mounted `sensor_height_offset` above the chassis is
+    chassis_z - ground_z. A ray that hits nothing returns an infinite hit,
+    which the clip absorbs.
     """
     h = sensor_pos_w[:, 2:3] - ray_hits_w[..., 2] - sensor_height_offset
     return torch.nan_to_num(h, nan=clip, posinf=clip, neginf=-clip).clamp(-clip, clip)
@@ -239,14 +226,14 @@ def excavation_height_field_np(
     slope: float = 0.04,
     noise: float = 0.01,
 ) -> np.ndarray:
-    """One sub-terrain, as Isaac Lab's height_field_to_mesh wants it: an int16
-    array of shape (width_pixels, length_pixels) in units of vertical_scale,
-    with index [i, j] at x = i*horizontal_scale, y = j*horizontal_scale.
+    """One sub-terrain, in the form Isaac Lab's height_field_to_mesh takes: an
+    int16 array of shape (width_pixels, length_pixels) in units of
+    vertical_scale, with index [i, j] at x = i*horizontal_scale,
+    y = j*horizontal_scale.
 
-    This is generate_excavation_terrain's numpy twin for the terrain
-    generator, which builds meshes on the CPU once at startup. Feature
-    amplitudes scale with `difficulty` so the importer's curriculum rows go
-    from gentle to full relief.
+    generate_excavation_terrain's numpy twin, for the terrain generator, which
+    builds meshes on the CPU once at startup. Feature amplitudes scale with
+    `difficulty`, which is what the importer's curriculum rows vary.
     """
     xs = np.arange(width_pixels, dtype=np.float64) * horizontal_scale
     ys = np.arange(length_pixels, dtype=np.float64) * horizontal_scale
@@ -289,11 +276,8 @@ def generate_excavation_terrain(
     device: torch.device | str = "cpu",
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
-    """Height grids that look like ground this machine has worked over.
-
-    Pits are capped near the machine's own reach (0.19 m) and features sized
-    near the drum's 1.0 m swath, because terrain the excavator cannot itself
-    produce teaches the navigator to avoid obstacles it will never meet.
+    """Height grids of ground this machine has worked over: pits capped near
+    its own 0.19 m reach, features sized near the drum's 1.0 m swath.
     """
     def rand(*shape, lo=0.0, hi=1.0):
         r = torch.rand(*shape, device=device, generator=generator)

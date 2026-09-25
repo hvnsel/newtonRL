@@ -5,13 +5,10 @@
 #   1. soil_heightmap   -- MPM particles rasterised into a per-env height grid
 #   2. drum_fill        -- mass of MPM particles inside a drum's cavity
 #
-# Both are pure PyTorch. A Warp kernel costs the same -- one pass over the
-# particles, nothing next to the MPM solve -- but JIT-compiles to a cache
-# directory that is cold on every cluster job or a shared-filesystem
-# coordination problem. scatter_reduce has neither failure mode.
+# Both are pure PyTorch, one scatter_reduce pass over the particles.
 #
-# Nothing here imports isaaclab or newton, so the file runs on a laptop with
-# no GPU and the Newton API surface stays in two adapters at the bottom.
+# Imports torch only, so the file runs without a GPU and the Newton API
+# surface stays in the two adapters at the bottom.
 
 from __future__ import annotations
 
@@ -36,13 +33,8 @@ def soil_heightmap(
     """Rasterise particles into a per-env height grid. Returns (E, ny, nx).
 
     Each cell takes the height of the tallest particle in it. Cells with no
-    particle read `floor_height` -- which must be the height of the hard floor
-    under the bed, not zero, or an excavated cell and an empty cell become
-    indistinguishable to the policy.
-
-    Particles outside the grid are dropped rather than clamped: clamping piles
-    everything outside the window onto the boundary cells and puts a fake wall
-    of soil at the edge of the observation.
+    particle read `floor_height`, which is the height of the hard floor under
+    the bed. Particles outside the grid are dropped.
     """
     E = env_origins.shape[0]
     device = particle_pos_w.device
@@ -70,9 +62,8 @@ def heightmap_to_obs(
 ) -> torch.Tensor:
     """Flatten a height grid into a policy observation.
 
-    Heights are made RELATIVE to a reference (the chassis height, or the
-    undisturbed bed surface) before scaling. An absolute height observation
-    makes the policy relearn the task at every terrain elevation.
+    Heights are taken relative to a reference, the chassis height or the
+    undisturbed bed surface, then clipped and scaled.
     """
     rel = (heightmap - reference).clamp(-clip, clip) * scale
     return rel.flatten(start_dim=1)
@@ -95,15 +86,12 @@ def drum_fill_mass(
 ) -> torch.Tensor:
     """Mass of soil inside each drum's cavity. Returns (E,).
 
-    A particle counts when, in the DRUM's own frame, it is within `bore_radius`
-    of the spin axis and within `half_length` along it. The drum's frame is the
-    right one to test in: the drum both pitches with the arm and spins, so a
-    world-axis-aligned box test would drift off the cavity as soon as the arm
-    moved.
+    A particle counts when, in the drum's own frame, it is within
+    `bore_radius` of the spin axis and within `half_length` along it. The test
+    is in the drum frame, which pitches with the arm.
 
-    The spin axis is the drum body's local y (see excavator.py -- every hinge in
-    this machine turns about y), so the radial test uses the local x and z
-    components.
+    The spin axis is the drum body's local y, as every hinge in this machine
+    is, so the radial test uses the local x and z components.
     """
     rel = particle_pos_w - drum_pos_w[particle_env]
     local = quat_apply_inverse(drum_quat_w[particle_env], rel)
@@ -122,21 +110,17 @@ def drum_fill_mass(
 
 
 def drum_fill_fraction(fill_mass: torch.Tensor, capacity_kg: float) -> torch.Tensor:
-    """Normalise fill to [0, 1+]. Not clamped at the top on purpose: a reading
-    above 1.0 means the bore capacity estimate is wrong, or particles are
-    inside the shell wall, and silently clamping hides both."""
+    """Normalise fill to [0, 1+]. Unclamped at the top, so a bore capacity
+    estimate that is too small shows as a reading above 1.0."""
     return fill_mass / capacity_kg
 
 
 # ---------------------------------------------------------------------------
 # Quaternion helper
 #
-# ORDER IS (x, y, z, w). Isaac Lab 3.x migrated from 2.x's (w, x, y, z) and
-# every pose in isaaclab.assets is xyzw. Reversing it does not crash: it
-# rotates by a different orientation, so drum fill reads plausible-but-wrong.
-#
-# Mirrors isaaclab.utils.math.quat_apply_inverse, duplicated so this module
-# stays importable without isaaclab.
+# Order is (x, y, z, w), which is what every pose in isaaclab.assets carries
+# on Isaac Lab 3.x. Mirrors isaaclab.utils.math.quat_apply_inverse, duplicated
+# so this module stays importable without isaaclab.
 # ---------------------------------------------------------------------------
 
 
@@ -155,22 +139,20 @@ def quat_apply_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
 def mpm_particle_state(mpm_object) -> tuple[torch.Tensor, torch.Tensor]:
     """Flatten a Newton MPMObject's particles to (positions, env index).
 
-    Verified against isaaclab_newton on the develop branch:
+    The isaaclab_newton surface this reads:
 
         MPMObject.data.particle_pos_w   ProxyArray, wp.vec3f,
                                         shape (num_instances, particles_per_object)
         MPMObject.num_instances         int
         MPMObject.particles_per_object  int
 
-    Two details worth knowing. Particles are ALREADY shaped per-environment, so
-    the env index is a repeat_interleave over a fixed stride and not the
-    "divide a flat array" guess it would be natural to write. And `.torch` is a
-    zero-copy view onto the warp array, so this costs a reshape, not a device
-    round-trip -- but it also means the tensor aliases live simulation memory
-    and must not be held across a step.
+    Particles are already shaped per-environment, so the env index is a
+    repeat_interleave over a fixed stride. `.torch` is a zero-copy view onto
+    the warp array, so the returned tensor aliases live simulation memory and
+    is valid until the next step.
 
-    There is deliberately no mass here: MPMObjectData exposes no per-particle
-    mass at all. Use `mpm_grid_particle_mass` on the spawn cfg instead.
+    Per-particle mass comes from `mpm_grid_particle_mass` on the spawn cfg;
+    MPMObjectData does not carry it.
     """
     pos = mpm_object.data.particle_pos_w.torch          # (E, P, 3)
     num_envs = mpm_object.num_instances
@@ -185,18 +167,13 @@ def mpm_particle_state(mpm_object) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def mpm_grid_particle_mass(cfg) -> float:
-    """Per-particle mass [kg] for an MPMGridCfg, by the same arithmetic the
-    spawner uses.
+    """Per-particle mass [kg] for an MPMGridCfg, by the arithmetic in
+    isaaclab_newton.sim.spawners.mpm.mpm. Drum fill is reported in kilograms
+    against this number.
 
-    Mirrors isaaclab_newton.sim.spawners.mpm.mpm exactly, because drum fill is
-    reported in kilograms and a mass that disagrees with the spawner's makes
-    every excavation reward wrong by a constant factor -- which trains a
-    perfectly confident policy toward a miscalibrated target.
-
-    Note the lattice resolution is ceil()ed per axis, so cell_volume is NOT
-    simply voxel_size**3 / particles_per_cell. Rounding up on a bed whose
-    extent is not a whole number of voxels makes the real particles smaller
-    than the naive formula suggests.
+    The lattice resolution is ceil()ed per axis, so cell_volume is the true
+    extent divided by that resolution rather than
+    voxel_size**3 / particles_per_cell.
     """
     import math as _math
 

@@ -55,11 +55,19 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     cfg: ExcavatorExcavateEnvCfg
 
     def __init__(self, cfg: ExcavatorExcavateEnvCfg, render_mode: str | None = None, **kwargs):
-        super().__init__(cfg, render_mode, **kwargs)
-        assert self.num_envs <= cfg.max_num_envs, (
-            f"num_envs={self.num_envs} exceeds max_num_envs={cfg.max_num_envs}; the MPM "
-            "sparse-grid caps were sized for the latter. Raise max_num_envs in the cfg."
+        # The sparse-grid capacities are absolute totals derived in
+        # __post_init__ from max_num_envs, and Hydra applies --num_envs after
+        # it. Re-derive them for the count actually being run, before
+        # super().__init__ creates the solver.
+        n = int(cfg.scene.num_envs)
+        assert n <= cfg.max_num_envs, (
+            f"num_envs={n} exceeds max_num_envs={cfg.max_num_envs}, the ceiling this "
+            "config declares. Raise max_num_envs in the cfg and check the grid budget."
         )
+        if n != cfg.max_num_envs:
+            cfg.max_num_envs = n
+            cfg.__post_init__()
+        super().__init__(cfg, render_mode, **kwargs)
 
         E, dev = self.num_envs, self.device
         self._actions = torch.zeros(E, 5, device=dev)

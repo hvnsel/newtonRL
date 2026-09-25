@@ -9,8 +9,10 @@
 #     alone, which is the asymmetric actor-critic: the critic reads the clean
 #     scan and true slip, the actor what a rover could sense.
 #
-# gamma 0.995 is an effective horizon of 200 steps, 8 s at 25 Hz, against a
-# 500-step episode. A goal reached 2.5 s out discounts to 0.73.
+# gamma 0.997 is an effective horizon of 333 steps, 13 s at 25 Hz, against a
+# 750-step episode covering an 18 m traverse. A goal reached 400 steps out
+# discounts to 0.30, so the terminal bonus stays visible from the start of a
+# long run.
 
 from isaaclab.utils.configclass import configclass
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
@@ -43,7 +45,7 @@ class ExcavatorNavigatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         num_mini_batches=4,
         learning_rate=5.0e-4,
         schedule="adaptive",
-        gamma=0.995,
+        gamma=0.997,
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,

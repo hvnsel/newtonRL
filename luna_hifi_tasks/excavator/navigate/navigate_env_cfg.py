@@ -112,9 +112,11 @@ class NavigateSceneCfg(InteractiveSceneCfg):
 
 @configclass
 class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
-    # 200 Hz physics, policy at 25 Hz, 500 steps per episode.
+    # 200 Hz physics, policy at 25 Hz, 750 steps per episode. Top speed is
+    # 1.5 m/s, so 30 s covers a goal_dist_max traverse with margin for turning
+    # and slip.
     decimation = 8
-    episode_length_s = 20.0
+    episode_length_s = 30.0
 
     sim: SimulationCfg = SimulationCfg(
         dt=1.0 / 200.0,
@@ -136,17 +138,19 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     state_space = NAV_CRITIC.dim         # 231, critic only
 
     # --- goals ---
-    goal_dist_range = (2.0, 5.0)         # initial sampling band, metres
-    goal_dist_max = 8.0                  # curriculum ceiling
+    goal_dist_range = (3.0, 8.0)         # initial sampling band, metres
+    goal_dist_max = 18.0                 # curriculum ceiling
     goal_dist_tol = 0.5                  # reached when closer than this ...
     goal_heading_tol_rad = 0.35          # ... and facing within this
-    spawn_xy_jitter = 2.0                # random offset inside the terrain cell
+    spawn_xy_jitter = 3.0                # random offset inside the terrain cell
 
     # Goals are held inside the sub-terrain the env was assigned. Cells are
-    # 16 m and the machine is 3.78 m long, so the margin leaves it room to
-    # turn at the boundary. goal_cell_half is derived in __post_init__.
-    goal_cell_margin = 2.0
-    goal_cell_half = 6.0
+    # 32 m and the machine is 3.78 m long, so the margin leaves it room to
+    # turn at the boundary. goal_cell_half is derived in __post_init__ as
+    # 0.5 * cell - margin, which is 13 m: far enough that far_scan's 4 m
+    # lookahead is choosing a line rather than looking past the goal.
+    goal_cell_margin = 3.0
+    goal_cell_half = 13.0
 
     # Goal heading, relative to the bearing the machine drove in on, which is
     # how a dig approach arrives. goal_yaw_random_frac of episodes draw a
@@ -159,9 +163,11 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # Two independent ladders. Goal distance widens globally on the success
     # rate over a window of finished episodes; terrain difficulty is per-env
     # and moves through TerrainImporter.update_env_origins on every reset.
-    curriculum_window = 256              # episodes averaged for the success rate
+    # A reset batch at 1024 envs can be most of the batch at once, so the
+    # window spans about two reset waves.
+    curriculum_window = 2048             # episodes averaged for the success rate
     curriculum_success_rate = 0.7        # widen the band above this ...
-    curriculum_step = 1.0                # ... by this many metres
+    curriculum_step = 1.5                # ... by this many metres
     # An episode that ended without reaching the goal and closed less than
     # this fraction of its starting distance moves that env down a level.
     terrain_demote_fraction = 0.5
@@ -189,7 +195,7 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
     # --- termination ---
     max_tilt_rad = math.radians(60.0)
-    max_env_excursion = 10.0             # metres from the env origin
+    max_env_excursion = 24.0             # metres from the env origin
 
     # --- arms ---
     arm_hold_angle = ARM_STOW_ANGLE
@@ -221,7 +227,11 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
                 integrator="implicitfast",
                 use_mujoco_contacts=False,
             ),
-            collision_cfg=NewtonCollisionPipelineCfg(max_triangle_pairs=2_500_000),
+            # Broadphase pair budget against the terrain mesh, a global total.
+            # At 1024 machines the wheels alone put ~29k colliders near the
+            # mesh, ~50 triangles each in an inflated AABB, so ~1.4M pairs. A
+            # pair is a couple of indices, so 10M costs on the order of 160 MB.
+            collision_cfg=NewtonCollisionPipelineCfg(max_triangle_pairs=10_000_000),
             num_substeps=2,
             debug_mode=False,
             default_shape_cfg=NewtonShapeCfg(margin=0.01),

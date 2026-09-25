@@ -1,10 +1,10 @@
 # Excavation skill: fill both drums from an MPM regolith bed.
 #
-#   isaaclab train --rl_library rsl_rl --task Luna-Excavator-Excavate --num_envs 16
+#   isaaclab train --rl_library rsl_rl --task Luna-Excavator-Excavate --num_envs 104
 #
-# Luna-Excavator-Excavate-Small is the same task on a 4.4 x 1.8 x 0.15 m bed
-# (~9.5k particles/env instead of 32k), for watching the MPM coupling work on
-# a laptop:
+# Luna-Excavator-Excavate-Small is the same task on a 0.9 x 1.1 x 0.16 m pile
+# (6,882 particles/env against the full bed's 161,001), for watching the MPM
+# coupling work on a laptop:
 #
 #   isaaclab -p scripts/dig_demo.py
 #   isaaclab play  --rl_library rsl_rl --task Luna-Excavator-Excavate --num_envs 1 --checkpoint latest --viz newton

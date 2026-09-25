@@ -70,20 +70,24 @@ class HfExcavationTerrainCfg(HfTerrainBaseCfg):
 
 
 # One sub-terrain type at three severities, so a single row mixes easy and
-# hard cells. Cells are 16 m against a 3.4 m machine and goal distances up to
-# 8 m.
+# hard cells. Cells are 32 m against a 3.4 m machine and goal distances up to
+# 18 m. Ten rows is the difficulty ladder and twelve columns the variations at
+# each rung: 120 cells, about 8 envs per cell at 1024.
+#
+# At a 0.1 m horizontal scale a cell is 320 x 320 px, so this is ~24M
+# triangles built on the CPU at startup. use_cache keeps that to the first run.
 EXCAVATION_TERRAINS_CFG = TerrainGeneratorCfg(
-    size=(16.0, 16.0),
+    size=(32.0, 32.0),
     border_width=4.0,
-    num_rows=6,
-    num_cols=8,
+    num_rows=10,
+    num_cols=12,
     # Orders the rows by difficulty, which is what max_init_terrain_level and
     # the importer's level promotion index into.
     curriculum=True,
     horizontal_scale=0.1,
     vertical_scale=0.005,
     slope_threshold=0.75,
-    use_cache=False,
+    use_cache=True,
     sub_terrains={
         "worked_light": HfExcavationTerrainCfg(
             proportion=0.3, num_pits=2, num_piles=2,

@@ -276,12 +276,22 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # depth reward divides by it, so w_depth is points for one nominal cut.
     cut_volume_ref: float = 0.22
 
-    # The sparse-grid capacities are absolute totals across all envs and are
-    # sized for this number, since Hydra applies --num_envs after
-    # __post_init__. The env asserts num_envs does not exceed it, and grid cost
-    # goes up in proportion: 16 envs of the full bed is 2.6M particles and
-    # about 6.4 GB of grid.
-    max_num_envs = 16
+    # The ceiling on envs, asserted by the env. The grid capacities are
+    # absolute totals and the env re-derives them for the count actually being
+    # run, so this is a guard rather than the allocation size.
+    #
+    # The full bed at a 0.03 voxel is 161,001 particles per env, and grid bytes
+    # are next_pow2(8 * envs * 161001) * 192, which makes the cost a step
+    # function. Only the top of each bucket is worth running:
+    #
+    #      <= 26 envs   6.4 GB      <= 104 envs   25.8 GB
+    #      <= 52 envs  12.9 GB      <= 208 envs   51.5 GB
+    #
+    # 104 sits in 25.8 GB of grid plus ~1.7 GB of particle state and ~0.7 GB of
+    # rigid-solver buffers, which fits an 80 GB H100 with the card half free.
+    # Throughput, not memory, is what decides whether it is usable: 104 envs is
+    # 16.7M coupled particles. scripts/dig_demo.py prints env-steps/sec.
+    max_num_envs = 104
 
     # actions: [forward, yaw, boom, drum, shroud] in [-1, 1]. Boom, drum and
     # shroud are one command each, applied to both ends.
@@ -615,9 +625,8 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
 @configclass
 class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
-    """A bed that fits a 6 GB laptop: 1,152 particles and 16,384 active cells,
-    against the full bed's 32,000 particles per env and grid caps in the
-    millions.
+    """A bed that fits a 6 GB laptop: 6,882 particles per env against the full
+    bed's 161,001.
 
     The soil is a pile in front of the machine. The machine sits on the rigid
     ground plane and the front drum alone reaches soil, exercising the particle

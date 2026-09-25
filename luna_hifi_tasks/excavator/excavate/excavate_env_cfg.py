@@ -299,9 +299,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     bed_grid_ny: int = 0
     bed_particles_per_env: int = 0
     drum_capacity_kg: float = DRUM_CAPACITY_KG
-    # Footprint area times the mean commanded depth. The depth reward divides
-    # by it, so w_depth is "points for one nominal cut".
-    cut_volume_ref: float = 0.04
+    # Work area times the mean commanded depth, derived in __post_init__. The
+    # depth reward divides by it, so w_depth is "points for one nominal cut".
+    cut_volume_ref: float = 0.22
 
     # The sparse-grid capacities are absolute totals across all envs and do not
     # scale with --num_envs, which Hydra applies after __post_init__. They are
@@ -360,6 +360,16 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # planner is supposed to align the approach pose with the ramp; it is
     # non-zero so the policy learns that a lateral residual means yaw.
     cut_lateral_fraction: float = 0.3
+
+    # The ground this cut is responsible for, anchored where the drum first
+    # meets soil and extending forward along the approach heading. Progress is
+    # measured over THIS, fixed in the world, not over a window that travels
+    # with the drum: a window integral telescopes to the difference between
+    # two snapshots taken in two different places, which is the same number
+    # whether the machine dug a trench or sat still.
+    work_area_length: float = 2.0            # m ahead of the anchor
+    work_area_behind: float = 0.3            # m behind it
+    work_area_width: float = 1.2             # m, a little over the 1.0 m swath
 
     # Residual volume, as a fraction of cut_volume_ref, at or below which the
     # commanded shape counts as achieved and the episode ends.
@@ -496,9 +506,14 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         return nx * ny
 
     def __post_init__(self) -> None:
+        # One nominal cut: the whole work area taken down by the mean
+        # commanded depth. w_depth then reads as points for finishing a cut,
+        # and shape_success_fraction as the residual allowed at the end.
         lo, hi = self.cut_depth_range
         self.cut_volume_ref = (
-            self.footprint_cells() * DIG_SCAN_CELL ** 2 * 0.5 * (lo + hi)
+            (self.work_area_length + self.work_area_behind)
+            * self.work_area_width
+            * 0.5 * (lo + hi)
         )
 
         # --- resolve the bed and write it into the scene -------------------

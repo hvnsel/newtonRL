@@ -84,6 +84,18 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         )
         self._cell_area = DIG_SCAN_CELL ** 2
 
+        # Env-local xy of every bed-grid cell centre, so the commanded plane
+        # and the work-area mask can be evaluated over the whole bed.
+        gx = cfg.bed_grid_lower[0] + (torch.arange(cfg.bed_grid_nx, device=dev) + 0.5) * cfg.voxel_size
+        gy = cfg.bed_grid_lower[1] + (torch.arange(cfg.bed_grid_ny, device=dev) + 0.5) * cfg.voxel_size
+        self._grid_xy = torch.stack(torch.meshgrid(gy, gx, indexing="ij")[::-1], dim=-1)
+        self._grid_cell_area = cfg.voxel_size ** 2
+        # Which of those cells this episode's cut is responsible for.
+        self._work_mask = torch.zeros(
+            E, cfg.bed_grid_ny, cfg.bed_grid_nx, dtype=torch.bool, device=dev
+        )
+        self._work_done = torch.zeros(E, device=dev)
+
         # The commanded cut, as a plane in the world frame:
         #   z(X, Y) = _target_z0 + _target_grad . ([X, Y] - _target_xy)
         self._target_xy = torch.zeros(E, 2, device=dev)
@@ -268,15 +280,32 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # Positive means soil still standing above the commanded plane, and
         # the drum's height is gone from it.
         residual = t - foot
+
+        # Progress is measured over the WORK AREA -- a fixed patch of world,
+        # not the window under the drum. Summed over an episode the window
+        # version telescopes to above(first step) - above(last step), two
+        # snapshots taken in two different places, which scores the same
+        # whether the machine cut a trench or never moved.
+        bed_z = self._bed_grid + self.scene.env_origins[:, 2].view(-1, 1, 1)
+        plane_z = self._plane_over_grid()
+        cell_residual = torch.where(
+            self._work_mask, bed_z - plane_z, torch.zeros_like(bed_z)
+        )
+        area = self._grid_cell_area
+        cells = self._work_mask.flatten(1).sum(-1).clamp_min(1)
+        done = (self._work_mask & (bed_z <= plane_z)).flatten(1).sum(-1)
+        self._work_done = (done / cells).float()
         return {
             "target_level": level.unsqueeze(-1),
             "grad_forward": grad_b[:, 0:1],
             "grad_lateral": grad_b[:, 1:2],
+            # Local, under the drum: what the policy servos the boom on.
             "depth_error": residual.mean(dim=-1, keepdim=True),
-            "cut_progress": (foot >= t).float().mean(dim=-1, keepdim=True),
+            # Global, over the work area: how much of the job is done.
+            "cut_progress": self._work_done.unsqueeze(-1),
             # m3 of soil still above the target, and taken below it
-            "above_volume": residual.clamp_min(0.0).sum(dim=-1) * self._cell_area,
-            "below_volume": (-residual).clamp_min(0.0).sum(dim=-1) * self._cell_area,
+            "above_volume": cell_residual.clamp_min(0.0).flatten(1).sum(-1) * area,
+            "below_volume": (-cell_residual).clamp_min(0.0).flatten(1).sum(-1) * area,
         }
 
     def _drum_spawn_ground(
@@ -304,6 +333,36 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             c.bed_grid_lower, c.voxel_size, c.bed_top,
         )[:, 0]
         return xy, self.scene.env_origins[env_ids, 2] + h
+
+    def _plane_over_grid(self) -> torch.Tensor:
+        """World z of the commanded plane at every bed-grid cell. (E, ny, nx)."""
+        rel = self._grid_xy.unsqueeze(0) - self._target_xy.view(-1, 1, 1, 2)
+        z = self._target_z0.view(-1, 1, 1) + (
+            rel * self._target_grad.view(-1, 1, 1, 2)
+        ).sum(dim=-1)
+        floor = (self.scene.env_origins[:, 2] + BED_FLOOR_Z).view(-1, 1, 1)
+        return torch.maximum(z, floor)
+
+    def _set_work_area(
+        self,
+        env_ids: torch.Tensor,
+        anchor_xy: torch.Tensor,
+        yaw: torch.Tensor,
+    ) -> None:
+        """Mark the bed-grid cells this episode's cut is responsible for: a
+        rectangle at the anchor, aligned with the approach heading."""
+        c = self.cfg
+        rel = self._grid_xy.unsqueeze(0) - (
+            anchor_xy - self.scene.env_origins[env_ids, :2]
+        ).view(-1, 1, 1, 2)
+        cos, sin = torch.cos(yaw).view(-1, 1, 1), torch.sin(yaw).view(-1, 1, 1)
+        fwd = rel[..., 0] * cos + rel[..., 1] * sin
+        lat = -rel[..., 0] * sin + rel[..., 1] * cos
+        self._work_mask[env_ids] = (
+            (fwd >= -c.work_area_behind)
+            & (fwd <= c.work_area_length)
+            & (lat.abs() <= 0.5 * c.work_area_width)
+        )
 
     def _fill_observed(self) -> torch.Tensor:
         """Estimated load as a fraction of target_load_kg, (E, 2)."""
@@ -498,6 +557,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._target_grad[env_ids] = R.body_to_world_xy(
             torch.where(ramp, grad, torch.zeros_like(grad)), yaw
         )
+        self._set_work_area(env_ids, anchor_xy, yaw)
 
         self._above_prev[env_ids] = 0.0
         self._cut_fresh[env_ids] = True

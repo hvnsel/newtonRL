@@ -1,13 +1,11 @@
 # navigate_env_cfg.py
 #
-# Navigation on the RIGID tier: procedurally generated, already-worked terrain
+# Navigation on the rigid tier: procedurally generated, already-worked terrain
 # as a static mesh, thousands of environments, no MPM. The observation carries
-# a 2-D terrain scan from a RayCaster, formatted identically to the scan the
-# excavate task builds from particles (see mdp/terrain.py), so a policy trained
-# here reads MPM soil correctly.
+# two 2-D terrain scans from RayCasters, in the same format the excavate task
+# builds from particles (see mdp/terrain.py).
 #
-#
-# Gravity is lunar. See excavator_cfg.py for what that changed.
+# Gravity is lunar. See excavator_cfg.py.
 
 from __future__ import annotations
 
@@ -48,9 +46,9 @@ from ..mdp.observations import (
 )
 from ..terrain_cfg import EXCAVATION_TERRAINS_CFG
 
-# Height the ray-caster origin sits above the chassis. Rays cast straight
-# down from here, and the observation subtracts it back out, so the scan reads
-# chassis-relative ground height. Same convention as Isaac's height_scan.
+# Height the ray-caster origin sits above the chassis. Rays cast straight down
+# from here and the observation subtracts it back out, so the scan reads
+# chassis-relative ground height, as Isaac's height_scan does.
 SCANNER_HEIGHT = 20.0
 
 NAV_OBS = navigate_obs_spec()
@@ -81,11 +79,10 @@ class NavigateSceneCfg(InteractiveSceneCfg):
 
     excavator: ArticulationCfg = EXCAVATOR_CFG
 
-    # Two windows, rotated by yaw only. The sizes are (NX-1)*cell because
-    # GridPatternCfg puts a ray at both ends of each axis, so NX*cell would
-    # give one extra row and column against the declared observation width.
+    # Two windows, rotated by yaw only. The sizes are (NX-1)*cell, since
+    # GridPatternCfg puts a ray at both ends of each axis.
     #
-    # far: 16 x 8 at 0.45 m, 2.40 m forward. Reaches x = 5.775, four metres
+    # far: 16 x 8 at 0.45 m, 2.40 m forward, reaching x = 5.775, four metres
     # past the front of the machine.
     far_scanner = RayCasterCfg(
         prim_path=CHASSIS_PRIM,
@@ -125,8 +122,8 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
         gravity=LUNAR_GRAVITY,
     )
 
-    # env_spacing is unused with generator terrain (origins come from the
-    # sub-terrain grid) but InteractiveSceneCfg requires it.
+    # With generator terrain the origins come from the sub-terrain grid, and
+    # env_spacing is carried because InteractiveSceneCfg requires it.
     scene: NavigateSceneCfg = NavigateSceneCfg(
         num_envs=1024,
         env_spacing=8.0,
@@ -151,10 +148,10 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     goal_cell_margin = 2.0
     goal_cell_half = 6.0
 
-    # Goal heading, relative to the bearing the machine drove in on. A dig
-    # approach arrives roughly facing the way it came; goal_yaw_random_frac
-    # of episodes still draw a heading uniformly so the skill can also turn
-    # on the spot when asked.
+    # Goal heading, relative to the bearing the machine drove in on, which is
+    # how a dig approach arrives. goal_yaw_random_frac of episodes draw a
+    # heading uniformly instead, which is where turning on the spot is
+    # learned.
     goal_yaw_spread = 0.5                # rad, 1 sigma
     goal_yaw_random_frac = 0.15
 
@@ -174,24 +171,20 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
     # --- reward weights ---
     # bearing is scaled by forward speed (see mdp/rewards.bearing_alignment),
-    # so its episode ceiling is ~6 rather than the 300 an ungated cosine paid
-    # for standing still and facing the goal.
+    # so its episode ceiling is ~6.
+    #
+    # Set from scripts/reward_audit.py, which prints per-term episode totals
+    # over a zero pass and a random walk.
     w_progress = 5.0
     w_bearing = 0.1
     w_goal = 20.0
     w_upright = 2.0
-    # Measured over 10 episodes of a random walk, against progress +0.92 and
-    # goal +4.00: energy came to -44.83 and slip to -15.91, so moving cost
-    # sixty points and earned five. energy in particular scales with wheel
-    # torque, which went up sixteen-fold when the wheel damping was raised
-    # from 25 to 400 to let the machine crawl; the weight was never revisited.
-    # These put the same random walk at about -3 and -2.
     w_slip = 0.006
     w_action_rate = 0.05
     w_energy = 1.3e-5
     w_time = 0.02
-    # With no arm actuator wired this term should read zero forever. It stays
-    # as an assertion in reward form: if it ever moves, something is wrong.
+    # No arm actuator is wired on this tier, so this term reads zero. It is
+    # an assertion in reward form.
     w_fill_change = 1.0
 
     # --- termination ---
@@ -204,7 +197,7 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # --- scan ---
     # Actor only; the critic sees both windows clean. Noise and dropout grow
     # with range, so the far window is degraded harder than the near one, and
-    # a dropped cell reads scan_invalid rather than a plausible height.
+    # a dropped cell reads scan_invalid.
     scan_clip = 1.0
     scan_noise_std = 0.02                # m, at scan_range_ref
     scan_dropout = 0.02                  # probability, at scan_range_ref
@@ -217,11 +210,10 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
         self.sim.physics = NewtonCfg(
             solver_cfg=MJWarpSolverCfg(
-                # Measured: driving eight machines over generated terrain
-                # printed "nefc overflow - please increase njmax to 504".
-                # These are fixed per-env buffers and overrunning one is an
-                # illegal access, not an error; a constraint is a couple of
-                # hundred bytes so there is no reason to be tight.
+                # Fixed per-env buffers; overrunning one is an illegal
+                # access. Driving eight machines over generated terrain asks
+                # for njmax 504, and a constraint is a couple of hundred
+                # bytes.
                 njmax=2048,
                 nconmax=1024,
                 cone="pyramidal",

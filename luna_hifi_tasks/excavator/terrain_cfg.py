@@ -5,11 +5,11 @@
 #
 # The generator builds every sub-terrain as a trimesh once at startup,
 # TerrainImporter lays them out in a rows x cols grid and assigns environments
-# to cells, and the Newton backend collides with the mesh. The RayCaster in the
-# navigate scene scans it.
+# to cells, the Newton backend collides with the mesh, and the RayCasters in
+# the navigate scene scan it.
 #
-# Rows are curriculum levels: the importer starts envs low and moves them up as
-# they succeed, and `difficulty` scales feature amplitude with the row.
+# Rows are curriculum levels: the importer starts envs low and moves them up
+# as they succeed, and `difficulty` scales feature amplitude with the row.
 
 from __future__ import annotations
 
@@ -25,12 +25,11 @@ from .mdp.terrain import excavation_height_field_np
 
 @height_field_to_mesh
 def excavation_terrain(difficulty: float, cfg: "HfExcavationTerrainCfg") -> np.ndarray:
-    """Height-field function in the shape Isaac Lab's decorator expects.
+    """Height-field function in the form Isaac Lab's decorator takes.
 
-    By the time this runs the decorator has already shrunk `cfg.size` by the
-    border, so the pixel counts below are the inner region and the returned
-    array drops straight into the padded buffer. Same arithmetic as Isaac's
-    own random_uniform_terrain.
+    By the time this runs the decorator has shrunk `cfg.size` by the border,
+    so the pixel counts below are the inner region and the returned array goes
+    straight into the padded buffer, as in Isaac's random_uniform_terrain.
     """
     width_pixels = int(cfg.size[0] / cfg.horizontal_scale)
     length_pixels = int(cfg.size[1] / cfg.horizontal_scale)
@@ -54,11 +53,8 @@ def excavation_terrain(difficulty: float, cfg: "HfExcavationTerrainCfg") -> np.n
 
 @configclass
 class HfExcavationTerrainCfg(HfTerrainBaseCfg):
-    """Pits, spoil piles, a gentle tilt and surface noise.
-
-    Amplitudes are capped near what the excavator can itself produce (0.19 m
-    of cut), because terrain it could not have made teaches the navigator to
-    avoid obstacles it will never meet.
+    """Pits, spoil piles, a gentle tilt and surface noise, with amplitudes
+    capped near what the excavator itself produces: 0.19 m of cut.
     """
 
     function = excavation_terrain
@@ -73,18 +69,16 @@ class HfExcavationTerrainCfg(HfTerrainBaseCfg):
     seed: int | None = None
 
 
-# One sub-terrain type at three proportions of severity, so a single row mixes
-# easy and hard cells and the curriculum has something to climb. Cell size is
-# generous: the machine is 3.4 m long and a navigation episode covers up to
-# ~12 m of goal distance.
+# One sub-terrain type at three severities, so a single row mixes easy and
+# hard cells. Cells are 16 m against a 3.4 m machine and goal distances up to
+# 8 m.
 EXCAVATION_TERRAINS_CFG = TerrainGeneratorCfg(
     size=(16.0, 16.0),
     border_width=4.0,
     num_rows=6,
     num_cols=8,
-    # Rows are difficulty levels, which is what makes max_init_terrain_level and
-    # the importer's level promotion mean anything. Without this, `difficulty`
-    # is sampled at random per cell and the rows carry no ordering.
+    # Orders the rows by difficulty, which is what max_init_terrain_level and
+    # the importer's level promotion index into.
     curriculum=True,
     horizontal_scale=0.1,
     vertical_scale=0.005,

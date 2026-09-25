@@ -2,12 +2,12 @@
 #
 # Drive to a goal pose over already-worked terrain. Actions are [forward,
 # yaw]; the arms are held stowed by a fixed position target and the drums are
-# held still, so the navigator has no actuator with which to disturb soil.
+# held still.
 #
 # Step order in DirectRLEnv is: _pre_physics_step -> _apply_action (x
-# decimation) -> _get_dones -> _get_rewards -> _reset_idx -> _get_observations.
-# Anything a reward needs from "before this step" (previous distance, previous
-# action) is therefore updated inside _get_rewards and re-seeded in _reset_idx.
+# decimation) -> _get_dones -> _get_rewards -> _reset_idx -> _get_observations,
+# so what a reward needs from before this step (previous distance, previous
+# action) is updated inside _get_rewards and re-seeded in _reset_idx.
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._actions = torch.zeros(E, 2, device=dev)
         self._prev_actions = torch.zeros(E, 2, device=dev)
 
-        # goal pose in WORLD frame (so it survives the machine moving)
+        # goal pose in the world frame
         self._goal_pos_w = torch.zeros(E, 2, device=dev)
         self._goal_yaw = torch.zeros(E, device=dev)
         self._prev_dist = torch.zeros(E, device=dev)
@@ -46,12 +46,12 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._success_ptr = 0
         self._success_n = 0
 
-        # on the rigid tier there is no soil; these stay zero but keep the
-        # observation layout identical to the MPM tier
+        # No soil on the rigid tier. Zero, and holds the observation layout
+        # identical to the MPM tier.
         self._drum_fill = torch.zeros(E, 2, device=dev)
 
-        # Local offsets each scan was taken at, so degradation can scale with
-        # range instead of applying one figure across the whole window.
+        # Local offsets each scan was taken at, which degrade_scan scales
+        # noise and dropout by.
         self._far_pattern = nav_far_pattern(dev)
         self._near_pattern = nav_near_pattern(dev)
 
@@ -69,12 +69,9 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self.far_scanner = self.scene["far_scanner"]
         self.near_scanner = self.scene["near_scanner"]
         self.terrain = self.scene.terrain
-        # max_init_terrain_level puts envs on rows 0-2 of 6 and nothing else
-        # moves them, so without this call the three hardest rows are built at
-        # startup and never driven on.
-        # update_env_origins exists on every TerrainImporter but only does
-        # anything when terrain_levels was built, which needs a generator
-        # terrain with curriculum=True.
+        # _record_outcomes moves envs up and down the rows through
+        # update_env_origins, which acts only when terrain_levels was built:
+        # a generator terrain with curriculum=True.
         if getattr(self.terrain, "terrain_levels", None) is None:
             raise RuntimeError(
                 "the terrain importer has no terrain_levels, so difficulty cannot "
@@ -95,8 +92,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._apply_drive(self._actions[:, 0], self._actions[:, 1])
         self._apply_arms(torch.full((self.num_envs,), self.cfg.arm_hold_angle, device=self.device))
         self._apply_drums(torch.zeros(self.num_envs, device=self.device))
-        # Inlet turned up and held there. The navigator has no actuator with
-        # which to load a drum, the same way it has none to lower an arm.
+        # Inlet turned up and held there.
         self._apply_shrouds(torch.full((self.num_envs,), math.pi, device=self.device))
 
     # ------------------------------------------------------------------
@@ -188,8 +184,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             "action_rate": -c.w_action_rate * R.action_rate_penalty(self._actions, self._prev_actions),
             "energy": -c.w_energy * R.energy_penalty(torque, wheel_vel),
             "time": -c.w_time * torch.ones_like(dist),
-            # No soil on this tier, so this reads zero forever. It stays as an
-            # assertion in reward form.
+            # No soil on this tier, so this reads zero. An assertion in
+            # reward form.
             "fill_change": -c.w_fill_change * torch.zeros_like(dist),
         })
         self._prev_dist[:] = dist
@@ -213,9 +209,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         """Move each env's terrain level, and widen the goal band once the
         success rate over the window clears the threshold.
 
-        The ring buffer is written with one scatter. Assigning element by
-        element costs a device sync per episode, and up to 1024 of them land
-        in a single reset batch.
+        The ring buffer is written with one scatter, since a reset batch can
+        carry every env.
         """
         c = self.cfg
         k = env_ids.numel()
@@ -223,8 +218,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             return
 
         reached = self._reached[env_ids]
-        # Closed less than terrain_demote_fraction of the gap and did not
-        # arrive: this env gets easier ground.
+        # Did not arrive and closed less than terrain_demote_fraction of the
+        # gap: this env moves down a level.
         stalled = ~reached & (self._prev_dist[env_ids] > c.terrain_demote_fraction * self._start_dist[env_ids])
         self.terrain.update_env_origins(env_ids, reached, stalled)
 
@@ -240,13 +235,12 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
                 self._success_n = 0
 
     def _sample_goals(self, env_ids: torch.Tensor, spawn_xy: torch.Tensor) -> None:
-        """Goals centred on the spawn position the reset just WROTE. Reading
-        root_pos_w here would return the pre-reset pose (see _reset_robot).
+        """Goals centred on the spawn position the reset just wrote; see
+        _reset_robot on why root_pos_w is not read here.
 
-        The goal stays inside the sub-terrain this env was assigned: the
-        bearing is free, and the distance is capped where that ray leaves the
-        cell. Sampling a distance first and clamping the point afterwards
-        piles goals onto the boundary instead.
+        The goal stays inside the sub-terrain this env was assigned. The
+        bearing is free and the distance is capped where that ray leaves the
+        cell, which spreads goals over the cell rather than onto its boundary.
         """
         c = self.cfg
         n = env_ids.numel()
@@ -272,9 +266,9 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._goal_pos_w[env_ids, 0] = spawn_xy[:, 0] + dist * dx
         self._goal_pos_w[env_ids, 1] = spawn_xy[:, 1] + dist * dy
 
-        # Arrive facing roughly the way you drove in, which is what a dig
-        # approach looks like. A uniform heading made half of all episodes end
-        # in a large turn on the spot, unrelated to navigating.
+        # Arrive facing roughly the way the machine drove in, which is what a
+        # dig approach looks like. goal_yaw_random_frac of episodes draw a
+        # heading uniformly instead.
         yaw = bearing + torch.randn(n, device=dev) * c.goal_yaw_spread
         free = torch.rand(n, device=dev) < c.goal_yaw_random_frac
         self._goal_yaw[env_ids] = torch.where(
@@ -284,20 +278,20 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
-        # curriculum bookkeeping uses last episode's outcome, before it is cleared
+        # Reads last episode's outcome, before it is cleared below.
         self._record_outcomes(env_ids)
         super()._reset_idx(env_ids)
 
         n = env_ids.numel()
         yaw = (torch.rand(n, device=self.device) * 2.0 - 1.0) * math.pi
-        # scatter inside the terrain cell so envs sharing an origin see
-        # different ground
+        # Scattered inside the terrain cell, so envs sharing an origin see
+        # different ground.
         j = self.cfg.spawn_xy_jitter
         xy_off = (torch.rand(n, 2, device=self.device) * 2.0 - 1.0) * j if j > 0.0 else None
         spawn_xy = self._reset_robot(env_ids, yaw, self.cfg.arm_hold_angle, xy_off)
 
         self._sample_goals(env_ids, spawn_xy)
-        # initial distance from the written spawn; world-frame norm is yaw-invariant
+        # Initial distance from the written spawn.
         d0 = torch.linalg.norm(self._goal_pos_w[env_ids] - spawn_xy, dim=-1)
         self._prev_dist[env_ids] = d0
         self._start_dist[env_ids] = d0.clamp_min(1e-3)

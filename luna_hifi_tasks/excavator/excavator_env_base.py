@@ -4,13 +4,9 @@
 # and body handles, the skid-steer drive mapping, proprioceptive observation
 # terms, the failure terminations, and root reset.
 #
-# Assets are fetched from the scene in _setup_scene, never constructed there;
-# joint ids resolve once in __init__; resets write root pose, root velocity and
-# joint state separately.
-#
-# write_root_pose_to_sim, set_joint_velocity_target and friends are marked
-# deprecated in favour of the *_index variants and the actuator command API,
-# but still carry the same positional signatures.
+# Assets are fetched from the scene in _setup_scene, joint ids resolve once in
+# __init__, and resets write root pose, root velocity and joint state
+# separately.
 
 from __future__ import annotations
 
@@ -91,9 +87,8 @@ class ExcavatorEnvBase(DirectRLEnv):
     def _apply_drive(self, forward: torch.Tensor, yaw: torch.Tensor) -> None:
         """Skid steer from [forward, yaw] in [-1, 1].
 
-        Commanded in (forward, yaw) rather than (left, right) on purpose:
-        driving straight is then yaw = 0, which is the mean of the untrained
-        policy, instead of two Gaussian samples having to match exactly.
+        In (forward, yaw) rather than (left, right), so driving straight is
+        yaw = 0, the mean of an untrained policy.
         """
         v = forward * MAX_WHEEL_SPEED * WHEEL_RADIUS          # m/s
         w = yaw * MAX_YAW_SPEED                               # rad/s
@@ -106,19 +101,19 @@ class ExcavatorEnvBase(DirectRLEnv):
         self._yaw_cmd[:] = w
 
     def _apply_arms(self, angle: torch.Tensor) -> None:
-        """Position target for BOTH arms. (E,) rad, same value each side."""
+        """Position target for both arms. (E,) rad, same value each side."""
         self.robot.set_joint_position_target(angle.unsqueeze(-1).expand(-1, 2), joint_ids=self._arm_ids)
 
     def _apply_drums(self, speed: torch.Tensor) -> None:
-        """Velocity target for BOTH drums, (E,) rad/s. Same sign on each is the
-        counter-rotating, reaction-cancelling dig -- see excavator.py."""
+        """Velocity target for both drums, (E,) rad/s. The same sign on each
+        is the counter-rotating dig; see excavator.py."""
         self.robot.set_joint_velocity_target(speed.unsqueeze(-1).expand(-1, 2), joint_ids=self._drum_ids)
 
     def _apply_shrouds(self, angle: torch.Tensor) -> None:
-        """Position target for BOTH shrouds. (E,) rad, same value each side.
+        """Position target for both shrouds. (E,) rad, same value each side.
 
-        The shroud carries the inlet, so commanding minus the arm angle holds
-        the inlet still against the ground while the arm pitches."""
+        The shroud carries the inlet, so minus the arm angle holds the inlet
+        still against the ground through an arm pitch."""
         self.robot.set_joint_position_target(
             angle.unsqueeze(-1).expand(-1, 2), joint_ids=self._shroud_ids
         )
@@ -130,9 +125,9 @@ class ExcavatorEnvBase(DirectRLEnv):
     def _proprio(self) -> dict[str, torch.Tensor]:
         d = self.robot.data
         tau = d.applied_torque.torch
-        # Phase WITHIN a pocket: the rotor is ROTOR_VANES-fold symmetric, so
-        # multiplying the joint angle by the vane count makes every pocket
-        # read the same, and (sin, cos) removes the wrap at +-pi.
+        # Phase within a pocket. The rotor is ROTOR_VANES-fold symmetric, so
+        # the joint angle times the vane count reads the same in every pocket,
+        # and (sin, cos) removes the wrap at +-pi.
         rotor = ROTOR_VANES * d.joint_pos.torch[:, self._drum_ids]
         return {
             "base_lin_vel": d.root_lin_vel_b.torch,
@@ -181,15 +176,14 @@ class ExcavatorEnvBase(DirectRLEnv):
         xy_offset: torch.Tensor | None = None,
         drum_angle: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Put the machine at its env origin (+ `xy_offset`) facing `yaw`, arms
-        at `arm_angle`, everything else at rest. Returns the world xy written.
+        """Put the machine at its env origin (+ `xy_offset`) facing `yaw`,
+        arms at `arm_angle`, everything else at rest. Returns the world xy
+        written.
 
-        Callers must use the RETURNED position for anything else they do in
-        the same reset (goal sampling, initial distances), not re-read
-        data.root_pos_w: the data buffers are timestamped against the sim and
-        do not refresh until the next step, so a read right after a write
-        returns the pose from before the reset. The tricycle env keeps to the
-        same discipline (it uses its written root_state, never a re-read).
+        Anything else in the same reset that needs the new pose (goal
+        sampling, initial distances) takes this return value. The data buffers
+        are timestamped against the sim and refresh on the next step, so
+        data.root_pos_w still holds the pose from before the reset.
         """
         root = self.robot.data.default_root_state.torch[env_ids].clone()
         root[:, :3] += self.scene.env_origins[env_ids]

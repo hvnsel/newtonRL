@@ -90,11 +90,13 @@ def _collect(env, kind: str, episodes: int, sigma: float, max_steps: int):
                 continue
             totals[key[len("Episode_Reward/"):]] = totals.get(key[len("Episode_Reward/"):], 0.0) + value * k
         seen += k
+        print(f"\r  {kind}: {seen}/{episodes} episodes, {steps} steps", end="", flush=True)
         # The walk keeps its state across an episode boundary otherwise, so a
         # fresh episode would start wherever the last one left the action.
         if kind == "walk":
             action[done] = 0.0
 
+    print()
     if seen == 0:
         raise RuntimeError(
             f"no episode finished in {steps} steps under the {kind!r} policy; "
@@ -177,7 +179,12 @@ def main(argv=None) -> int:
                   f"{1.0 / (env_cfg.sim.dt * env_cfg.decimation):.0f} Hz")
             results = {}
             for kind in POLICIES:
-                print(f"[audit] {kind} ...", flush=True)
+                # zero is the null baseline: every action held at 0, so the
+                # machine spawns and sits there. That is the point of it --
+                # if it outscores the walk, the reward rewards idling.
+                print(f"[audit] {kind} "
+                      + ("(actions held at 0 -- nothing should move)" if kind == "zero"
+                         else "(smoothed random walk)"), flush=True)
                 results[kind] = _collect(
                     env, kind, args.episodes, args.walk_sigma, args.max_steps
                 )

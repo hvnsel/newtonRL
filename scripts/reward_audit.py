@@ -44,9 +44,10 @@ def _parse(argv):
     p.add_argument("--task", required=True,
                    help="Luna-Excavator-Navigate or Luna-Excavator-Excavate")
     p.add_argument("--num_envs", type=int, default=None)
-    p.add_argument("--episodes", type=int, default=8,
-                   help="episodes to finish per policy. Envs reset in lockstep, "
-                        "so this rounds up to a whole number of num_envs")
+    p.add_argument("--episodes", type=int, default=4,
+                   help="episodes for the WALK pass. The zero pass always runs "
+                        "one round -- it is deterministic, every episode of it "
+                        "is identical. Rounds up to a whole number of num_envs")
     p.add_argument("--walk_sigma", type=float, default=0.15,
                    help="per-step action noise for the walk policy")
     p.add_argument("--max_steps", type=int, default=200_000,
@@ -176,12 +177,15 @@ def main(argv=None) -> int:
         try:
             u = env.unwrapped
             ep_len = int(u.max_episode_length)
-            rounds = -(-args.episodes // u.num_envs)   # envs reset together
+            # zero holds every action at 0, so every episode of it is the same
+            # episode. One round of envs is the whole sample. --episodes is
+            # for the walk, which is the only pass with anything to average.
+            plan = {"zero": u.num_envs, "walk": max(args.episodes, u.num_envs)}
+            rounds = sum(-(-n // u.num_envs) for n in plan.values())
             print(f"[audit] {args.task}  {u.num_envs} envs  {ep_len} steps/episode  "
                   f"{1.0 / (env_cfg.sim.dt * env_cfg.decimation):.0f} Hz")
-            print(f"[audit] {rounds} rounds x {ep_len} steps x {len(POLICIES)} passes "
-                  f"= {rounds * ep_len * len(POLICIES):,} env-steps. "
-                  "Ctrl-C and lower --episodes if that is too long.")
+            print(f"[audit] zero 1 round, walk {-(-plan['walk'] // u.num_envs)} rounds "
+                  f"-> {rounds * ep_len:,} env-steps total")
             results = {}
             for kind in POLICIES:
                 # zero is the null baseline: every action held at 0, so the
@@ -191,7 +195,7 @@ def main(argv=None) -> int:
                       + ("(actions held at 0 -- nothing should move)" if kind == "zero"
                          else "(smoothed random walk)"), flush=True)
                 results[kind] = _collect(
-                    env, kind, args.episodes, args.walk_sigma, args.max_steps
+                    env, kind, plan[kind], args.walk_sigma, args.max_steps
                 )
             _report(results)
         finally:

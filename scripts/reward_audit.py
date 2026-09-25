@@ -44,8 +44,9 @@ def _parse(argv):
     p.add_argument("--task", required=True,
                    help="Luna-Excavator-Navigate or Luna-Excavator-Excavate")
     p.add_argument("--num_envs", type=int, default=None)
-    p.add_argument("--episodes", type=int, default=100,
-                   help="episodes to finish per policy")
+    p.add_argument("--episodes", type=int, default=8,
+                   help="episodes to finish per policy. Envs reset in lockstep, "
+                        "so this rounds up to a whole number of num_envs")
     p.add_argument("--walk_sigma", type=float, default=0.15,
                    help="per-step action noise for the walk policy")
     p.add_argument("--max_steps", type=int, default=200_000,
@@ -174,9 +175,13 @@ def main(argv=None) -> int:
         env = gym.make(args.task, cfg=env_cfg)
         try:
             u = env.unwrapped
-            print(f"[audit] {args.task}  {u.num_envs} envs  "
-                  f"{u.max_episode_length} steps/episode  "
+            ep_len = int(u.max_episode_length)
+            rounds = -(-args.episodes // u.num_envs)   # envs reset together
+            print(f"[audit] {args.task}  {u.num_envs} envs  {ep_len} steps/episode  "
                   f"{1.0 / (env_cfg.sim.dt * env_cfg.decimation):.0f} Hz")
+            print(f"[audit] {rounds} rounds x {ep_len} steps x {len(POLICIES)} passes "
+                  f"= {rounds * ep_len * len(POLICIES):,} env-steps. "
+                  "Ctrl-C and lower --episodes if that is too long.")
             results = {}
             for kind in POLICIES:
                 # zero is the null baseline: every action held at 0, so the

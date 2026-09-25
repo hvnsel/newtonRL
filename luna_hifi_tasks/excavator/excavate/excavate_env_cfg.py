@@ -54,8 +54,6 @@ from ..excavator_cfg import (
 )
 from ..mdp.observations import (
     DIG_SCAN_CELL,
-    DIG_SCAN_NX,
-    DIG_SCAN_NY,
     NAV_SCAN_CELLS,
     critic_state_spec,
     excavate_obs_spec,
@@ -504,17 +502,6 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         lo, hi = self.arm_range
         angle = min(max(math.asin(min(max(sin_t, -1.0), 1.0)), lo), hi)
         return 2.0 * (angle - lo) / (hi - lo) - 1.0, angle
-
-    def footprint_cells(self) -> int:
-        """Scan cells inside the drum's footprint. Must match the mask the env
-        builds from the same pattern."""
-        half_x = 0.5 * (DIG_SCAN_NX - 1) * DIG_SCAN_CELL
-        half_y = 0.5 * (DIG_SCAN_NY - 1) * DIG_SCAN_CELL
-        nx = sum(1 for i in range(DIG_SCAN_NX)
-                 if abs(i * DIG_SCAN_CELL - half_x) <= FOOTPRINT_HALF_X)
-        ny = sum(1 for i in range(DIG_SCAN_NY)
-                 if abs(i * DIG_SCAN_CELL - half_y) <= FOOTPRINT_HALF_Y)
-        return nx * ny
 
     def __post_init__(self) -> None:
         # One nominal cut: the whole work area taken down by the mean

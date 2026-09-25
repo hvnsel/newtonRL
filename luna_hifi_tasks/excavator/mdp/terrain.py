@@ -195,54 +195,9 @@ def scan_from_heightfield(
     return (reference_z.unsqueeze(-1) - (h + env_origins[:, 2:3])).clamp(-clip, clip)
 
 
-def scan_from_particles(
-    particle_pos_w: torch.Tensor,
-    particle_env: torch.Tensor,
-    env_origins: torch.Tensor,
-    origin_w: torch.Tensor,
-    quat_w: torch.Tensor,
-    pattern: torch.Tensor,
-    bed_lower: tuple[float, float],
-    bed_cell: float,
-    bed_nx: int,
-    bed_ny: int,
-    floor_height: float,
-    reference_z: torch.Tensor,
-    clip: float = 1.0,
-    outside_value: float = -1.0,
-) -> torch.Tensor:
-    """Deformable tier. Same output as scan_from_heightfield.
-
-    Two steps rather than one: rasterise particles onto a fixed, env-aligned
-    bed grid, then sample that grid at the rotated query points. Rasterising
-    straight into the rotated scan frame would look cheaper but bins particles
-    into cells that move every step, which makes the observation jitter as the
-    machine yaws even over perfectly still soil.
-
-    `bed_cell` should be at or below the MPM voxel size. Coarser and the scan
-    smooths away the very features the drum is cutting.
-    """
-    bed = soil_heightmap(
-        particle_pos_w, particle_env, env_origins,
-        bed_lower, bed_cell, bed_nx, bed_ny, floor_height,
-    )
-    pts = scan_points_world(origin_w, quat_w, pattern)
-    h = sample_height_grid(bed, pts, env_origins, bed_lower, bed_cell, outside_value)
-    return (reference_z.unsqueeze(-1) - (h + env_origins[:, 2:3])).clamp(-clip, clip)
-
-
 # ---------------------------------------------------------------------------
 # The ray-caster backend (rigid tier, in the live sim)
 # ---------------------------------------------------------------------------
-
-
-def isaac_grid_pattern_count(size: tuple[float, float], resolution: float) -> int:
-    """How many rays isaaclab.sensors.patterns.grid_pattern emits for a size
-    and resolution. Reproduces its arithmetic (both endpoints included) so a
-    test can pin that our scan constants produce exactly NX*NY rays."""
-    nx = len(torch.arange(-size[0] / 2, size[0] / 2 + 1.0e-9, resolution))
-    ny = len(torch.arange(-size[1] / 2, size[1] / 2 + 1.0e-9, resolution))
-    return nx * ny
 
 
 def scan_from_raycaster(

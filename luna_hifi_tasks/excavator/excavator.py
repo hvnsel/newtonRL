@@ -4,9 +4,8 @@
 # rectangular frame, and a counter-rotating excavation drum on a pitching arm
 # at each end.
 #
-# This file is NOT read at training time. Training loads the converted USD in
-# assets/excavator/, and this MJCF is its source: re-run the converter after
-# every change here.
+# Source for the converted USD in assets/excavator/, which is what training
+# loads. Re-run the converter after every change here.
 #
 # Plan view (+x forward, +z up). A,B are the front corners, C,D the rear:
 #
@@ -37,39 +36,32 @@
 # ------
 # * Skid steer, no steering joints. Four hinges, left pair and right pair
 #   commanded together.
-# * The rear assembly is the front assembly rotated 180 degrees about z, which
-#   points the rear drum's spin axis along world -y, so identical joint
-#   commands counter-rotate the two drums. Both dig at +1 and their horizontal
-#   digging reactions cancel through the frame, which is what lets a light
-#   machine excavate without its own weight in traction.
+# * The rear assembly is the front assembly rotated 180 degrees about z, so the
+#   rear drum's spin axis points along world -y and identical joint commands
+#   counter-rotate the two drums. Their horizontal digging reactions cancel
+#   through the frame.
 # * Each drum is a ROTOR inside a SHROUD, hinged on the same axis off the arm
 #   and moving independently.
 #
 #   The rotor is a hub carrying ROTOR_VANES logarithmic-spiral blades. The
 #   spiral holds the rake constant from hub to tip, so the blade meets soil at
-#   90 - ROTOR_RAKE degrees everywhere along it and shears a chip instead of
-#   pushing a wedge. A radial vane would meet it at 90 and bulldoze.
+#   90 - ROTOR_RAKE degrees everywhere along it.
 #
-#   The shroud is the shell, and it does not turn with the rotor. It is closed
-#   over every arc except SHROUD_INLET, so a pocket that has passed the inlet
-#   is shut for the rest of the turn: there is no rotor angle at which a loaded
-#   pocket faces open air. Its own actuator aims the inlet, which is what makes
-#   loading, holding and dumping commands rather than consequences of where the
-#   arm happens to be pointing.
+#   The shroud is the shell and does not turn with the rotor. It is closed over
+#   every arc except SHROUD_INLET, so a pocket that has passed the inlet stays
+#   shut for the rest of the turn. Its own actuator aims the inlet.
 #
 #   Outward acceleration at the vane tips is omega^2 * ROTOR_TIP_R, which
-#   passes lunar gravity at 2.96 rad/s. Above that the vanes throw regolith at
-#   the shroud instead of carrying it inward, so MAX_DRUM_SPEED sits under it.
-# * The chassis outweighs both drums empty. The rotor sweeps ~184 kg of
-#   regolith per drum, so a loaded machine carries a large fraction of its own
-#   dry mass out on the arms. scripts/check_excavator.py reads the hold torques
-#   off the model's own mass table.
+#   passes lunar gravity at 2.96 rad/s. MAX_DRUM_SPEED sits under it.
+# * The rotor sweeps ~184 kg of regolith per drum, against a heavier chassis.
+#   scripts/check_excavator.py reads the hold torques off the model's own mass
+#   table.
 #
-# Wheels are cylinders with grousers: a smooth wheel shears granular surface
-# and spins in place. WHEEL_GROUSERS = 0 falls back to bare cylinders.
+# Wheels are cylinders with grousers. WHEEL_GROUSERS = 0 falls back to bare
+# cylinders.
 #
 # Every body carrying a joint has a geom with mass, so MuJoCo derives real
-# inertia for all of them. A body with zero inertia produces NaNs in the solver.
+# inertia for all of them.
 #
 # Frame convention: +x forward, +z up. Wheel centres sit at z = 0 in the
 # chassis frame, so the chassis origin is one wheel radius above the ground.
@@ -94,12 +86,9 @@ AXLE_X = 0.5 * WHEELBASE        # +/- 0.70
 WHEEL_Y = 0.5 * TRACK           # +/- 0.575
 
 # The arm pivot sits ahead of the axle. The drum ends and the yoke legs both
-# pass through the wheel band in y, so separation in x is the only thing
-# keeping them off the front wheels at full dig. Longer lips push the yoke's
-# cross piece back down the boom to clear the blades' swept circle, dragging
-# the legs inboard, so this grows with them: swept clearance to the wheels is
-# 0.069 m here, and the binding pair is the cross piece against a rear grouser
-# at full dig.
+# pass through the wheel band in y, so separation in x is what keeps them off
+# the front wheels at full dig: swept clearance is 0.069 m here, binding pair
+# is the cross piece against a rear grouser.
 MAST_OFFSET_X = 0.22
 PIVOT_X = AXLE_X + MAST_OFFSET_X
 
@@ -113,7 +102,7 @@ GROUSER_HALF_T = 0.012
 RAIL_Y = 0.45                   # side rails, inboard of the wheels
 RAIL_HALF_W = 0.05
 RAIL_HALF_H = 0.06
-DECK_Z = -0.10                  # deck sits below the axle line: low CG, on purpose
+DECK_Z = -0.10                  # deck sits below the axle line
 DECK_HALF = (0.55, 0.40, 0.04)
 
 # --- mast: the tower on each crossmember that carries the arm pivot ---
@@ -121,8 +110,7 @@ MAST_TOP_Z = 0.20               # arm pivot height in the chassis frame
 MAST_HALF = (0.05, 0.09, 0.13)  # x half-size is extended to span MAST_OFFSET_X
 
 # --- arm ---
-# The arm is a yoke: a centre boom out to the drum axis would sit inside the
-# cavity and block the mouths, so the boom stops short and two legs pass
+# The arm is a yoke: the boom stops short of the drum axis and two legs pass
 # outboard of the end caps to pick up the axle.
 ARM_LEN = 0.76                  # pivot to drum axis
 ARM_HALF_H = 0.05
@@ -133,18 +121,14 @@ YOKE_HALF_H = 0.05
 # is a disc of half-thickness CAP_HALF_T centred at DRUM_HALF_LEN + CAP_HALF_T,
 # so it reaches DRUM_HALF_LEN + 2*CAP_HALF_T.
 YOKE_CLEARANCE = 0.005
-# Positive arm angle pitches the boom down, toward the soil.
-#
-# The down limit tracks ARM_LEN and ROTOR_TIP_R: past about one rotor radius of
-# burial the vanes fight the whole overburden instead of cutting. 0.72 rad puts
-# the vane tips 0.185 m down, which is exactly ROTOR_TIP_R.
+# Positive arm angle pitches the boom down, toward the soil. The down limit of
+# 0.72 rad buries the vane tips 0.185 m, one ROTOR_TIP_R.
 ARM_RANGE = (-0.55, 0.72)       # -31.5 deg (stowed high) .. +41.3 deg (full dig)
 
 # --- rotor ---
 #
-# A vaned rotor turning inside a fixed shroud. The shroud is the shell: the
-# rotor carries no outer wall of its own, and the pockets between its vanes
-# are closed by the shroud over every arc except the inlet.
+# A vaned rotor turning inside a fixed shroud. The rotor carries no outer wall
+# of its own; the shroud closes the pockets between its vanes.
 ROTOR_HUB_R = 0.045             # central drum the vanes are welded to
 ROTOR_TIP_R = 0.185             # vane tip; fill is counted inside this
 ROTOR_HALF_LEN = 0.475          # ~100 cm wide, matching the old drum
@@ -152,40 +136,35 @@ ROTOR_VANES = 6
 VANE_SEGMENTS = 5               # straight boxes approximating one spiral vane
 VANE_HALF_T = 0.006
 
-# Rake: the angle between the vane and the radius, held CONSTANT along the
-# blade by making it a logarithmic spiral, r = r0 * exp(theta / tan(rake)).
-# A radial vane (rake 0) meets soil at 90 degrees and pushes it; at rake b the
-# face meets soil at 90 - b and shears a chip off instead.
+# Rake: the angle between the vane and the radius, held constant along the
+# blade by the logarithmic spiral r = r0 * exp(theta / tan(rake)). At rake b
+# the face meets soil at 90 - b degrees.
 #
 # The blade sweeps ln(TIP/HUB) * tan(rake) = 1.414 * tan(rake) radians from hub
-# to tip, and must stay inside one pocket or adjacent vanes shadow each other.
-# At 6 vanes the pocket is 60 deg, so rake tops out near 35 deg; 32 leaves 9
-# deg of margin.
+# to tip and stays inside one pocket. At 6 vanes the pocket is 60 deg and rake
+# tops out near 35; 32 leaves 9 deg of margin.
 ROTOR_RAKE = math.radians(32.0)
 RAKE_SIGN = 1.0                 # handedness; DIG_DRUM_SIGN is derived from it
 
-# Gap between adjacent vane tips, which is the way in to a pocket. Six vanes
-# give a 0.185 m chord: 0.155 m clear once the MPM coupler has taken a voxel,
-# or 5.2 grains at 0.03. Eight vanes fall to 3.7 and arch.
+# Gap between adjacent vane tips, the way in to a pocket. Six vanes give a
+# 0.185 m chord: 0.155 m clear once the MPM coupler has taken a voxel, 5.2
+# grains at 0.03.
 MPM_TARGET_VOXEL = 0.03
-MPM_CLEARANCE = MPM_TARGET_VOXEL        # below this a passage is simply closed
-MPM_FLOW = 4.0 * MPM_TARGET_VOXEL       # what it takes to flow, not merely to open
+MPM_CLEARANCE = MPM_TARGET_VOXEL        # a passage narrower than this is closed
+MPM_FLOW = 4.0 * MPM_TARGET_VOXEL       # width at which regolith flows
 
 # --- shroud ---
 #
-# Does not turn with the rotor. It hangs on its own hinge on the same axis,
-# driven by its own actuator, so the policy aims the inlet independently of
-# where the arm happens to be pointing.
+# Hangs on its own hinge on the rotor axis, driven by its own actuator, so the
+# policy aims the inlet independently of the arm.
 SHROUD_IN_R = 0.195             # running clearance of 10 mm over the vane tips
 SHROUD_OUT_R = 0.212
 SHROUD_END_T = 0.012            # end plates, which close the pockets axially
 SHROUD_INLET = math.radians(100.0)
-# Enough to hold the inlet still through the whole arm swing (1.35 rad) and
-# still turn it up to dump.
+# Spans the arm swing (1.35 rad) with room to turn the inlet up to dump.
 SHROUD_RANGE = (-1.10, 1.10)
 
-# Kept for the parts of the machine that still ask "how big is the drum": the
-# shroud is now the outermost thing on it.
+# Drum-level dimensions, taken from the shroud, which is the outermost part.
 DRUM_RADIUS = SHROUD_OUT_R
 DRUM_WALL_T = SHROUD_OUT_R - SHROUD_IN_R
 DRUM_HALF_LEN = ROTOR_HALF_LEN
@@ -194,7 +173,7 @@ CAP_HALF_T = SHROUD_END_T
 # --- masses (kg) ---
 RAIL_MASS = 35.0                # each
 CROSSMEMBER_MASS = 30.0         # each
-DECK_MASS = 170.0               # the ballast: keeps the CG low and central
+DECK_MASS = 170.0               # ballast, low and central
 MAST_MASS = 20.0                # each
 WHEEL_MASS = 12.0               # cylinder only
 GROUSER_MASS = 0.35             # each
@@ -229,10 +208,8 @@ BODY_ARMS = ["arm_front_body", "arm_rear_body"]
 BODY_DRUMS = ["drum_front_body", "drum_rear_body"]
 BODY_SHROUDS = ["shroud_front_body", "shroud_rear_body"]
 
-# The bodies that must appear in the MPM CouplerProxyMappingCfg. Wheels for
-# traction, rotors for excavation, and the shrouds, which are what actually
-# retain the load. The arms are absent: they reach the soil only through the
-# drum, and every extra proxy body costs the coupler.
+# The bodies in the MPM CouplerProxyMappingCfg: wheels for traction, rotors for
+# excavation, shrouds for retention.
 BODY_SOIL_CONTACT = BODY_WHEELS + BODY_DRUMS + BODY_SHROUDS
 
 FRAME_RGBA = "0.78 0.62 0.16 1"     # machine yellow
@@ -247,12 +224,12 @@ SHROUD_RGBA = "0.62 0.64 0.67 1"
 # ---------------------------------------------------------------------------
 # Geometry helpers
 #
-# All of the rotational geometry below is built about the body's local y axis,
-# because every spinning part in this machine (wheels, drums) turns about y.
+# Every spinning part (wheels, drums) turns about the body's local y axis, and
+# the geometry below is built about it.
 #
 # MuJoCo's euler="0 b 0" rotates about +y, mapping local z_hat to
-# (sin b, 0, cos b). So to aim a box's thickness axis along the direction
-# psi in the local x-z plane, set b = pi/2 - psi. Two cases follow from that:
+# (sin b, 0, cos b). To aim a box's thickness axis along the direction psi in
+# the local x-z plane, set b = pi/2 - psi. Two cases follow:
 #
 #   tangential plate at angle phi (thickness points radially):  b = pi/2 - phi
 #   radial blade at angle phi, raked by rho:                    b = rho - phi
@@ -351,20 +328,16 @@ def _vane_xml(prefix: str, index: int, phi_root: float) -> list[str]:
 def _shroud_arc_xml(prefix: str) -> list[str]:
     """The shroud wall: closed everywhere except SHROUD_INLET.
 
-    Segment count is chosen so each plate spans at most 20 degrees, which keeps
-    the inner face round enough that particles do not catch on the corners.
+    Each plate spans at most 20 degrees.
     """
     span = 2.0 * math.pi - SHROUD_INLET
     n = max(int(math.ceil(span / math.radians(20.0))), 6)
     step = span / n
     mid_r = 0.5 * (SHROUD_IN_R + SHROUD_OUT_R)
-    # tan, not sin, so adjacent plates overlap at the corners rather than
-    # leaving a gap for particles to escape through. At 20 degrees the two
-    # differ by well under a millimetre, so add a fixed 2 mm on top: the
-    # coupler seals anything this size, but a negative overlap is a hole.
+    # tan, plus a fixed 2 mm, so adjacent plates overlap at the corners.
     half_arc = mid_r * math.tan(0.5 * step) + 0.002
-    # The inlet is centred on the shroud's own -z, so a shroud joint angle of 0
-    # points it straight down when the arm is horizontal.
+    # The inlet is centred on the shroud's own -z: joint angle 0 points it
+    # straight down with the arm horizontal.
     start = -0.5 * math.pi + 0.5 * SHROUD_INLET
     return [
         _tangential_plate(
@@ -483,8 +456,7 @@ def _wheel(name: str, x: float, y: float, joint: str) -> str:
       </body>"""
 
 
-# Derived yoke geometry. The legs straddle the SHROUD, which is wider and
-# fatter than the rotor inside it, and both hinge on the same axis.
+# Derived yoke geometry. The legs straddle the shroud.
 YOKE_Y = ROTOR_HALF_LEN + 2.0 * SHROUD_END_T + YOKE_CLEARANCE + YOKE_HALF_W
 
 VANE_SWEPT_INNER_R, VANE_SWEPT_OUTER_R = vane_swept_radii()
@@ -494,8 +466,7 @@ VANE_SWEPT_INNER_R, VANE_SWEPT_OUTER_R = vane_swept_radii()
 # vane bites when its concave face leads, which is the -RAKE_SIGN side.
 DIG_DRUM_SIGN = -RAKE_SIGN
 
-# The cross piece spans the machine at the drum's height, so it has to clear
-# the shroud rather than the rotor.
+# The cross piece spans the machine at the drum's height and clears the shroud.
 YOKE_STANDOFF = 0.025
 BOOM_LEN = ARM_LEN - SHROUD_OUT_R - YOKE_HALF_W - YOKE_STANDOFF
 _LEG_X0 = BOOM_LEN - YOKE_HALF_W            # legs overlap the cross piece slightly
@@ -512,13 +483,12 @@ def _arm_assembly(
 ) -> str:
     """One arm + drum, hung off the mast at PIVOT_X.
 
-    `yaw` is 0 for the front assembly and pi for the rear. The rear is a true
-    180-degree copy, which is what gives the two drums opposite world spin axes
-    for the same joint command.
+    `yaw` is 0 for the front assembly and pi for the rear, a true 180-degree
+    copy, so the two drums take opposite world spin axes for the same joint
+    command.
 
     The arm is boom -> cross piece -> two legs straddling the drum. The rotor
-    and the shroud are SIBLINGS here, both hinged on the same axis off the arm,
-    so the shroud can be aimed independently of the rotor's spin.
+    and the shroud are siblings, both hinged on the same axis off the arm.
     """
     x = PIVOT_X * math.cos(yaw)
     leg_half = 0.5 * (ARM_LEN - _LEG_X0)
@@ -546,8 +516,7 @@ def _arm_assembly(
 
 
 # ---------------------------------------------------------------------------
-# Frame geoms. All fixed to the chassis body -- the masts are structure, not
-# a mechanism, so they carry no joint.
+# Frame geoms. All fixed to the chassis body; the masts carry no joint.
 # ---------------------------------------------------------------------------
 
 _FRAME_PARTS = [
@@ -565,7 +534,7 @@ _FRAME_PARTS = [
     f'<geom name="crossmember_rear" type="box" pos="{-AXLE_X} 0 0" '
     f'size="{RAIL_HALF_W} {RAIL_Y} {RAIL_HALF_H}" '
     f'mass="{CROSSMEMBER_MASS}" rgba="{FRAME_RGBA}" friction="{FRAME_FRICTION}"/>',
-    # deck: slung below the axle line, carries most of the mass
+    # deck: slung below the axle line, carrying most of the mass
     f'<geom name="deck" type="box" pos="0 0 {DECK_Z}" '
     f'size="{DECK_HALF[0]} {DECK_HALF[1]} {DECK_HALF[2]}" '
     f'mass="{DECK_MASS}" rgba="{DECK_RGBA}" friction="{FRAME_FRICTION}"/>',
@@ -603,8 +572,8 @@ _ARMS_XML = "\n      ".join(
 # ---------------------------------------------------------------------------
 # Model
 #
-# No <default class="..."> blocks: every geom spells out its own friction and
-# rgba, because the MJCF->USD converter drops class inheritance silently.
+# Every geom spells out its own friction and rgba; the MJCF->USD converter
+# drops <default class="..."> inheritance.
 # ---------------------------------------------------------------------------
 
 EXCAVATOR_MJCF = f"""
@@ -615,9 +584,8 @@ EXCAVATOR_MJCF = f"""
     <joint damping="0.05"/>
   </default>
 
-  <!-- The rotor turns inside the shroud on a running fit. They are siblings,
-       so MuJoCo would test every vane box against every shroud plate on every
-       step. The clearance is a bearing, not a contact. -->
+  <!-- The rotor turns inside the shroud on a running fit, which is a bearing
+       rather than a contact. -->
   <contact>
     <exclude body1="drum_front_body" body2="shroud_front_body"/>
     <exclude body1="drum_rear_body" body2="shroud_rear_body"/>
@@ -639,70 +607,65 @@ EXCAVATOR_MJCF = f"""
 """
 
 # ---------------------------------------------------------------------------
-# Sign conventions. Worth reading once before writing the env.
+# Sign conventions.
 #
 #   wheels      positive joint velocity drives the machine FORWARD (+x).
-#               Skid steer: command JOINT_WHEELS_LEFT together and
+#               Skid steer: JOINT_WHEELS_LEFT commanded together and
 #               JOINT_WHEELS_RIGHT together; equal = straight, opposite = spin.
 #
 #   arms        positive joint angle pitches the boom DOWN toward the soil.
-#               0 is horizontal, ARM_RANGE[1] = 0.80 rad is full dig, which
-#               puts the drum's lowest point ~19 cm below the ground plane.
-#               ARM_RANGE[0] = -0.55 rad stows the drum ~66 cm up, which is the
-#               dump height.
+#               0 is horizontal, ARM_RANGE[1] = 0.72 rad is full dig, putting
+#               the drum's lowest point ~19 cm below the ground plane.
+#               ARM_RANGE[0] = -0.55 rad stows the drum ~66 cm up, the dump
+#               height.
 #
-#   drums       a joint velocity of sign DIG_DRUM_SIGN digs, on both ends.
-#               Derived from RAKE_SIGN and currently -1, so the digging
-#               command is negative. It is the SAME sign on both drums: the
-#               rear assembly is rotated 180 deg about z, so one sign gives
-#               opposite world-frame rotation at the two ends and the digging
-#               reactions cancel through the frame. Opposite signs make them
-#               add and drive the machine out of its own cut.
+#   drums       a joint velocity of sign DIG_DRUM_SIGN digs, the same sign on
+#               both ends. Derived from RAKE_SIGN, currently -1. The rear
+#               assembly is rotated 180 deg about z, so one sign gives opposite
+#               world-frame rotation at the two ends and the digging reactions
+#               cancel through the frame.
 #
 #               Outward acceleration at the vane tips is omega^2 * ROTOR_TIP_R,
-#               which passes lunar gravity at 2.96 rad/s. Above that, regolith
-#               is thrown against the shroud instead of settling into a pocket.
+#               which passes lunar gravity at 2.96 rad/s.
 #
-#   shrouds     positive joint angle turns the inlet the same way a positive
-#               arm angle turns the boom, so holding the inlet still against
-#               the ground while the arm pitches means driving the shroud to
-#               MINUS the arm angle. 0 points the inlet straight down with the
-#               arm horizontal.
+#   shrouds     positive joint angle turns the inlet the way a positive arm
+#               angle turns the boom, so holding the inlet still against the
+#               ground through an arm pitch means driving the shroud to minus
+#               the arm angle. 0 points the inlet straight down with the arm
+#               horizontal.
 #
-# A natural low-level action vector is therefore 8-wide:
+# The low-level action vector is 8-wide:
 #   [left_wheels, right_wheels, arm_front, arm_rear, drum_front, drum_rear,
 #    shroud_front, shroud_rear]
 # ---------------------------------------------------------------------------
 
 
 def reach() -> dict[str, float]:
-    """Derived working envelope, in the chassis frame. Handy for sanity checks
-    and for sizing the soil bed in the env cfg."""
+    """Derived working envelope, in the chassis frame. Sizes the soil bed in
+    the env cfg and feeds the geometry checks."""
     lo, hi = ARM_RANGE
     pivot_z = CHASSIS_Z + MAST_TOP_Z
     return {
         "pivot_height": pivot_z,
-        # dig_depth is to the SHROUD, which is the outermost thing on the
-        # drum and the first to touch ground.
+        # dig_depth is to the shroud, the outermost part of the drum.
         "dig_depth": -(pivot_z - ARM_LEN * math.sin(hi) - SHROUD_OUT_R),
         "vane_dig_depth": -(pivot_z - ARM_LEN * math.sin(hi) - ROTOR_TIP_R),
         "dump_height": pivot_z - ARM_LEN * math.sin(lo) - SHROUD_OUT_R,
         "reach_x": PIVOT_X + ARM_LEN * math.cos(hi) + SHROUD_OUT_R,
         "overall_length": 2.0 * (PIVOT_X + ARM_LEN * math.cos(0.0) + SHROUD_OUT_R),
         "overall_width": TRACK + 2.0 * WHEEL_HALF_W,
-        # The rotor's swept cylinder is what fill is counted inside.
+        # Fill is counted inside the rotor's swept cylinder.
         "rotor_swept_diameter": 2.0 * ROTOR_TIP_R,
         "rotor_swept_volume": math.pi * ROTOR_TIP_R ** 2 * (2.0 * ROTOR_HALF_LEN),
         "vane_swept_inner_r": VANE_SWEPT_INNER_R,
         "vane_swept_outer_r": VANE_SWEPT_OUTER_R,
-        # The running fit between vane tips and shroud. Wider than a voxel and
-        # regolith leaks round the whole circumference instead of staying in a
-        # pocket; the coupler seals anything narrower.
+        # The running fit between vane tips and shroud. The coupler seals a
+        # gap narrower than a voxel.
         "running_clearance": SHROUD_IN_R - VANE_SWEPT_OUTER_R,
-        # The gap between adjacent vane tips is the way into a pocket.
+        # The gap between adjacent vane tips, the way into a pocket.
         "vane_tip_gap": VANE_TIP_GAP,
         "vane_tip_gap_grains": (VANE_TIP_GAP - MPM_TARGET_VOXEL) / MPM_TARGET_VOXEL,
-        # Rake, and whether the blade stays inside its own pocket.
+        # Rake, and the arcs that decide whether a blade stays in its pocket.
         "rake_deg": math.degrees(ROTOR_RAKE),
         "attack_deg": 90.0 - math.degrees(ROTOR_RAKE),
         "vane_sweep_deg": math.degrees(VANE_SWEEP),
@@ -712,8 +675,7 @@ def reach() -> dict[str, float]:
         "inlet_chord": 2.0 * SHROUD_IN_R * math.sin(0.5 * SHROUD_INLET),
         "shroud_outer_width": 2.0 * (ROTOR_HALF_LEN + 2.0 * SHROUD_END_T),
         "shroud_width_over_track": 2.0 * (ROTOR_HALF_LEN + 2.0 * SHROUD_END_T) / TRACK,
-        # The shroud is wider than the gap between the wheels, so the two
-        # overlap in y and only x separates them.
+        # How far the shroud reaches past the inner face of a wheel in y.
         "drum_lateral_overlap": (
             (ROTOR_HALF_LEN + 2.0 * SHROUD_END_T) - (WHEEL_Y - WHEEL_HALF_W)
         ),
@@ -721,9 +683,8 @@ def reach() -> dict[str, float]:
             PIVOT_X + ARM_LEN * math.cos(hi) - SHROUD_OUT_R
         ) - (AXLE_X + WHEEL_RADIUS),
         "yoke_standoff_from_shroud": ARM_LEN - SHROUD_OUT_R - (BOOM_LEN + YOKE_HALF_W),
-        # Above this the vane tips throw regolith outward harder than lunar
-        # gravity pulls it in. The shroud catches it, but the vanes stop
-        # carrying it inward.
+        # Spin at which outward acceleration at the vane tips equals lunar
+        # gravity.
         "spin_limit_rad_s": math.sqrt(1.62 / ROTOR_TIP_R),
     }
 
@@ -731,8 +692,7 @@ def reach() -> dict[str, float]:
 def write_mjcf(directory: str | None = None) -> str:
     """Write the MJCF to disk and return its path. Idempotent.
 
-    Used only by the offline USD conversion step; nothing calls it at training
-    time.
+    Called by the offline USD conversion step.
     """
     directory = directory or os.path.join(tempfile.gettempdir(), "luna_hifi_assets")
     os.makedirs(directory, exist_ok=True)

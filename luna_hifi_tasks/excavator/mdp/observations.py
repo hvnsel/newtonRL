@@ -2,13 +2,12 @@
 #
 # Observation assembly as a declared list of named terms.
 #
-#   * the observation dimension is derived, so turning the height map on or
-#     off is a flag rather than an integer edited in two files
+#   * the observation dimension is derived from the terms
 #   * every term declares its width and assembly asserts each tensor matches
 #   * the spec hashes, so a policy trained against one layout cannot be loaded
 #     against another
 #
-# No isaaclab import here, for the same reason as sensors.py.
+# Imports torch only, so the specs can be read without Isaac Lab.
 
 from __future__ import annotations
 
@@ -23,24 +22,20 @@ import torch
 # imported by the terrain sensor so the two can never disagree.
 # ---------------------------------------------------------------------------
 
-# Navigation, two windows.
-#
-# Stereo range error grows as the square of distance, so far data is coarse
-# whether or not the model says so; real rovers carry body-mounted hazcams for
-# the near field and a mast camera for the far one. These two mirror that.
+# Navigation, two windows: a coarse far one for routing and a fine near one
+# for foot placement, mirroring a rover's mast camera and its hazcams.
 #
 # The far window is sized from stopping distance. With the arms stowed the
 # front of the machine reaches x = 1.78 m, it halts in 1.10 m from 1.5 m/s,
-# and a 16 x 8 grid at 0.45 m pushed 2.40 m forward ends at x = 5.775 -- four
+# and a 16 x 8 grid at 0.45 m pushed 2.40 m forward ends at x = 5.775: four
 # metres of ground ahead of the machine, 2.7 s at full speed.
 NAV_FAR_NX, NAV_FAR_NY = 16, 8
 NAV_FAR_CELL = 0.45
 NAV_FAR_BIAS = 2.40
 NAV_FAR_CELLS = NAV_FAR_NX * NAV_FAR_NY
 
-# The near window is sized from the wheels. 12 x 8 at 0.20 m is 1.40 m wide
-# against a machine 1.35 m over the tyres, so one cell is one wheel width and
-# every cell is ground a wheel might land on.
+# The near window is sized from the wheels: 12 x 8 at 0.20 m is 1.40 m wide
+# against a machine 1.35 m over the tyres, one cell per wheel width.
 NAV_NEAR_NX, NAV_NEAR_NY = 12, 8
 NAV_NEAR_CELL = 0.20
 NAV_NEAR_BIAS = 1.30
@@ -49,18 +44,15 @@ NAV_NEAR_CELLS = NAV_NEAR_NX * NAV_NEAR_NY
 # Total navigation scan width, which is also what the critic gets clean.
 NAV_SCAN_CELLS = NAV_FAR_CELLS + NAV_NEAR_CELLS
 
-# Excavation: the cutting face, at the FRONT drum. With symmetric arm control
-# the policy cannot act differently on the two ends, and driving forward the
-# front drum is the one meeting fresh soil, so one patch there is the whole
-# usable picture. Independent arm control would want a second patch.
+# Excavation: the cutting face, at the front drum, which is the one meeting
+# fresh soil under symmetric arm control.
 DIG_SCAN_NX, DIG_SCAN_NY = 16, 8
 DIG_SCAN_CELL = 0.125
 DIG_SCAN_CELLS = DIG_SCAN_NX * DIG_SCAN_NY
 
 # GridPatternCfg puts a point at both ends of each axis:
-# arange(-size/2, size/2 + eps, res) yields size/res + 1 points. For exactly
-# NX x NY rays the pattern size must be (NX-1)*cell, not NX*cell, which would
-# give 17 x 13 = 221 rays against a 192-wide term.
+# arange(-size/2, size/2 + eps, res) yields size/res + 1 points, so a pattern
+# size of (NX-1)*cell gives exactly NX x NY rays.
 NAV_FAR_SIZE = ((NAV_FAR_NX - 1) * NAV_FAR_CELL, (NAV_FAR_NY - 1) * NAV_FAR_CELL)
 NAV_NEAR_SIZE = ((NAV_NEAR_NX - 1) * NAV_NEAR_CELL, (NAV_NEAR_NY - 1) * NAV_NEAR_CELL)
 DIG_SCAN_SIZE = ((DIG_SCAN_NX - 1) * DIG_SCAN_CELL, (DIG_SCAN_NY - 1) * DIG_SCAN_CELL)
@@ -82,9 +74,8 @@ class ObsTerm:
 class ObsSpec:
     """An ordered list of observation terms.
 
-    Order is part of the contract: a policy trained with terms in one order
-    cannot read an observation assembled in another. That is exactly what the
-    hash pins down.
+    Order is part of the contract the hash pins down: a policy trained with
+    terms in one order cannot read an observation assembled in another.
     """
 
     def __init__(self, terms: list[ObsTerm]) -> None:
@@ -105,15 +96,14 @@ class ObsSpec:
     def schema_hash(self) -> str:
         """Stable 12-char digest of (name, dim) pairs in order.
 
-        Deliberately ignores `note`: editing a comment must not invalidate a
-        checkpoint, but reordering or resizing terms must.
+        Ignores `note`, so reordering or resizing a term changes the hash and
+        editing its comment does not.
         """
         payload = "|".join(f"{t.name}:{t.dim}" for t in self.terms)
         return hashlib.sha256(payload.encode()).hexdigest()[:12]
 
     def slice_of(self, name: str) -> slice:
-        """Where a term sits in the assembled vector. For debugging and for
-        logging per-term statistics when an observation goes non-finite."""
+        """Where a term sits in the assembled vector."""
         off = 0
         for t in self.terms:
             if t.name == name:
@@ -124,9 +114,7 @@ class ObsSpec:
     def assemble(self, parts: dict[str, torch.Tensor]) -> torch.Tensor:
         """Concatenate terms in declared order, checking every shape.
 
-        Raises on a missing term, an extra term, or a width mismatch. All three
-        are bugs that otherwise surface as a policy that trains badly for
-        reasons nobody can find.
+        Raises on a missing term, an extra term, or a width mismatch.
         """
         missing = [t.name for t in self.terms if t.name not in parts]
         if missing:
@@ -170,10 +158,9 @@ class ObsSpec:
 # The specs themselves
 # ---------------------------------------------------------------------------
 #
-#   * every angle enters as (sin, cos): a raw heading error wraps at +-pi and
-#     the discontinuity poisons the value function
+#   * every angle enters as (sin, cos), so nothing wraps at +-pi
 #   * every height is relative, to the chassis or to the undisturbed bed
-#     surface, so the policy does not relearn the task per terrain elevation
+#     surface
 
 
 def navigate_obs_spec(
@@ -184,21 +171,16 @@ def navigate_obs_spec(
 ) -> ObsSpec:
     """Observation for the navigation skill.
 
-    The terrain scan is NOT optional. This rover drives over ground it has
-    itself excavated: 0.19 m pits and spoil piles against a 0.30 m wheel
-    radius. Proprioception lets a policy react to a slope it is already on; it
-    can never anticipate a pit. A blind navigator is not a simpler version of
-    this skill, it is a different and worse one.
+    The terrain scan carries the ground the rover has itself excavated: 0.19 m
+    pits and spoil piles against a 0.30 m wheel radius, which proprioception
+    reaches only once the machine is already on them.
 
-    Two windows, because routing and foot placement want different things:
-    far_scan reaches 4.0 m past the front of the machine for choosing a line,
-    near_scan resolves one wheel width for choosing where to put a wheel.
+    Two windows: far_scan reaches 4.0 m past the front of the machine for
+    choosing a line, near_scan resolves one wheel width for choosing where to
+    put a wheel.
 
     A cell the sensor did not measure reads scan_invalid, which sits outside
-    the clipped range of a real height and so needs no separate mask. A
-    raycast never misses; a stereo pair in a lunar shadow returns nothing, and
-    a policy handed a map that is always right learns to trust ground it
-    cannot see.
+    the clipped range of a real height and so needs no separate mask.
     """
     terms = [
         ObsTerm("base_lin_vel", 3, "body frame"),
@@ -223,42 +205,29 @@ def excavate_obs_spec(
 ) -> ObsSpec:
     """Observation for the excavation skill.
 
-    A 2-D scan, not a 1-D profile along the approach direction. The full-width
-    drum is a tempting argument for 1-D -- it cuts the whole swath at once, so
-    there is no lateral choice about WHERE in the cut to bite -- but the
-    machine still has two responses to lateral variation that a strip would
-    throw away: it can yaw, so approach angle relative to the face is a real
-    decision, and it can tip, so lateral slope is a safety input. 128 cells
-    against 16 is a cheap price for both.
-
-    Window is 2.0 x 1.0 m at 0.125 m, centred on the ACTIVE drum rather than
-    the chassis. Finer and smaller than the navigation scan because the
-    quantity of interest is the shape of the cutting face, not the route.
+    `terrain_scan` is a 2-D window, 2.0 x 1.0 m at 0.125 m, centred on the
+    front drum. It carries the two things the machine answers laterally: the
+    approach angle relative to the face, which it yaws to correct, and the
+    lateral slope, which tips it.
 
     `drum_phase` is (sin, cos) of the vane count times the rotor angle, so it
-    reads phase WITHIN a pocket and is identical for every pocket. Six vanes
-    at 2.9 rad/s put a pocket mouth at the inlet every 0.36 s, which is 9
-    steps at 25 Hz; without this term that cycle is invisible.
+    reads phase within a pocket and is identical for every pocket. Six vanes
+    at 2.9 rad/s put a pocket mouth at the inlet every 0.36 s, 9 steps at
+    25 Hz.
 
-    `arm_torque` is the load sensor. Soil the drum is buried in is carried by
-    the ground, so it does not appear here, which is the one thing the
-    particle-counted fill number cannot distinguish.
+    `arm_torque` is the load sensor, and it weighs what the arm carries: soil
+    the drum is buried in is held by the ground and does not appear here.
 
-    The cut command is a PLANE, not an arbitrary height field. The rotor is a
-    cylinder, so its cutting edge is a straight line across the whole swath
-    and the depth it takes is constant across that swath by construction: the
-    machine can ramp along its direction of travel by raising the boom as it
-    advances, and cannot tilt a cut sideways. A command it has no mechanism to
-    execute costs a policy its sample budget and teaches it nothing.
+    The cut command is a plane, in three numbers. The rotor is a cylinder, so
+    its cutting edge is a straight line across the swath and the depth is
+    constant across it: the machine ramps along its direction of travel by
+    raising the boom as it advances. `target_level` is in the same frame and
+    units as every cell of terrain_scan, height relative to the front drum
+    clipped to scan_clip, and the two gradients are dimensionless rise over
+    run in the body frame.
 
-    So three numbers. `target_level` is in the same frame and units as every
-    cell of terrain_scan -- height relative to the front drum, clipped to
-    scan_clip -- and the two gradients are dimensionless rise over run in the
-    BODY frame.
-
-    `grad_lateral` is the one the drum cannot cut away, and it is here on
-    purpose: the policy has yaw authority, so a lateral residual is the signal
-    that the machine is misaligned with the ramp and should turn.
+    `grad_lateral` is the component the drum cannot cut away. The policy has
+    yaw authority, so a lateral residual is the signal to turn.
     """
     terms = [
         ObsTerm("base_lin_vel", 3, "body frame"),
@@ -287,11 +256,9 @@ def excavate_obs_spec(
 def critic_state_spec(terrain_cells: int = NAV_SCAN_CELLS, num_arms: int = 2) -> ObsSpec:
     """Privileged state for the critic only.
 
-    The critic estimates value during training and is thrown away afterwards,
-    so it can see things no physical rover could: the true soil surface, exact
-    captured mass, true slip. The actor must not, or the policy cannot transfer
-    to a machine whose only terrain sense is a noisy, occluded depth camera.
-    Isaac Lab plumbs this through `state_space`, which the tricycle left at 0.
+    The critic estimates value during training and is discarded afterwards, so
+    it reads what no physical rover could: the true soil surface, exact
+    captured mass, true slip. Isaac Lab plumbs it through `state_space`.
     """
     return ObsSpec([
         ObsTerm("terrain_scan_true", terrain_cells, "noise-free soil surface"),

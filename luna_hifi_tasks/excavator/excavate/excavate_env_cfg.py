@@ -3,9 +3,9 @@
 # Excavation on the MPM tier: an implicit-MPM regolith bed, the machine parked
 # on top of it, both drums cutting as it drives. Tens of envs, not thousands.
 #
-# Coupling rules, all load-bearing: one solver per NewtonCfg, MPM entry
-# in_place + all_particles, no project_outside_colliders on a coupled entry,
-# tool bodies as a lagged proxy mapping with a mass_scale, soft_contact_max=0.
+# Coupling rules: one solver per NewtonCfg, MPM entry in_place +
+# all_particles, no project_outside_colliders on a coupled entry, tool bodies
+# as a lagged proxy mapping with a mass_scale, soft_contact_max=0.
 #
 # Gravity is lunar. See excavator_cfg.py.
 
@@ -66,9 +66,8 @@ from ..mdp.observations import (
 RIGID_ENTRY = "rover"
 MPM_ENTRY = "soil"
 
-# The way into a pocket is the 0.185 m chord between adjacent vane tips, which
-# at 0.03 is 5.2 grains clear once the coupler has taken its voxel. At 0.05 it
-# is 2.7 and regolith arches across it.
+# Particle spacing, and the margin the coupler inflates colliders by. At 0.03
+# the 0.185 m chord between adjacent vane tips is 5.2 grains clear.
 VOXEL_SIZE = 0.03
 MPM_COLLIDER_MARGIN = 0.5 * VOXEL_SIZE
 MPM_PARTICLES_PER_CELL = 1.0
@@ -76,14 +75,14 @@ MPM_VISUAL_COLOR = (0.62, 0.55, 0.45)
 
 # The bed extent lives on the env cfg as bed_x / bed_y / bed_depth, and
 # __post_init__ rewrites the scene from those: particle count, sparse-grid
-# capacities, the height grid, the floor slab and the spawn height all follow.
+# capacities, the height grid, the floor slab and the spawn height.
 #
 # Empty height-grid cells read BED_FLOOR_Z, the top of the slab an excavated
 # cell bottoms out on.
 BED_FLOOR_Z = 0.0
 
-# friction ~ tan(phi); yield_stress is cohesion in Pa, left at 0; and
-# yield_pressure caps compression.
+# friction is ~tan(phi), yield_stress is cohesion in Pa, yield_pressure caps
+# compression.
 SOIL_MATERIAL = MPMParticleMaterialCfg(
     density=1800.0,
     friction=0.84,
@@ -93,14 +92,13 @@ SOIL_MATERIAL = MPMParticleMaterialCfg(
 BORE_RADIUS = ROTOR_TIP_R
 BORE_HALF_LEN = ROTOR_HALF_LEN
 
-# The ground the drum is working. Scan cells inside this rectangle, in the
-# drum's own frame, are the ones a cut has to bring down to the target height.
+# The ground the drum is working: scan cells inside this rectangle, in the
+# drum's own frame, are the ones a cut brings down to the target height.
 FOOTPRINT_HALF_X = SHROUD_OUT_R
 FOOTPRINT_HALF_Y = ROTOR_HALF_LEN
 BORE_VOLUME = math.pi * BORE_RADIUS ** 2 * (2.0 * BORE_HALF_LEN)
-# The mass the rotor's swept cylinder would hold if it packed solid. Reported
-# at startup and nothing else: a pocket open at the rim holds a fraction of
-# it, so target_load_kg is what fill is normalised and scored against.
+# The mass the rotor's swept cylinder holds packed solid, reported at startup.
+# Fill is normalised and scored against target_load_kg.
 DRUM_CAPACITY_KG = BORE_VOLUME * SOIL_MATERIAL.density
 
 DIG_OBS = excavate_obs_spec()
@@ -123,8 +121,8 @@ def _next_pow2(n: int) -> int:
 # Scene
 # ---------------------------------------------------------------------------
 
-# Placeholder extents. __post_init__ overwrites lower/upper/voxel_size from the
-# cfg fields before anything spawns, so these values are never the ones used.
+# Placeholder extents. __post_init__ overwrites lower/upper/voxel_size from
+# the cfg fields before anything spawns.
 SOIL_CFG = MPMObjectCfg(
     prim_path="{ENV_REGEX_NS}/Soil",
     init_state=MPMObjectCfg.InitialStateCfg(),
@@ -144,12 +142,11 @@ SOIL_CFG = MPMObjectCfg(
 def _mpm_ground() -> RigidObjectCfg:
     """Hidden kinematic slab giving the MPM entry a floor.
 
-    The MPM entry only sees bodies listed on its CouplerEntryCfg, not the
-    global ground plane, so anything past the edge of this slab has nothing
-    underneath it and falls forever. It therefore has to extend well beyond
-    the bed: a drum cutting a 0.10 m lift bulldozes a bow wave ahead of
-    itself and throws material sideways, and both leave the bed footprint.
-    Size and position are rewritten in __post_init__."""
+    The MPM entry sees only the bodies listed on its CouplerEntryCfg, so this
+    slab is the floor under every particle. It extends mpm_floor_margin past
+    the bed on each side, covering the bow wave a cut throws ahead of and
+    beside itself. Size and position are rewritten in __post_init__.
+    """
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/MPMGround",
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -0.05)),
@@ -191,8 +188,8 @@ class ExcavateSceneCfg(InteractiveSceneCfg):
 
 @configclass
 class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
-    # 100 Hz sim, 25 Hz policy, 500 steps per episode. A loaded cut runs
-    # 10-20 s, and gamma in agents/rsl_rl_ppo_cfg.py is set against that.
+    # 100 Hz sim, 25 Hz policy, 500 steps per episode, against a loaded cut of
+    # 10-20 s. gamma in agents/rsl_rl_ppo_cfg.py is set to match.
     decimation = 4
     episode_length_s = 20.0
 
@@ -216,49 +213,36 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     bed_x: tuple[float, float] = (-3.0, 5.0)
     bed_y: tuple[float, float] = (-1.0, 1.0)
     bed_depth: float = 0.25
-    # Decides whether the rotor can fill. The coupler inflates every collider
-    # by half a voxel per side, eating a whole voxel out of every passage, and
-    # particles spawn one voxel apart. The gap between vane tips is 0.185 m:
-    # 5.2 grains clear at 0.03, 2.7 at 0.05. Granular material arches below
-    # about four. Halving the voxel multiplies the particle count by eight.
+    # Particle spacing, and half of it is the margin the coupler inflates
+    # every collider by. The 0.185 m gap between vane tips is 5.2 grains clear
+    # at 0.03, 2.7 at 0.05; granular material arches below about four. Particle
+    # count goes as the inverse cube.
     voxel_size: float = VOXEL_SIZE
     particles_per_cell: float = MPM_PARTICLES_PER_CELL
     spawn_on_bed: bool = True
 
     # How far past the bed, on every side, the MPM floor slab and the height
-    # grid reach. Soil does not stay inside the box it was spawned in: a
-    # single 12 s crawl pushed the near edge 0.20 m back. Past the slab there
-    # is no floor and particles fall forever; past the height grid they are
-    # dropped from the rasterisation, so the terrain scan reads bare ground
-    # where a spoil pile is.
+    # grid reach. Soil spreads outside the box it was spawned in; a single 12 s
+    # crawl pushes the near edge back 0.20 m. The slab is the floor under it
+    # and the height grid is what rasterises it into the terrain scan.
     mpm_floor_margin: float = 1.0
     heightmap_margin: float = 1.0
 
-    # Sparse-grid active cells per particle. ABSOLUTE totals over all envs.
-    # Overrunning them is an illegal access -- a CUDA 700 storm, or 0xC0000374
-    # on Windows -- not an out-of-memory error.
-    #
-    # A cell is tens of bytes, so 2^20 of them is under 100 MB. 8 is the
-    # tricycle's ratio; raising it to 24 changed nothing, so the caps are not
-    # what this machine hits.
+    # Sparse-grid active cells per particle, as absolute totals over all envs.
+    # Overrunning them is an illegal access: a CUDA 700 storm, or 0xC0000374 on
+    # Windows. A cell is tens of bytes, so 2^20 of them is under 100 MB.
     grid_cap_multiplier: float = 8.0
 
-    # Which bodies are coupled to the soil. Each body brings every one of its
+    # Which bodies are coupled to the soil. Each brings every one of its
     # geoms; the drums are 38 apiece.
     soil_contact_regex: str = SOIL_CONTACT_BODIES_REGEX
 
-    # Rigid-solver buffers, per env. Fixed size, and overrunning one is an
-    # illegal memory access -- a CUDA 700 storm, or 0xC0000374 on Windows --
-    # not a clean error.
+    # Rigid-solver buffers, per env, fixed size. Overrunning one is an illegal
+    # memory access: a CUDA 700 storm, or 0xC0000374 on Windows.
     #
     # Contacts scale with collider count and with how much soil touches them.
-    # The shrouded rotor carries 136 geoms, 106 of them coupled, against the
-    # tricycle's 8. A standalone Warp MPM sample has no rigid solver and so
-    # neither buffer, which is why it reaches particle counts a coupled scene
-    # does not.
-    #
-    # A contact is a couple of hundred bytes, so 32768 is about 6.6 MB. There
-    # is no reason to be tight here and overrunning one is an illegal access.
+    # The shrouded rotor carries 136 geoms, 106 of them coupled. A contact is a
+    # couple of hundred bytes, so 32768 is about 6.6 MB.
     rigid_njmax: int = 8192
     rigid_nconmax: int = 32768
 
@@ -267,30 +251,21 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # cells of storage.
     grid_leaf_shift: int = 7
 
-
-
     # --- regolith ---
     #
     # The yield surface is
     #     tau_max(p) = yield_stress + friction * (p - p_min)
     # so friction is ~tan(phi) and soil_cohesion is cohesion in Pa.
-    # Drucker-Prager alpha numbers do not port across.
     #
-    # At zero cohesion the regolith is dry sand: it shears off the lip and
-    # flows back out of the mouth it entered. A few hundred Pa and the cut
-    # travels as a clod the lifters can carry round. Lunar simulants sit
-    # around 0.1-1 kPa.
-    #
-    # The blades sweep r = 0.053 to 0.246 m and fill is counted inside the
-    # r = 0.170 m bore, so the lifters reach 0.117 m into the measured volume
-    # and churn a non-cohesive soil every half turn.
+    # At zero cohesion the regolith behaves as dry sand and shears off the lip;
+    # a few hundred Pa and the cut travels as a clod the lifters carry round.
+    # Lunar simulants sit around 0.1-1 kPa.
     soil_density: float = 1800.0
     soil_friction: float = 0.84              # tan(40 deg)
     soil_cohesion: float = 0.0               # yield_stress, Pa
-    soil_yield_pressure: float = 1.0e12      # packed ground, not a sandbox
+    soil_yield_pressure: float = 1.0e12      # Pa, compression cap
 
-    # Derived in __post_init__ from the four fields above, and read off the cfg
-    # rather than imported as module constants.
+    # Derived in __post_init__ and read off the cfg.
     bed_top: float = 0.0
     bed_grid_lower: tuple[float, float] = (0.0, 0.0)
     bed_grid_nx: int = 0
@@ -298,31 +273,25 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     bed_particles_per_env: int = 0
     drum_capacity_kg: float = DRUM_CAPACITY_KG
     # Work area times the mean commanded depth, derived in __post_init__. The
-    # depth reward divides by it, so w_depth is "points for one nominal cut".
+    # depth reward divides by it, so w_depth is points for one nominal cut.
     cut_volume_ref: float = 0.22
 
-    # The sparse-grid capacities are absolute totals across all envs and do not
-    # scale with --num_envs, which Hydra applies after __post_init__. They are
-    # sized for max_num_envs and the env asserts num_envs does not exceed it.
-    #
-    # Held equal to scene.num_envs so the default config does not allocate a
-    # grid twice the size of the run it is about to do. Raising num_envs means
-    # raising this with it, and the grid cost goes up in proportion: 16 envs of
-    # the full bed is 2.6M particles and about 6.4 GB of grid.
+    # The sparse-grid capacities are absolute totals across all envs and are
+    # sized for this number, since Hydra applies --num_envs after
+    # __post_init__. The env asserts num_envs does not exceed it, and grid cost
+    # goes up in proportion: 16 envs of the full bed is 2.6M particles and
+    # about 6.4 GB of grid.
     max_num_envs = 16
 
     # actions: [forward, yaw, boom, drum, shroud] in [-1, 1]. Boom, drum and
-    # shroud are one command each, applied to both ends -- the counter-rotating
-    # dig, with the inlet aimed together.
+    # shroud are one command each, applied to both ends.
     action_space = 5
-    observation_space = DIG_OBS.dim      # 167
-    state_space = DIG_CRITIC.dim         # 199
+    observation_space = DIG_OBS.dim      # 169
+    state_space = DIG_CRITIC.dim         # 231
 
     # --- start state ---
-    # Jitter is set from what navigate is allowed to hand over: it declares
-    # success at goal_dist_tol 0.5 m in any direction and goal_heading_tol_rad
-    # 0.35, so a skill trained inside those numbers meets poses it has never
-    # seen, laterally in particular.
+    # Jitter spans what navigate hands over: it declares success at
+    # goal_dist_tol 0.5 m in any direction and goal_heading_tol_rad 0.35.
     arm_start_angle = -0.20              # drums ~0.44 m up, clear of the bed
     arm_start_jitter = 0.10              # rad
     spawn_yaw_jitter = 0.40              # rad
@@ -330,10 +299,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     spawn_y_jitter = 0.55                # m
 
     # Episodes an env keeps its bed before every particle goes back to its
-    # spawn cell. The MPM grid is one spawner shared by all envs, so a bed
-    # cannot be made to differ at spawn time; letting it carry over is what
-    # makes one env's ground differ from another's, and it is the ground the
-    # machine will actually meet -- terrain it has already worked.
+    # spawn cell. The MPM grid is one spawner shared by all envs, so a carried
+    # over bed is what makes one env's ground differ from another's: terrain
+    # the machine has already worked.
     soil_reset_every: int = 8
 
     # --- actions ---
@@ -342,29 +310,23 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     shroud_range = SHROUD_RANGE
 
     # --- cut command ---
-    # The planner hands down a target PLANE. Here it is sampled per episode:
-    # a depth below the surface the drum will meet, plus a gradient.
+    # The planner hands down a target plane. Here it is sampled per episode: a
+    # depth below the surface the drum meets, plus a gradient.
     cut_depth_range: tuple[float, float] = (0.04, 0.12)
 
-    # Rise over run the planner may command, clipped rather than left free.
-    # 0.30 is about 17 degrees. The clip is not a physics claim -- it stops a
-    # planner spending its sample budget discovering that a 60 degree ramp is
-    # impossible. Where the machine actually stalls is learned inside it.
+    # Rise over run the planner may command, about 17 degrees. Where the
+    # machine stalls is learned inside this bound.
     cut_gradient_max: float = 0.30
-    # Fraction of episodes that get a non-zero gradient. The rest are flat
-    # cuts, which is what most of the work is.
+    # Fraction of episodes with a non-zero gradient; the rest are flat cuts.
     cut_ramp_fraction: float = 0.5
-    # Lateral gradient, as a fraction of cut_gradient_max. Small, because the
-    # planner is supposed to align the approach pose with the ramp; it is
-    # non-zero so the policy learns that a lateral residual means yaw.
+    # Lateral gradient, as a fraction of cut_gradient_max. The planner aligns
+    # the approach pose with the ramp, leaving a small residual the policy
+    # answers with yaw.
     cut_lateral_fraction: float = 0.3
 
     # The ground this cut is responsible for, anchored where the drum first
-    # meets soil and extending forward along the approach heading. Progress is
-    # measured over THIS, fixed in the world, not over a window that travels
-    # with the drum: a window integral telescopes to the difference between
-    # two snapshots taken in two different places, which is the same number
-    # whether the machine dug a trench or sat still.
+    # meets soil and extending forward along the approach heading. Fixed in the
+    # world for the episode, and progress is measured over it.
     work_area_length: float = 2.0            # m ahead of the anchor
     work_area_behind: float = 0.3            # m behind it
     work_area_width: float = 1.2             # m, a little over the 1.0 m swath
@@ -374,8 +336,8 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     shape_success_fraction: float = 0.10
 
     # --- load sensor ---
-    # What the policy reads in place of the particle count. Boom torque is how
-    # a machine weighs its load: a first-order lag, noise proportional to the
+    # What the policy reads in place of the particle count: a boom-torque
+    # weighing, modelled as a first-order lag, noise proportional to the
     # reading, and a calibration bias held for the episode. The exact figure
     # stays on the critic as drum_fill_mass.
     target_load_kg: float = 40.0
@@ -385,36 +347,27 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     fill_sensor_bias: float = 0.03           # +- fraction, per episode
 
     # --- success ---
-    # 0.6 of target_load_kg is 24 kg on the front drum. The best recorded run
-    # reached 23.6 kg in 30 s.
+    # 0.6 of target_load_kg is 24 kg on the front drum, against a best recorded
+    # run of 23.6 kg in 30 s.
     fill_success_fraction = 0.6
     # "front": the front drum alone. "all": every drum. "mean": the pair
     # averages past the threshold.
     fill_success_mode = "front"
 
     # --- reward weights ---
-    # Every term is scaled so a whole episode of doing it well is worth tens
-    # of points, not fractions. fill and depth are the two halves of the task:
-    # fill alone lets the policy scrape one strip forever, depth alone lets it
-    # push soil aside and capture none.
+    # Scaled so a whole episode of doing a term well is worth tens of points.
+    # fill and depth are the two halves of the task: fill scores what the drum
+    # captures, depth what the ground gives up.
+    #
+    # Set from scripts/reward_audit.py, which prints per-term episode totals
+    # over a zero pass and a random walk.
     w_fill = 40.0                        # per 2 x target_load_kg captured
     w_depth = 20.0                       # per cut_volume_ref brought to target
     w_overcut = 0.2                      # per cut_volume_ref taken below it
     w_spill = 20.0                       # asymmetry on top of a negative fill
     w_success = 20.0
-    # Measured over four episodes of a random walk, against fill +7.68 and
-    # depth +2.02: drift came to -238.58, stall to -101.97 and energy to
-    # -37.25. drift was meant to catch the counter-rotation shove and instead
-    # charges for every yaw, because a skid-steer turning IS lateral motion
-    # the policy did not command forward. stall fires whenever a commanded
-    # speed is not achieved, which a random policy does constantly. energy
-    # rose with the wheel and drum torque now available.
-    w_stall = 0.025
-    # Re-measured at 0.05: still -15.50, the largest term in the function and
-    # larger than fill at +4.55. A skid-steer turning drags its wheels
-    # sideways by construction, so this charges for every yaw as well as for
-    # the counter-rotation shove it was written for.
-    w_drift = 0.01                       # the counter-rotation check
+    w_stall = 0.025                      # commanded speed not achieved
+    w_drift = 0.01                       # lateral motion, which a yaw also is
     w_upright = 2.0
     w_energy = 1.0e-5
     w_action_rate = 0.05
@@ -425,24 +378,23 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     max_env_excursion = 6.0
 
     # --- scan ---
-    # Actor only; the critic sees the bed clean. Smaller figures than the
-    # navigator's because the window is 2 x 1 m at the drum rather than metres
-    # out, and scan_invalid sits outside +- scan_clip so a dropped cell cannot
-    # be read as a height.
+    # Actor only; the critic sees the bed clean. The window is 2 x 1 m at the
+    # drum, and scan_invalid sits outside +- scan_clip so a dropped cell reads
+    # as its own value rather than a height.
     scan_clip = 1.0
     scan_noise_std = 0.015               # m, at scan_range_ref
     scan_dropout = 0.02                  # probability, at scan_range_ref
     scan_range_ref = 1.0                 # m
     scan_invalid = -2.0
 
-    # Scales the wheel and drum inertia MPM sees; the lagged-feedback
+    # Scales the wheel and drum inertia MPM sees, the lagged-feedback
     # stability knob. Lower it if the machine chatters on the bed.
     proxy_mass_scale: float = 10.0
 
     # The soil_* fields are plain numbers on this cfg; the solver reads an
     # MPMParticleMaterialCfg on the spawner. Hydra applies overrides after
-    # __post_init__, so anything setting a soil_* field late must call this
-    # again. The env refuses to start if the two disagree.
+    # __post_init__, so setting a soil_* field late means calling this again.
+    # The env refuses to start if the two disagree.
     def apply_soil_material(self) -> None:
         """Copy the soil_* fields onto the MPM material and the derived capacity."""
         mat = self.scene.soil.spawn.material
@@ -453,9 +405,8 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             "yield_pressure": self.soil_yield_pressure,
         }
         for name, value in values.items():
-            # A plain setattr would create an attribute the solver never
-            # reads, so a field rename would present as soil parameters having
-            # no effect.
+            # setattr on a field this build does not have would create an
+            # attribute the solver never reads.
             if not hasattr(mat, name):
                 raise AttributeError(
                     f"MPMParticleMaterialCfg has no field {name!r} on this Isaac Lab "
@@ -491,10 +442,8 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             drum bottom = wheel plane + pivot - ARM_LEN*sin(angle) - SHROUD_OUT_R
             target      = bed surface - cut
 
-        A raw boom command does not carry between scenes. 0.9 is 0.66 rad,
-        which on a pile-in-front bed puts the shroud 0.18 m BELOW the ground
-        plane: the drum bottoms out on the rigid floor, jacks the wheels off
-        the ground, and the machine never reaches the soil.
+        The angle is solved per scene, since wheel_plane and bed_top differ
+        between the on-bed and pile-in-front beds.
         """
         pivot = CHASSIS_Z + MAST_TOP_Z
         wheel_plane = self.bed_top if self.spawn_on_bed else 0.0
@@ -505,8 +454,8 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
     def __post_init__(self) -> None:
         # One nominal cut: the whole work area taken down by the mean
-        # commanded depth. w_depth then reads as points for finishing a cut,
-        # and shape_success_fraction as the residual allowed at the end.
+        # commanded depth. w_depth reads as points for finishing a cut, and
+        # shape_success_fraction as the residual allowed at the end.
         lo, hi = self.cut_depth_range
         self.cut_volume_ref = (
             (self.work_area_length + self.work_area_behind)
@@ -541,33 +490,25 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         fm = self.mpm_floor_margin
         slab.spawn.size = (length + 2.0 * fm, width + 2.0 * fm, 0.10)
         slab.spawn.collision_props.contact_margin = margin
-        # Centred on the bed in BOTH axes; a bed whose y range is not centred
-        # on zero would otherwise hang off one side of its own floor.
+        # Centred on the bed in both axes.
         slab.init_state.pos = (
             0.5 * (self.bed_x[0] + self.bed_x[1]),
             0.5 * (self.bed_y[0] + self.bed_y[1]),
             -0.05,
         )
 
-        # Wheels rest on z = 0 in the shared asset cfg. On the bed that is a
-        # quarter metre of regolith; with a pile ahead of the machine instead,
-        # it stays on the ground plane.
+        # Wheels rest on z = 0 in the shared asset cfg: the bed surface with
+        # spawn_on_bed, the ground plane otherwise.
         z = SPAWN_Z + (self.bed_top if self.spawn_on_bed else 0.0)
         self.scene.excavator.init_state.pos = (0.0, 0.0, z)
 
         total_particles = self.bed_particles_per_env * self.max_num_envs
         active = _next_pow2(int(self.grid_cap_multiplier * total_particles))
-        # A leaf is a BLOCK of 8^3 = 512 cells, not a cell, so a leaf count
-        # near the active cell count costs hundreds of times the storage the
-        # active set calls for. >> 7 keeps four times the minimum of one leaf
-        # per 512 cells; the floors stop a small bed from starving the tree.
-        # Capacity is bounded by the grid's SPATIAL SPREAD, not by the
-        # particle count: a random policy throws soil around and the active
-        # region grows far past the bed it was spawned in. Measured, the
-        # tree overflowed on leaf, lower AND upper nodes at once (status 7)
-        # part way through a random-walk episode. The floors are what a
-        # scattered bed needs; a leaf block is 512 cells, so 16384 of them is
-        # about 400 MB.
+        # A leaf is a block of 8^3 = 512 cells, so >> 7 keeps four times the
+        # minimum of one leaf per 512 cells. Capacity is bounded by the grid's
+        # spatial spread rather than the particle count, and a random policy
+        # scatters soil well past the bed it spawned in, so the floors hold
+        # what a scattered bed needs: 16384 leaf blocks is about 400 MB.
         leaf = max(active >> self.grid_leaf_shift, 16384)
         lower = max(leaf >> 3, 4096)
         upper = max(lower >> 3, 1024)
@@ -608,10 +549,8 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                     CouplerEntryCfg(
                         name=MPM_ENTRY,
                         solver_cfg=MPMSolverCfg(
-                            # self.voxel_size, not the module constant: this
-                            # grid sets both the particle spacing and the
-                            # margin the coupler inflates colliders by, so
-                            # pinning it makes a finer cfg voxel a no-op.
+                            # Sets both the particle spacing and the margin
+                            # the coupler inflates colliders by.
                             voxel_size=self.voxel_size,
                             grid_type="sparse",
                             grid_padding=0,
@@ -680,35 +619,29 @@ class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
     against the full bed's 32,000 particles per env and grid caps in the
     millions.
 
-    The soil is a pile in FRONT of the machine rather than a bed under it. The
-    machine sits on the rigid ground plane and only the front drum reaches
-    soil, so this does not exercise the counter-rotating pair; it exercises the
-    particle adapter, the coupler mapping and the drum-fill sensor.
+    The soil is a pile in front of the machine. The machine sits on the rigid
+    ground plane and the front drum alone reaches soil, exercising the particle
+    adapter, the coupler mapping and the drum-fill sensor.
 
-    The pile top is 0.125 m up, so the arm angle that bites differs from the
-    deep bed's. dig_demo.py solves for it from a cut depth.
+    The pile top is 0.125 m up; dig_demo.py solves the arm angle that bites
+    from a cut depth.
     """
 
-    # Depth is what matters: at 0.10 m only 0.04 m of the rotor sits inside the
-    # soil column; at 0.16 m it is 0.09 m.
+    # At 0.16 m of depth, 0.09 m of the rotor sits inside the soil column.
     #
-    # The near edge is set from where the drum actually is. At the dig angle
-    # the drum axis sits at PIVOT_X + ARM_LEN*cos(arm) = 1.65 m and its leading
-    # edge at 1.86, so a bed starting at 1.1 puts the machine most of the way
-    # across it before it has begun. Starting at 1.80 means the drum enters at
-    # the near edge and has the whole bed ahead of it.
+    # At the dig angle the drum axis sits at PIVOT_X + ARM_LEN*cos(arm) =
+    # 1.65 m and its leading edge at 1.86, so a near edge of 1.80 puts the
+    # drum at the start of the bed with the whole of it ahead.
     bed_x: tuple[float, float] = (1.80, 2.70)
     bed_y: tuple[float, float] = (-0.55, 0.55)
     bed_depth: float = 0.16
     spawn_on_bed: bool = False
 
-    # Cohesive enough that a cut clod survives the trip into the bore. 0
-    # sprays; ~800 holds together; too much and the drum cannot cut in.
+    # Cohesive enough that a cut clod survives the trip into the bore.
     soil_cohesion: float = 800.0
 
-    # This bed is a 1.1 m wide strip and the machine is run against it by a
-    # scripted demo. The training jitter would put the drum beside the pile,
-    # and a carried-over bed would leave the demo nothing to cut.
+    # A 1.1 m wide strip, run against by a scripted demo: the jitter is tight
+    # enough to keep the drum on the pile and the bed resets every episode.
     spawn_x_jitter: float = 0.15
     spawn_y_jitter: float = 0.0
     spawn_yaw_jitter: float = 0.05
@@ -728,15 +661,14 @@ class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
 class ExcavatorExcavateMicroEnvCfg(ExcavatorExcavateSmallEnvCfg):
     """A finer voxel on a small bed, with only the front drum coupled.
 
-    The drum's entry channel opens 0.082 m. At a 0.05 voxel that leaves 0.032 m
-    clear, 0.6 of a particle spacing, and soil bridges the opening; at 0.03 it
-    is 1.7 spacings and flows.
+    The drum's entry channel opens 0.082 m: 1.7 particle spacings clear at a
+    0.03 voxel, against 0.6 at 0.05.
     """
 
     voxel_size: float = 0.03
 
-    # A strip worth cutting, starting where the drum's leading edge reaches at
-    # the dig angle so the machine has the whole metre ahead of it.
+    # A one-metre strip, starting where the drum's leading edge reaches at the
+    # dig angle.
     bed_x: tuple[float, float] = (1.80, 2.80)
     bed_y: tuple[float, float] = (-0.50, 0.50)
     bed_depth: float = 0.21

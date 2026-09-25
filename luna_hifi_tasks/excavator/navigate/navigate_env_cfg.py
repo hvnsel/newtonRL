@@ -180,9 +180,15 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     w_bearing = 0.1
     w_goal = 20.0
     w_upright = 2.0
-    w_slip = 0.05
+    # Measured over 10 episodes of a random walk, against progress +0.92 and
+    # goal +4.00: energy came to -44.83 and slip to -15.91, so moving cost
+    # sixty points and earned five. energy in particular scales with wheel
+    # torque, which went up sixteen-fold when the wheel damping was raised
+    # from 25 to 400 to let the machine crawl; the weight was never revisited.
+    # These put the same random walk at about -3 and -2.
+    w_slip = 0.006
     w_action_rate = 0.05
-    w_energy = 2.0e-4
+    w_energy = 1.3e-5
     w_time = 0.02
     # With no arm actuator wired this term should read zero forever. It stays
     # as an assertion in reward form: if it ever moves, something is wrong.
@@ -211,8 +217,13 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
         self.sim.physics = NewtonCfg(
             solver_cfg=MJWarpSolverCfg(
-                njmax=200,
-                nconmax=96,
+                # Measured: driving eight machines over generated terrain
+                # printed "nefc overflow - please increase njmax to 504".
+                # These are fixed per-env buffers and overrunning one is an
+                # illegal access, not an error; a constraint is a couple of
+                # hundred bytes so there is no reason to be tight.
+                njmax=2048,
+                nconmax=1024,
                 cone="pyramidal",
                 impratio=1,
                 integrator="implicitfast",

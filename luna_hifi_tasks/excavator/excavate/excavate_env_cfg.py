@@ -563,9 +563,16 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         # near the active cell count costs hundreds of times the storage the
         # active set calls for. >> 7 keeps four times the minimum of one leaf
         # per 512 cells; the floors stop a small bed from starving the tree.
-        leaf = max(active >> self.grid_leaf_shift, 1024)
-        lower = max(leaf >> 3, 256)
-        upper = max(lower >> 3, 64)
+        # Capacity is bounded by the grid's SPATIAL SPREAD, not by the
+        # particle count: a random policy throws soil around and the active
+        # region grows far past the bed it was spawned in. Measured, the
+        # tree overflowed on leaf, lower AND upper nodes at once (status 7)
+        # part way through a random-walk episode. The floors are what a
+        # scattered bed needs; a leaf block is 512 cells, so 16384 of them is
+        # about 400 MB.
+        leaf = max(active >> self.grid_leaf_shift, 16384)
+        lower = max(leaf >> 3, 4096)
+        upper = max(lower >> 3, 1024)
         print(
             f"[excavate] bed {length:.1f} x {width:.1f} x {self.bed_depth:.2f} m at "
             f"{self.voxel_size:.3f} m voxel -> {self.bed_particles_per_env} particles/env "

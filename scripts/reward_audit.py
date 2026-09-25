@@ -41,9 +41,9 @@ def _parse(argv):
                    help="Luna-Excavator-Navigate or Luna-Excavator-Excavate")
     p.add_argument("--num_envs", type=int, default=None)
     p.add_argument("--episodes", type=int, default=4,
-                   help="episodes for the WALK pass. The zero pass always runs "
-                        "one round -- it is deterministic, every episode of it "
-                        "is identical. Rounds up to a whole number of num_envs")
+                   help="episodes for the walk pass, rounded up to a whole "
+                        "number of num_envs. The zero pass is deterministic "
+                        "and always runs one round")
     p.add_argument("--walk_sigma", type=float, default=0.15,
                    help="per-step action noise for the walk policy")
     p.add_argument("--max_steps", type=int, default=200_000,

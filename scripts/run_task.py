@@ -50,8 +50,8 @@ def _parse(argv):
              "terrain, unless --num_envs / --terrain_rows / --terrain_cols say otherwise.",
     )
     p.add_argument("--cohesion", type=float, default=None,
-                   help="excavate only; soil yield_stress in Pa. An explicit flag because a "
-                        "Hydra override lands after the MPM material is built from the field")
+                   help="excavate only; soil yield_stress in Pa, applied to the MPM "
+                        "material as well as the cfg field")
     p.add_argument("--terrain_rows", type=int, default=None, help="navigate only; rows of sub-terrain")
     p.add_argument("--terrain_cols", type=int, default=None, help="navigate only; cols of sub-terrain")
     add_launcher_args(p)

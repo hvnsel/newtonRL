@@ -18,8 +18,8 @@ import torch
 
 
 # ---------------------------------------------------------------------------
-# Scan geometry. Declared here because the observation width depends on it, and
-# imported by the terrain sensor so the two can never disagree.
+# Scan geometry. The observation width is derived from it and the terrain
+# sensor builds its patterns from it.
 # ---------------------------------------------------------------------------
 
 # Navigation, two windows: a coarse far one for routing and a fine near one

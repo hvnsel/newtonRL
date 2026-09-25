@@ -72,14 +72,14 @@ def _parse(argv):
     p.add_argument("--t_drive", type=float, default=7.0, help="start crawling forward")
     p.add_argument("--t_dump", type=float, default=None,
                    help="turn the inlet up and reverse the rotor at this time; "
-                        "off by default. Fill should FALL after it")
+                        "off by default. Fill falls after it")
 
     # Depth of the shroud below the soil surface, in metres, which
     # cfg.boom_command_for_cut() turns into a boom command against the env's
     # own bed. The shroud is the outermost part of the drum, and
     # cut_diagnosis() reports the margin per run.
     p.add_argument("--cut", type=float, default=0.10,
-                   help="how deep the SHROUD should cut below the surface, metres")
+                   help="how deep the shroud cuts below the surface, metres")
     p.add_argument("--boom", type=float, default=None,
                    help="raw boom command, overriding --cut")
     # 1.0 is 8 rad/s, 2.0 m/s at the lip, which throws soil clear of the

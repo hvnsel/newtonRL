@@ -186,7 +186,10 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     w_goal = 20.0
     w_upright = 2.0
     w_slip = 0.006
-    w_action_rate = 0.05
+    # Measured on a fresh policy: at 0.05 this came to -29.1, 58% of the
+    # penalty budget, almost all of it the 2*sigma^2*dims offset that carries
+    # no gradient. 0.005 puts it at -2.9, about 12%.
+    w_action_rate = 0.005
     w_energy = 1.3e-5
     w_time = 0.02
     # No arm actuator is wired on this tier, so this term reads zero. It is

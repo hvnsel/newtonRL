@@ -380,7 +380,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     w_drift = 0.01                       # lateral motion, which a yaw also is
     w_upright = 2.0
     w_energy = 1.0e-5
-    w_action_rate = 0.05
+    # Measured on a fresh policy: -26.4 at 0.05, 47% of the penalty budget.
+    # 0.0075 puts it at -4.0, about 12%.
+    w_action_rate = 0.0075
     w_time = 0.005
 
     # --- termination ---

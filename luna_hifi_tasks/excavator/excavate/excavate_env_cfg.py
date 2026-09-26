@@ -48,12 +48,10 @@ from ..excavator_cfg import (
     EXCAVATOR_CFG,
     EXCAVATOR_PRIM_REGEX,
     LUNAR_GRAVITY,
-    FRONT_DRUM_ONLY_REGEX,
     SOIL_CONTACT_BODIES_REGEX,
     SPAWN_Z,
 )
 from ..mdp.observations import (
-    DIG_SCAN_CELL,
     NAV_SCAN_CELLS,
     critic_state_spec,
     excavate_obs_spec,
@@ -674,20 +672,12 @@ class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
 
 @configclass
 class ExcavatorExcavateMicroEnvCfg(ExcavatorExcavateSmallEnvCfg):
-    """A finer voxel on a small bed, with only the front drum coupled.
+    """Small's pile, squared off and deepened: 8,092 particles against 6,882.
 
-    The drum's entry channel opens 0.082 m: 1.7 particle spacings clear at a
-    0.03 voxel, against 0.6 at 0.05.
+    A one-metre strip starting where the drum's leading edge reaches at the
+    dig angle, deep enough to bury 0.09 m of the rotor.
     """
 
-    voxel_size: float = 0.03
-
-    # A one-metre strip, starting where the drum's leading edge reaches at the
-    # dig angle.
     bed_x: tuple[float, float] = (1.80, 2.80)
     bed_y: tuple[float, float] = (-0.50, 0.50)
     bed_depth: float = 0.21
-    spawn_on_bed: bool = False
-
-    max_num_envs = 1
-    episode_length_s = 30.0

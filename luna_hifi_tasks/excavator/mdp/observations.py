@@ -55,7 +55,6 @@ DIG_SCAN_CELLS = DIG_SCAN_NX * DIG_SCAN_NY
 # size of (NX-1)*cell gives exactly NX x NY rays.
 NAV_FAR_SIZE = ((NAV_FAR_NX - 1) * NAV_FAR_CELL, (NAV_FAR_NY - 1) * NAV_FAR_CELL)
 NAV_NEAR_SIZE = ((NAV_NEAR_NX - 1) * NAV_NEAR_CELL, (NAV_NEAR_NY - 1) * NAV_NEAR_CELL)
-DIG_SCAN_SIZE = ((DIG_SCAN_NX - 1) * DIG_SCAN_CELL, (DIG_SCAN_NY - 1) * DIG_SCAN_CELL)
 
 
 @dataclass(frozen=True)

@@ -165,8 +165,6 @@ SHROUD_INLET = math.radians(100.0)
 SHROUD_RANGE = (-1.10, 1.10)
 
 # Drum-level dimensions, taken from the shroud, which is the outermost part.
-DRUM_RADIUS = SHROUD_OUT_R
-DRUM_WALL_T = SHROUD_OUT_R - SHROUD_IN_R
 DRUM_HALF_LEN = ROTOR_HALF_LEN
 CAP_HALF_T = SHROUD_END_T
 
@@ -206,11 +204,7 @@ BODY_CHASSIS = "chassis"
 BODY_WHEELS = ["wheel_fl_body", "wheel_fr_body", "wheel_rl_body", "wheel_rr_body"]
 BODY_ARMS = ["arm_front_body", "arm_rear_body"]
 BODY_DRUMS = ["drum_front_body", "drum_rear_body"]
-BODY_SHROUDS = ["shroud_front_body", "shroud_rear_body"]
 
-# The bodies in the MPM CouplerProxyMappingCfg: wheels for traction, rotors for
-# excavation, shrouds for retention.
-BODY_SOIL_CONTACT = BODY_WHEELS + BODY_DRUMS + BODY_SHROUDS
 
 FRAME_RGBA = "0.78 0.62 0.16 1"     # machine yellow
 DECK_RGBA = "0.42 0.45 0.50 1"

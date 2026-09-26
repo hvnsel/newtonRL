@@ -30,7 +30,6 @@ from .observations import (
     NAV_NEAR_NX,
     NAV_NEAR_NY,
 )
-from .sensors import soil_heightmap
 
 
 # ---------------------------------------------------------------------------

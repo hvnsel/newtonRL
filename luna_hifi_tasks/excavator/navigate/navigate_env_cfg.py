@@ -184,6 +184,11 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     w_progress = 5.0
     w_bearing = 0.1
     w_goal = 20.0
+    # Charged once on _failed(), never on a timeout or an arrival. Sized
+    # against what an early failure escapes: a fresh policy's per-step
+    # penalties come to about 24 over a full episode, so tipping at step 100
+    # dodges roughly 21 of them.
+    w_fail = 20.0
     w_upright = 2.0
     w_slip = 0.006
     # Measured on a fresh policy: at 0.05 this came to -29.1, 58% of the

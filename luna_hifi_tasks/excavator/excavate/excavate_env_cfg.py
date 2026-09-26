@@ -376,6 +376,10 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     w_overcut = 0.2                      # per cut_volume_ref taken below it
     w_spill = 20.0                       # asymmetry on top of a negative fill
     w_success = 20.0
+    # Charged once on _failed(), never on a timeout, a finished shape or a
+    # full drum. Sized against what an early failure escapes: a fresh
+    # policy's per-step penalties come to about 33 over a full episode.
+    w_fail = 20.0
     w_stall = 0.025                      # commanded speed not achieved
     w_drift = 0.01                       # lateral motion, which a yaw also is
     w_upright = 2.0

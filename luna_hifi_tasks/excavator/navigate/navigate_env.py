@@ -39,6 +39,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._prev_dist = torch.zeros(E, device=dev)
         self._start_dist = torch.zeros(E, device=dev)
         self._reached = torch.zeros(E, dtype=torch.bool, device=dev)
+        # Set in _get_dones, which runs before _get_rewards in the same step.
+        self._failed_now = torch.zeros(E, dtype=torch.bool, device=dev)
 
         # curriculum state
         self._goal_dist_hi = float(cfg.goal_dist_range[1])
@@ -56,7 +58,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._near_pattern = nav_near_pattern(dev)
 
         self._log = R.TermLogger(
-            ["progress", "bearing", "goal", "upright", "slip", "action_rate", "energy", "time", "fill_change"],
+            ["progress", "bearing", "goal", "fail", "upright", "slip",
+             "action_rate", "energy", "time", "fill_change"],
             E, dev,
         )
         print(NAV_OBS.describe())
@@ -179,6 +182,10 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
                 vec_b, p["base_lin_vel"][:, 0], MAX_WHEEL_SPEED * WHEEL_RADIUS
             ),
             "goal": c.w_goal * self._reached.float(),
+            # Every other penalty is per-step, so ending an episode early
+            # avoids the rest of them. This is the one-time charge that makes
+            # tipping over cost more than the stream it escapes.
+            "fail": -c.w_fail * self._failed_now.float(),
             "upright": -c.w_upright * R.upright_penalty(p["projected_gravity"]),
             "slip": -c.w_slip * R.wheel_slip(wheel_vel, p["base_lin_vel"][:, 0], WHEEL_RADIUS),
             "action_rate": -c.w_action_rate * R.action_rate_penalty(self._actions, self._prev_actions),
@@ -197,9 +204,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        failed = self._failed()
-        terminated = failed | self._reached
-        return terminated, time_out
+        self._failed_now = self._failed()
+        return self._failed_now | self._reached, time_out
 
     # ------------------------------------------------------------------
     # reset
@@ -296,6 +302,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._prev_dist[env_ids] = d0
         self._start_dist[env_ids] = d0.clamp_min(1e-3)
         self._reached[env_ids] = False
+        self._failed_now[env_ids] = False
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
 

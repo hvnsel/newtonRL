@@ -112,6 +112,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # drum is full and wants a dump.
         self._shape_done = torch.zeros(E, dtype=torch.bool, device=dev)
         self._drum_full = torch.zeros(E, dtype=torch.bool, device=dev)
+        # Set in _get_dones, which runs before _get_rewards in the same step.
+        self._failed_now = torch.zeros(E, dtype=torch.bool, device=dev)
         self._last_terms: dict[str, torch.Tensor] = {}
         # Last step's bed, which a reset samples for the surface the drum
         # comes down on.
@@ -134,8 +136,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._fill_alpha = step_dt / (cfg.fill_sensor_tau + step_dt)
 
         self._log = R.TermLogger(
-            ["fill", "depth", "success", "overcut", "spill", "stall", "drift",
-             "upright", "energy", "action_rate", "time"],
+            ["fill", "depth", "success", "fail", "overcut", "spill", "stall",
+             "drift", "upright", "energy", "action_rate", "time"],
             E, dev,
         )
         # InteractiveScene has already spawned the soil from
@@ -474,6 +476,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             "fill": c.w_fill * fill_delta / load_ref,
             "depth": c.w_depth * depth_delta / c.cut_volume_ref,
             "success": c.w_success * self._shape_done.float(),
+            # Every other penalty is per-step, so ending an episode early
+            # avoids the rest of them. This is the one-time charge that makes
+            # tipping over cost more than the stream it escapes.
+            "fail": -c.w_fail * self._failed_now.float(),
             "overcut": -c.w_overcut * cut["below_volume"] / c.cut_volume_ref,
             "spill": -c.w_spill * R.spill_penalty(spill_delta) / load_ref,
             "stall": -c.w_stall * R.stall_penalty(wheel_cmd_rad, p["base_lin_vel"][:, 0], WHEEL_RADIUS),
@@ -496,7 +502,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        return self._failed() | self._shape_done | self._drum_full, time_out
+        self._failed_now = self._failed()
+        return self._failed_now | self._shape_done | self._drum_full, time_out
 
     # ------------------------------------------------------------------
     # reset
@@ -569,6 +576,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._cut_fresh[env_ids] = True
         self._shape_done[env_ids] = False
         self._drum_full[env_ids] = False
+        self._failed_now[env_ids] = False
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
 

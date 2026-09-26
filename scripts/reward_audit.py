@@ -187,14 +187,6 @@ def main(argv=None) -> int:
     std, std_src = _policy_std(agent_cfg, args.action_std)
     if args.num_envs is not None:
         env_cfg.scene.num_envs = args.num_envs
-        # The sparse-grid capacities are absolute totals sized from
-        # max_num_envs, and __post_init__ is what derives them, so both are
-        # set to the run's env count and it is run again.
-        if hasattr(env_cfg, "max_num_envs"):
-            env_cfg.max_num_envs = args.num_envs
-            env_cfg.__post_init__()
-    if hasattr(env_cfg, "apply_soil_material"):
-        env_cfg.apply_soil_material()
 
     args.device = env_cfg.sim.device
     env_cfg.validate()

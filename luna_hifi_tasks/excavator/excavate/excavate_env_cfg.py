@@ -406,9 +406,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     proxy_mass_scale: float = 10.0
 
     # The soil_* fields are plain numbers on this cfg; the solver reads an
-    # MPMParticleMaterialCfg on the spawner. Hydra applies overrides after
-    # __post_init__, so setting a soil_* field late means calling this again.
-    # The env refuses to start if the two disagree.
+    # MPMParticleMaterialCfg on the spawner. __post_init__ calls this, and the
+    # env re-runs __post_init__ before spawning, so a field set at any point
+    # before gym.make reaches the material.
     def apply_soil_material(self) -> None:
         """Copy the soil_* fields onto the MPM material and the derived capacity."""
         mat = self.scene.soil.spawn.material

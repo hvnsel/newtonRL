@@ -92,9 +92,8 @@ def _parse(argv):
     p.add_argument("--drive", type=float, default=0.05,
                    help="forward command once crawling; 1.0 is 1.5 m/s")
 
-    # Explicit flags rather than Hydra overrides. Hydra runs after
-    # __post_init__, which is where the MPM material is built from the cfg
-    # fields, so these set the field and re-run apply_soil_material().
+    # Set on the cfg before gym.make, which is when the env re-derives the
+    # MPM material from these fields.
     p.add_argument("--cohesion", type=float, default=None,
                    help="soil yield_stress in Pa; 0 sprays, ~800 holds a cut together")
     p.add_argument("--friction", type=float, default=None, help="soil friction, ~tan(phi)")
@@ -210,18 +209,12 @@ def main(argv=None) -> int:
 
     if args.voxel is not None:
         env_cfg.voxel_size = args.voxel
-        # Re-derives the bed, the particle count and the grid caps from it.
-        env_cfg.__post_init__()
     for flag, field in (("cohesion", "soil_cohesion"),
                         ("friction", "soil_friction"),
                         ("density", "soil_density")):
         value = getattr(args, flag)
         if value is not None:
             setattr(env_cfg, field, value)
-    # Applies the flags above, and any Hydra override that landed on a soil_*
-    # field after __post_init__ built the material. The env raises if the two
-    # still disagree.
-    env_cfg.apply_soil_material()
 
     if not args.no_window:
         from isaaclab_visualizers.newton import NewtonGLVisualizerCfg

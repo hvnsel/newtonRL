@@ -55,18 +55,17 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     cfg: ExcavatorExcavateEnvCfg
 
     def __init__(self, cfg: ExcavatorExcavateEnvCfg, render_mode: str | None = None, **kwargs):
-        # The sparse-grid capacities are absolute totals derived in
-        # __post_init__ from max_num_envs, and Hydra applies --num_envs after
-        # it. Re-derive them for the count actually being run, before
-        # super().__init__ creates the solver.
+        # __post_init__ derives the bed, the grid capacities and the MPM
+        # material from the primitive fields, and Hydra applies its overrides
+        # after it. Re-derive here, before super().__init__ creates the solver,
+        # so the run uses the env count and the soil it was asked for.
         n = int(cfg.scene.num_envs)
         assert n <= cfg.max_num_envs, (
             f"num_envs={n} exceeds max_num_envs={cfg.max_num_envs}, the ceiling this "
             "config declares. Raise max_num_envs in the cfg and check the grid budget."
         )
-        if n != cfg.max_num_envs:
-            cfg.max_num_envs = n
-            cfg.__post_init__()
+        cfg.max_num_envs = n
+        cfg.__post_init__()
         super().__init__(cfg, render_mode, **kwargs)
 
         E, dev = self.num_envs, self.device
@@ -140,18 +139,12 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
              "drift", "upright", "energy", "action_rate", "time"],
             E, dev,
         )
-        # InteractiveScene has already spawned the soil from
-        # cfg.scene.soil.spawn.material. A soil_* field set after
-        # __post_init__, which is what a Hydra override does, reaches the cfg
-        # and not that material.
+        # The __post_init__ above spawned the soil from these fields, so this
+        # asserts that it did rather than guarding a live failure mode.
         mismatch = cfg.soil_material_mismatch()
         if mismatch is not None:
             raise RuntimeError(
-                f"soil cfg fields do not match the spawned MPM material ({mismatch}).\n"
-                "The material is built in ExcavatorExcavateEnvCfg.__post_init__ and Hydra "
-                "applies overrides after it, so anything setting a soil_* field late must "
-                "call cfg.apply_soil_material() before gym.make(). scripts/dig_demo.py and "
-                "scripts/run_task.py do this; a custom launcher has to as well."
+                f"soil cfg fields do not match the spawned MPM material ({mismatch})"
             )
 
         print(DIG_OBS.describe())

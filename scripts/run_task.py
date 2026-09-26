@@ -92,22 +92,11 @@ def main(argv=None) -> int:
     # explicit flag applied to the config object here.
     if args.num_envs is not None:
         env_cfg.scene.num_envs = args.num_envs
-        # The sparse-grid capacities are absolute totals sized from
-        # max_num_envs, and __post_init__ is what derives them, so both are
-        # set to the run's env count and it is run again.
-        if hasattr(env_cfg, "max_num_envs"):
-            env_cfg.max_num_envs = args.num_envs
-            env_cfg.__post_init__()
     elif args.watch:
         env_cfg.scene.num_envs = 1
 
     if args.cohesion is not None:
         env_cfg.soil_cohesion = args.cohesion
-    if hasattr(env_cfg, "apply_soil_material"):
-        # Also repairs a Hydra override that landed on a soil_* field after
-        # __post_init__ had already copied it onto the material.
-        env_cfg.apply_soil_material()
-
     gen = getattr(getattr(env_cfg.scene, "terrain", None), "terrain_generator", None)
     if gen is not None:
         rows = args.terrain_rows if args.terrain_rows is not None else (1 if args.watch else None)

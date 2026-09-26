@@ -142,8 +142,9 @@ def progress_delta(
 def spill_penalty(fill_delta: torch.Tensor) -> torch.Tensor:
     """Mass lost this step, non-negative. (E,) -> (E,).
 
-    Paid on top of the negative fill term, so shedding a kilogram costs more
-    than capturing one pays."""
+    Rectifies its input, so summed over an episode it accumulates total
+    downward variation rather than net change. The excavate env passes the
+    lagged fill reading for that reason."""
     return (-fill_delta).clamp_min(0.0)
 
 

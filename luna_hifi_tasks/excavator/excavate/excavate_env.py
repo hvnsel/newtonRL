@@ -128,6 +128,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
         # Load sensor: first-order lag plus a per-episode calibration bias.
         self._fill_filt = torch.zeros(E, 2, device=dev)
+        self._fill_filt_prev = torch.zeros(E, 2, device=dev)
         self._fill_bias = torch.zeros(E, 2, device=dev)
         step_dt = cfg.sim.dt * cfg.decimation
         self._fill_alpha = step_dt / (cfg.fill_sensor_tau + step_dt)
@@ -436,7 +437,15 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._fill_filt.mul_(1.0 - self._fill_alpha).add_(self._fill_kg, alpha=self._fill_alpha)
         cut = self._cut_state(actor_scan)
 
+        # fill differences the exact mass, so summed over an episode it
+        # telescopes to what the drum ended up holding. spill rectifies its
+        # input, which does not telescope: it accumulates every downward step.
+        # Particles cross the bore boundary in both directions every step with
+        # the rotor turning, so the raw signal's total variation is orders of
+        # magnitude larger than its net change. The lagged reading already
+        # built for the load sensor carries sustained loss without that churn.
         fill_delta = R.fill_delta_reward(self._fill_kg, self._fill_prev_kg)
+        spill_delta = R.fill_delta_reward(self._fill_filt, self._fill_filt_prev)
         fill_frac = self._fill_kg / c.target_load_kg
         if c.fill_success_mode == "all":
             self._drum_full = R.drums_full(fill_frac, c.fill_success_fraction)
@@ -466,7 +475,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             "depth": c.w_depth * depth_delta / c.cut_volume_ref,
             "success": c.w_success * self._shape_done.float(),
             "overcut": -c.w_overcut * cut["below_volume"] / c.cut_volume_ref,
-            "spill": -c.w_spill * R.spill_penalty(fill_delta) / load_ref,
+            "spill": -c.w_spill * R.spill_penalty(spill_delta) / load_ref,
             "stall": -c.w_stall * R.stall_penalty(wheel_cmd_rad, p["base_lin_vel"][:, 0], WHEEL_RADIUS),
             "drift": -c.w_drift * R.drift_penalty(p["base_lin_vel"], self._forward_cmd),
             "upright": -c.w_upright * R.upright_penalty(p["projected_gravity"]),
@@ -476,6 +485,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         }
         reward = L.add_all(self._last_terms)
         self._fill_prev_kg[:] = self._fill_kg
+        self._fill_filt_prev[:] = self._fill_filt
         self._above_prev[:] = above
         self._cut_fresh[:] = False
         return reward
@@ -531,6 +541,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._fill_kg[env_ids] = 0.0
         self._fill_prev_kg[env_ids] = 0.0
         self._fill_filt[env_ids] = 0.0
+        self._fill_filt_prev[env_ids] = 0.0
         self._fill_bias[env_ids] = (
             torch.rand(n, 2, device=dev) * 2.0 - 1.0
         ) * c.fill_sensor_bias

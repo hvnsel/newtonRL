@@ -15,6 +15,7 @@ import gymnasium as gym
 
 from . import agents
 
+# Register the excavation environments with Gymnasium
 gym.register(
     id="Luna-Excavator-Excavate",
     entry_point=f"{__name__}.excavate_env:ExcavatorExcavateEnv",
@@ -25,6 +26,7 @@ gym.register(
     },
 )
 
+# Register the small excavation environment with Gymnasium
 gym.register(
     id="Luna-Excavator-Excavate-Small",
     entry_point=f"{__name__}.excavate_env:ExcavatorExcavateEnv",

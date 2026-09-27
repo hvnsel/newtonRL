@@ -1,13 +1,4 @@
 # observations.py
-#
-# Observation assembly as a declared list of named terms.
-#
-#   * the observation dimension is derived from the terms
-#   * every term declares its width and assembly asserts each tensor matches
-#   * the spec hashes on its layout, and a policy carries the hash it trained
-#     against
-#
-# Imports torch only, so the specs can be read without Isaac Lab.
 
 from __future__ import annotations
 
@@ -16,19 +7,13 @@ from dataclasses import dataclass
 
 import torch
 
-
 # ---------------------------------------------------------------------------
 # Scan geometry. The observation width is derived from it and the terrain
 # sensor builds its patterns from it.
 # ---------------------------------------------------------------------------
 
-# Navigation, two windows: a coarse far one for routing and a fine near one
-# for foot placement, mirroring a rover's mast camera and its hazcams.
-#
-# The far window is sized from stopping distance. With the arms stowed the
-# front of the machine reaches x = 1.78 m, it halts in 1.10 m from 1.5 m/s,
-# and a 16 x 8 grid at 0.45 m pushed 2.40 m forward ends at x = 5.775: four
-# metres of ground ahead of the machine, 2.7 s at full speed.
+# Navigation, there are two resolutions: a coarse far one for routing and a fine near one for foot placement.
+
 NAV_FAR_NX, NAV_FAR_NY = 16, 8
 NAV_FAR_CELL = 0.45
 NAV_FAR_BIAS = 2.40
@@ -146,16 +131,6 @@ class ObsSpec:
     def __repr__(self) -> str:
         return f"ObsSpec(dim={self.dim}, hash={self.schema_hash()}, terms={self.names})"
 
-
-# ---------------------------------------------------------------------------
-# The specs themselves
-# ---------------------------------------------------------------------------
-#
-#   * every angle enters as (sin, cos), so nothing wraps at +-pi
-#   * every height is relative, to the chassis or to the undisturbed bed
-#     surface
-
-
 def navigate_obs_spec(
     far_cells: int = NAV_FAR_CELLS,
     near_cells: int = NAV_NEAR_CELLS,
@@ -163,9 +138,6 @@ def navigate_obs_spec(
     num_wheels: int = 4,
 ) -> ObsSpec:
     """Observation for the navigation skill.
-
-    The terrain scan carries the ground the rover has itself excavated:
-    0.19 m pits and spoil piles against a 0.30 m wheel radius.
 
     Two windows: far_scan reaches 4.0 m past the front of the machine, at the
     scale of a line through the terrain; near_scan resolves one wheel width,

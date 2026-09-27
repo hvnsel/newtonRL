@@ -1,13 +1,7 @@
 # excavate_env_cfg.py
 #
-# Excavation on the MPM tier: an implicit-MPM regolith bed, the machine parked
-# on top of it, both drums cutting as it drives. Tens of envs, not thousands.
-#
-# Coupling rules: one solver per NewtonCfg, MPM entry in_place +
-# all_particles, no project_outside_colliders on a coupled entry, tool bodies
-# as a lagged proxy mapping with a mass_scale, soft_contact_max=0.
-#
-# Gravity is lunar. See excavator_cfg.py.
+# Excavation with an implicit-MPM regolith bed
+# Gravity is lunar gravity. See excavator_cfg.py.
 
 from __future__ import annotations
 
@@ -61,26 +55,20 @@ from ..mdp.observations import (
 # Constants
 # ---------------------------------------------------------------------------
 
-RIGID_ENTRY = "rover"
-MPM_ENTRY = "soil"
+RIGID_ENTRY = "rover" # Entry name for the rigid body in the coupler
+MPM_ENTRY = "soil" # Entry name for the MPM object in the coupler
 
-# Particle spacing, and the margin the coupler inflates colliders by. At 0.03
-# the 0.185 m chord between adjacent vane tips is 5.2 grains clear.
+# Particle spacing, and the margin the coupler inflates colliders by. 
+
 VOXEL_SIZE = 0.03
 MPM_COLLIDER_MARGIN = 0.5 * VOXEL_SIZE
-MPM_PARTICLES_PER_CELL = 1.0
+MPM_PARTICLES_PER_CELL = 1.0 # should be set higher for more accurate simulations
 MPM_VISUAL_COLOR = (0.62, 0.55, 0.45)
 
-# The bed extent lives on the env cfg as bed_x / bed_y / bed_depth, and
-# __post_init__ rewrites the scene from those: particle count, sparse-grid
-# capacities, the height grid, the floor slab and the spawn height.
-#
-# Empty height-grid cells read BED_FLOOR_Z, the top of the slab an excavated
-# cell bottoms out on.
+# The bed extent lives on the env cfg as bed_x / bed_y / bed_depth
 BED_FLOOR_Z = 0.0
 
-# friction is ~tan(phi), yield_stress is cohesion in Pa, yield_pressure caps
-# compression.
+# friction is ~tan(phi), yield_stress is cohesion in Pa, yield_pressure caps compression.
 SOIL_MATERIAL = MPMParticleMaterialCfg(
     density=1800.0,
     friction=0.84,
@@ -95,8 +83,9 @@ BORE_HALF_LEN = ROTOR_HALF_LEN
 FOOTPRINT_HALF_X = SHROUD_OUT_R
 FOOTPRINT_HALF_Y = ROTOR_HALF_LEN
 BORE_VOLUME = math.pi * BORE_RADIUS ** 2 * (2.0 * BORE_HALF_LEN)
-# The mass the rotor's swept cylinder holds packed solid, reported at startup.
-# Fill is normalised and scored against target_load_kg.
+
+# The mass the rotor's swept cylinder holds packed solid.
+# Fill is normalized and scored against target_load_kg.
 DRUM_CAPACITY_KG = BORE_VOLUME * SOIL_MATERIAL.density
 
 DIG_OBS = excavate_obs_spec()
@@ -104,7 +93,7 @@ DIG_CRITIC = critic_state_spec(terrain_cells=NAV_SCAN_CELLS)
 
 
 def particles_per_env(lower, upper, voxel: float, per_cell: float) -> int:
-    """Same arithmetic as the MPM spawner: per-axis ceil of extent/voxel."""
+    """Calculate the number of partices in an env"""
     n = 1
     for lo, hi in zip(lower, upper):
         n *= max(int(math.ceil(per_cell * (hi - lo) / voxel)), 1)
@@ -119,13 +108,12 @@ def _next_pow2(n: int) -> int:
 # Scene
 # ---------------------------------------------------------------------------
 
-# Placeholder extents. __post_init__ overwrites lower/upper/voxel_size from
-# the cfg fields before anything spawns.
 SOIL_CFG = MPMObjectCfg(
     prim_path="{ENV_REGEX_NS}/Soil",
     init_state=MPMObjectCfg.InitialStateCfg(),
     spawn=MPMGridCfg(
-        lower=(-1.0, -1.0, MPM_COLLIDER_MARGIN),
+        # Placeholder bounds for the MPM grid. these will be overwritten in __post_init__
+        lower=(-1.0, -1.0, MPM_COLLIDER_MARGIN), 
         upper=(1.0, 1.0, MPM_COLLIDER_MARGIN + 0.25),
         voxel_size=VOXEL_SIZE,
         particles_per_cell=MPM_PARTICLES_PER_CELL,
@@ -136,14 +124,11 @@ SOIL_CFG = MPMObjectCfg(
     ),
 )
 
-
 def _mpm_ground() -> RigidObjectCfg:
     """Hidden kinematic slab giving the MPM entry a floor.
 
     The MPM entry sees only the bodies listed on its CouplerEntryCfg, so this
-    slab is the floor under every particle. It extends mpm_floor_margin past
-    the bed on each side, covering the bow wave a cut throws ahead of and
-    beside itself. Size and position are rewritten in __post_init__.
+    slab is the floor under every particle.
     """
     return RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/MPMGround",
@@ -178,17 +163,14 @@ class ExcavateSceneCfg(InteractiveSceneCfg):
     mpm_ground: RigidObjectCfg = _mpm_ground()
     soil: MPMObjectCfg = SOIL_CFG
 
-
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
 
-
 @configclass
 class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
-    # 100 Hz sim, 25 Hz policy, 500 steps per episode, against a loaded cut of
-    # 10-20 s. gamma in agents/rsl_rl_ppo_cfg.py is set to match.
-    decimation = 4
+
+    decimation = 4 # Render every 4 simulation steps
     episode_length_s = 20.0
 
     sim: SimulationCfg = SimulationCfg(
@@ -199,7 +181,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
     scene: ExcavateSceneCfg = ExcavateSceneCfg(
         num_envs=16,
-        env_spacing=12.0,               # beds are 8 m long; keep origins apart
+        env_spacing=12.0, # beds are 8 m long. Meant to keep origins apart
         replicate_physics=True,
     )
 
@@ -275,18 +257,6 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # cut.
     cut_volume_ref: float = 0.22
 
-    # The ceiling on envs, asserted by the env; the env re-derives the grid
-    # capacities from the count actually being run.
-    #
-    # The full bed at a 0.03 voxel is 161,001 particles per env, and grid bytes
-    # are next_pow2(8 * envs * 161001) * 192, a step function:
-    #
-    #      <= 26 envs   6.4 GB      <= 104 envs   25.8 GB
-    #      <= 52 envs  12.9 GB      <= 208 envs   51.5 GB
-    #
-    # 104 envs is 16.7M coupled particles: 25.8 GB of grid, ~1.7 GB of
-    # particle state, ~0.7 GB of rigid-solver buffers, on an 80 GB H100.
-    # scripts/dig_demo.py prints the env-steps/sec that decides the rest.
     max_num_envs = 104
 
     # actions: [forward, yaw, boom, drum, shroud] in [-1, 1]. Boom, drum and

@@ -4,11 +4,7 @@
 #
 #   1. soil_heightmap   -- MPM particles rasterised into a per-env height grid
 #   2. drum_fill        -- mass of MPM particles inside a drum's cavity
-#
-# Both are pure PyTorch, one scatter_reduce pass over the particles.
-#
-# Imports torch only, so the file runs without a GPU and the Newton API
-# surface stays in the two adapters at the bottom.
+
 
 from __future__ import annotations
 

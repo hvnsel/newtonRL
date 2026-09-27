@@ -57,8 +57,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     def __init__(self, cfg: ExcavatorExcavateEnvCfg, render_mode: str | None = None, **kwargs):
         # __post_init__ derives the bed, the grid capacities and the MPM
         # material from the primitive fields, and Hydra applies its overrides
-        # after it. Re-derive here, before super().__init__ creates the solver,
-        # so the run uses the env count and the soil it was asked for.
+        # after it. 
         n = int(cfg.scene.num_envs)
         assert n <= cfg.max_num_envs, (
             f"num_envs={n} exceeds max_num_envs={cfg.max_num_envs}, the ceiling this "
@@ -77,13 +76,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._fill_prev_kg = torch.zeros(E, 2, device=dev)
 
         self._dig_pattern = dig_scan_pattern(dev)
-        # The critic's window matches navigate's, so one critic layout serves
-        # both tiers.
+        # The critic's window matches navigate's, so one critic layout serves both tiers.
         self._far_pattern = nav_far_pattern(dev)
         self._near_pattern = nav_near_pattern(dev)
 
-        # Scan cells over the drum, in the drum's frame. 4 x 8 of the 16 x 8
-        # grid, 0.53 x 0.88 m, against a rotor that sweeps 0.37 x 0.95 m.
+        # Scan cells over the drum, in the drum's frame. 
         self._footprint = (
             (self._dig_pattern[:, 0].abs() <= FOOTPRINT_HALF_X)
             & (self._dig_pattern[:, 1].abs() <= FOOTPRINT_HALF_Y)
@@ -107,8 +104,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._target_xy = torch.zeros(E, 2, device=dev)
         self._target_z0 = torch.zeros(E, device=dev)
         self._target_grad = torch.zeros(E, 2, device=dev)
-        # Which of the two exits ended the episode: the shape is cut, or the
-        # drum is full and wants a dump.
+        # Which of the two exits ended the episode: the shape is cut, or the drum is full and wants a dump.
         self._shape_done = torch.zeros(E, dtype=torch.bool, device=dev)
         self._drum_full = torch.zeros(E, dtype=torch.bool, device=dev)
         # Set in _get_dones, which runs before _get_rewards in the same step.
@@ -189,7 +185,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._apply_shrouds(slo + 0.5 * (a[:, 4] + 1.0) * (shi - slo))
 
     # ------------------------------------------------------------------
-    # soil sensing
+    # soil sensing: these are the methods that gather information about the soil state and parse it for the agent's observations
     # ------------------------------------------------------------------
 
     def _particles(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -240,6 +236,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         Every height here is in the scan's own frame -- relative to the front
         drum, clipped to scan_clip -- so target and terrain are directly
         comparable and the drum's own height cancels out of depth_error.
+
+        The cut command is represented by a target plane defined by a reference height and a gradient. 
+        The plane specifies the desired soil surface that the excavator should achieve, and the residual 
+        indicates how far the actual ground is from this target.
         """
         clip = self.cfg.scan_clip
         front = self._drum_poses()[0][:, 0]

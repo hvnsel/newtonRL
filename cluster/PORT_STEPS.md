@@ -5,8 +5,17 @@ Slow version. Two repos are involved:
 - **SOURCE** -- this checkout, `newtonRL`, branch `claude/great-shannon-mgcr7j`
 - **TARGET** -- the upstream repo, which today has only the tricycle
 
-Nothing below deletes or edits a tricycle file. 26 files are brand new, and 4
-existing files each gain a small block. That is the whole change.
+The excavator package is self-contained: every import inside
+`luna_hifi_tasks/excavator/` and `scripts/` resolves within
+`luna_hifi_tasks.excavator.*`. Nothing in it imports the tricycle or
+`soil_simulations`, so no tricycle file has to change for excavation to run.
+
+29 files are brand new, 4 existing files each gain a small block, and 2 files
+at the TARGET root move into `cluster/`.
+
+**Before you start, read "The tricycle has diverged" at the bottom.** SOURCE's
+tricycle is not TARGET's tricycle. That is a separate decision from this port,
+and this port does not require you to make it.
 
 ---
 
@@ -33,7 +42,7 @@ or stash whatever is there first.
 
 ---
 
-## Step 1 -- copy the 26 new files
+## Step 1 -- copy the 29 new files
 
 These do not exist in TARGET, so there is nothing to merge. Copy them wholesale,
 keeping the same paths.
@@ -69,25 +78,38 @@ excavate/agents/__init__.py
 excavate/agents/rsl_rl_ppo_cfg.py
 ```
 
-**Three scripts** into the existing `scripts/` directory:
+**Four scripts** into a `scripts/` directory. TARGET has no `scripts/`
+directory, so create it:
 
 ```
 scripts/check_excavator.py       offline geometry check. MuJoCo, no Isaac Lab
 scripts/run_task.py              build and step either task, no policy
 scripts/dig_demo.py              scripted dig, prints the fill readout
+scripts/reward_audit.py          per-episode reward totals under a fixed policy
 ```
 
-**Three cluster files** into a new `cluster/` directory:
+**Four cluster files** into a new `cluster/` directory:
 
 ```
 cluster/ClusterSetup.md          PACE setup, start to finish
 cluster/patch_demo_frames.py     adds PNG capture to an Isaac Lab MPM demo
 cluster/build_sif.sbatch         builds the container unattended
+cluster/PORT_STEPS.md            this file
 ```
 
-If you already put `patch_demo_frames.py` at the TARGET repo root, **delete
-that copy** and use this one. Its docstring changed, and it belongs in
-`cluster/`.
+TARGET has `patch_demo_frames.py` and `ClusterSetup.md` at its **root**.
+Delete both root copies and use the `cluster/` ones -- these are the newer
+versions, and they belong together.
+
+**One doc** at the TARGET root:
+
+```
+TUNING.md                        which knob lives in which file
+```
+
+Do **not** copy `assets/config.yaml` or `assets/.asset_hash`. They are
+converter droppings with absolute Windows paths baked in, read by no code, and
+rewritten the next time the converter runs.
 
 Confirm the copy landed:
 
@@ -95,7 +117,8 @@ Confirm the copy landed:
 git status --short
 ```
 
-You should see 26 lines, all starting with `??`.
+You should see 29 lines starting with `??`, and 2 starting with `D` -- the two
+root files that moved into `cluster/`.
 
 ---
 
@@ -171,11 +194,13 @@ generated from `excavator.py` and is large. It should not be committed.
 
 ## Step 5 -- edit `README.md`
 
-Copy the section titled **"Rebuild the excavator asset (whenever
-`excavator.py` changes)"` from this repo's README. It sits between the
-tricycle asset section and `## 2. Daily commands`. Paste it in the same place.
+SOURCE's README was restructured after this step was first written; the
+excavator material now lives inside `## 1. One-time setup`, in the block that
+starts at the comment `# 1. Check the geometry before converting`. Copy that
+block, plus the excavator rows in `## Repo layout`, into the matching places
+in TARGET's README.
 
-72 lines, appended only -- no existing README text changes.
+Appended only -- no existing README text needs to change.
 
 ---
 
@@ -265,10 +290,41 @@ because TARGET has no version of them.
 
 ---
 
+## The tricycle has diverged
+
+SOURCE and TARGET are not parent and child. Since the commit they share,
+SOURCE has:
+
+- redesigned the tricycle body as a triangular frame and regenerated its USD
+  (`b532b33`), which rewrote `assets/tricycle/payloads/base.usda`,
+  `payloads/Physics/mujoco.usda` and `payloads/Physics/physics.usda`
+- rewritten `tricycle.py`, `tricycle_env.py`, `tricycle_env_cfg.py`,
+  `tricycle/__init__.py` and `tricycle/agents/rsl_rl_ppo_cfg.py`
+- deleted `luna_hifi_tasks/tricycle/soil.py`
+- deleted `README_RL.md` and the root `__init__.py`
+
+and TARGET has a `soil_simulations/` directory that SOURCE never had.
+
+**None of that is required for excavation.** Porting the tricycle changes is a
+separate decision, with its own risk: it changes the machine every existing
+tricycle checkpoint was trained against. Do the excavation port first, confirm
+it runs, then decide about the tricycle on its own merits.
+
+---
+
 ## What is NOT in this port
 
 - **The converted USD.** `assets/excavator/` is generated. Run the converter
-  in TARGET once, following the README section from step 5.
+  in TARGET once, following the README section from step 5. Note that
+  `usd_status()` in `excavator_cfg.py` compares **mtimes**: a fresh clone
+  stamps `excavator.py` at checkout time, so it will read as newer than any
+  USD you copy in and the guard will refuse to run. Rebuild, or `touch` the
+  USD once you are sure the geometry matches.
+
+- **The tricycle manual.** `docs/tricycle_manual/` is 23 files of LaTeX, a
+  built PDF and figures, all about the tricycle. Copy it only if you want it.
+
+- **The tricycle changes.** See "The tricycle has diverged" above.
 - **The container image.** `isaaclab.sif` is 12 GB and lives in cluster
   scratch, not in git.
 - **Unit tests.** There are none for the excavator MDP terms. `rewards.py`,

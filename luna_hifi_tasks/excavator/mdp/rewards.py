@@ -227,7 +227,16 @@ class TermLogger:
 
     def flush(self, env_ids: torch.Tensor) -> dict[str, float]:
         """Mean episode total per term over the finishing envs, then zero
-        them. The values sum to the mean episode return."""
+        them. The values sum to the mean episode return.
+
+        The env publishes this as extras["log"] and only replaces it inside
+        _reset_idx, while rsl_rl averages that dict over every step of an
+        iteration. Between resets the previous snapshot is counted again, so
+        what a training log prints is diluted by however many steps held a
+        stale value: at a few envs it understates these totals heavily, at a
+        thousand it barely does. scripts/reward_audit.py reads them on reset
+        steps only, which is why its numbers are the ones to tune against.
+        """
         out = {}
         n = max(int(env_ids.numel()), 1)
         for name, buf in self.sums.items():

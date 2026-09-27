@@ -284,6 +284,13 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
+        # Read before super() clears episode_length_buf. reached + failed
+        # should account for every reset that is not a timeout.
+        exits = {
+            "Episode/reached": float(self._reached[env_ids].float().mean()),
+            "Episode/failed": float(self._failed_now[env_ids].float().mean()),
+            "Episode/length": float(self.episode_length_buf[env_ids].float().mean()),
+        }
         # Reads last episode's outcome, before it is cleared below.
         self._record_outcomes(env_ids)
         super()._reset_idx(env_ids)
@@ -307,6 +314,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._prev_actions[env_ids] = 0.0
 
         self.extras["log"] = self._log.flush(env_ids)
+        self.extras["log"].update(exits)
         self.extras["log"]["Curriculum/goal_dist_hi"] = self._goal_dist_hi
         self.extras["log"]["Curriculum/terrain_level"] = float(
             self.terrain.terrain_levels.float().mean()

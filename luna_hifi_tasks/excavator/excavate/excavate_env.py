@@ -125,6 +125,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # Soil still above target last step, and a mask for an episode's
         # first step, which has no previous value to difference against.
         self._above_prev = torch.zeros(E, device=dev)
+        self._below_prev = torch.zeros(E, device=dev)
         self._cut_fresh = torch.ones(E, dtype=torch.bool, device=dev)
 
         # Load sensor: first-order lag plus a per-episode calibration bias.
@@ -457,6 +458,14 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             residual <= c.shape_success_fraction * c.cut_volume_ref
         ) & ~self._cut_fresh
         depth_delta = R.progress_delta(self._above_prev, above, self._cut_fresh)
+        # depth is paid on the reduction in soil above the plane, so overcut is
+        # charged on the growth of the hole below it: both telescope to the
+        # volume the episode ended with, and neither scales with how long the
+        # episode ran. A signed delta rather than a rectified one, so surface
+        # jitter cancels instead of accumulating.
+        overcut_delta = R.progress_delta(
+            self._below_prev, cut["below_volume"], self._cut_fresh
+        )
 
         wheel_cmd_rad = self._forward_cmd / WHEEL_RADIUS
         all_vel = d.joint_vel.torch
@@ -473,7 +482,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             # avoids the rest of them. This is the one-time charge that makes
             # tipping over cost more than the stream it escapes.
             "fail": -c.w_fail * self._failed_now.float(),
-            "overcut": -c.w_overcut * cut["below_volume"] / c.cut_volume_ref,
+            "overcut": c.w_overcut * overcut_delta / c.cut_volume_ref,
             "spill": -c.w_spill * R.spill_penalty(spill_delta) / load_ref,
             "stall": -c.w_stall * R.stall_penalty(wheel_cmd_rad, p["base_lin_vel"][:, 0], WHEEL_RADIUS),
             "drift": -c.w_drift * R.drift_penalty(p["base_lin_vel"], self._forward_cmd),
@@ -486,6 +495,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._fill_prev_kg[:] = self._fill_kg
         self._fill_filt_prev[:] = self._fill_filt
         self._above_prev[:] = above
+        self._below_prev[:] = cut["below_volume"]
         self._cut_fresh[:] = False
         return reward
 
@@ -509,6 +519,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         exits = {
             "Episode/shape_done": float(self._shape_done[env_ids].float().mean()),
             "Episode/drum_full": float(self._drum_full[env_ids].float().mean()),
+            "Episode/failed": float(self._failed_now[env_ids].float().mean()),
+            "Episode/length": float(self.episode_length_buf[env_ids].float().mean()),
         }
         super()._reset_idx(env_ids)
 
@@ -566,6 +578,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._set_work_area(env_ids, anchor_xy, yaw)
 
         self._above_prev[env_ids] = 0.0
+        self._below_prev[env_ids] = 0.0
         self._cut_fresh[env_ids] = True
         self._shape_done[env_ids] = False
         self._drum_full[env_ids] = False

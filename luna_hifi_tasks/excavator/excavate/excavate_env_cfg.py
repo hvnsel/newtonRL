@@ -371,7 +371,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # over a zero pass and a random walk.
     w_fill = 40.0                        # per 2 x target_load_kg captured
     w_depth = 20.0                       # per cut_volume_ref brought to target
-    w_overcut = 0.2                      # per cut_volume_ref taken below it
+    w_overcut = 20.0                     # per cut_volume_ref taken below it
     w_spill = 20.0                       # asymmetry on top of a negative fill
     w_success = 20.0
     # Charged once on _failed(), never on a timeout, a finished shape or a

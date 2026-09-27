@@ -56,8 +56,8 @@ class ObsTerm:
 
 
 class ObsSpec:
-    """An ordered list of observation terms. Order is part of the contract
-    the hash pins down."""
+    """An ordered list of observation terms. Order is part of the layout the
+    digest covers."""
 
     def __init__(self, terms: list[ObsTerm]) -> None:
         names = [t.name for t in terms]

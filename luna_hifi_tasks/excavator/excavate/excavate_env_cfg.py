@@ -382,7 +382,6 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             "yield_pressure": self.soil_yield_pressure,
         }
         for name, value in values.items():
-            # Every name here is a field on the build's own material.
             if not hasattr(mat, name):
                 raise AttributeError(
                     f"MPMParticleMaterialCfg has no field {name!r} on this Isaac Lab "

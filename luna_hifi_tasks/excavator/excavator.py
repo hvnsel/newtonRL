@@ -47,9 +47,9 @@
 #   spiral holds the rake constant from hub to tip, so the blade meets soil at
 #   90 - ROTOR_RAKE degrees everywhere along it.
 #
-#   The shroud is the shell and does not turn with the rotor. It is closed over
-#   every arc except SHROUD_INLET, so a pocket that has passed the inlet stays
-#   shut for the rest of the turn. Its own actuator aims the inlet.
+#   The shroud is the shell, fixed relative to the turning rotor. It is
+#   closed over every arc except SHROUD_INLET, so a pocket that has passed the
+#   inlet stays shut for the rest of the turn. Its own actuator aims it.
 #
 #   Outward acceleration at the vane tips is omega^2 * ROTOR_TIP_R, which
 #   passes lunar gravity at 2.96 rad/s. MAX_DRUM_SPEED sits under it.
@@ -578,8 +578,7 @@ EXCAVATOR_MJCF = f"""
     <joint damping="0.05"/>
   </default>
 
-  <!-- The rotor turns inside the shroud on a running fit, which is a bearing
-       rather than a contact. -->
+  <!-- The rotor turns inside the shroud on a running fit: a bearing. -->
   <contact>
     <exclude body1="drum_front_body" body2="shroud_front_body"/>
     <exclude body1="drum_rear_body" body2="shroud_rear_body"/>

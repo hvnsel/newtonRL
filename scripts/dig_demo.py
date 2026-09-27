@@ -135,7 +135,7 @@ def soil_shells(u) -> tuple[torch.Tensor, torch.Tensor]:
 
         r < 0.185   the rotor's swept cylinder, which is fill
         0.185-0.212 the running clearance and the shroud wall: soil wedged
-                    between vane tips and shroud rather than held in a pocket
+                    between vane tips and shroud
         > 0.212     outside the drum, soil the shroud is buried in, which
                     rises whenever the drum is in the ground
     """
@@ -273,8 +273,7 @@ def main(argv=None) -> int:
         boom, angle = u.cfg.boom_command_for_cut(args.cut)
         lo_arm, hi_arm = u.cfg.arm_range
 
-        # Where the drum is against where the soil is. Needs `angle`, so it
-        # sits here rather than with the rest of the bed report.
+        # Where the drum is against where the soil is. Needs `angle`.
         drum_x = PIVOT_X + ARM_LEN * math.cos(angle)
         lead = drum_x + SHROUD_OUT_R
         ahead = u.cfg.bed_x[1] - lead
@@ -334,8 +333,8 @@ def main(argv=None) -> int:
             # Boom starts at the cfg's stow angle and ramps to the dig command.
             # Dumping lifts it clear of the bed first.
             action[:, 2] = -1.0 if dumping else -1.0 + (boom + 1.0) * lower
-            # Reversing the rotor runs the vanes backwards, which should empty
-            # the pockets rather than fill them.
+            # Reversing the rotor runs the vanes backwards, emptying the
+            # pockets.
             action[:, 3] = -args.drum if dumping else args.drum * spin
             # The shroud carries the inlet. Holding it at MINUS the arm angle
             # keeps the inlet pointing at the ground while the boom pitches; to

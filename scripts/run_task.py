@@ -88,8 +88,8 @@ def main(argv=None) -> int:
     # work here too, e.g.  env.scene.num_envs=4  (no leading dashes).
     env_cfg, _ = resolve_task_config(args.task, "")
 
-    # Plain argparse rather than the Hydra CLI, so anything adjustable is an
-    # explicit flag applied to the config object here.
+    # Plain argparse. Anything adjustable is an explicit flag, applied to the
+    # config object here.
     if args.num_envs is not None:
         env_cfg.scene.num_envs = args.num_envs
     elif args.watch:
@@ -155,8 +155,7 @@ def main(argv=None) -> int:
         print("  shroud ids", u._shroud_ids)
         if is_dig:
             # Which prims the MPM coupling regex matched. The shroud hangs
-            # off the arm rather than the drum, one level out from the
-            # rotor.
+            # off the arm, one level out from the rotor.
             import re as _re
 
             pattern = _re.compile(u.cfg.soil_contact_regex)

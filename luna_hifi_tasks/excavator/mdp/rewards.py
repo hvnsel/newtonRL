@@ -142,9 +142,8 @@ def progress_delta(
 def spill_penalty(fill_delta: torch.Tensor) -> torch.Tensor:
     """Mass lost this step, non-negative. (E,) -> (E,).
 
-    Rectifies its input, so summed over an episode it accumulates total
-    downward variation rather than net change. The excavate env passes the
-    lagged fill reading for that reason."""
+    Rectified, so an episode total is the input's downward variation. The
+    excavate env passes the lagged fill reading."""
     return (-fill_delta).clamp_min(0.0)
 
 
@@ -229,13 +228,10 @@ class TermLogger:
         """Mean episode total per term over the finishing envs, then zero
         them. The values sum to the mean episode return.
 
-        The env publishes this as extras["log"] and only replaces it inside
-        _reset_idx, while rsl_rl averages that dict over every step of an
-        iteration. Between resets the previous snapshot is counted again, so
-        what a training log prints is diluted by however many steps held a
-        stale value: at a few envs it understates these totals heavily, at a
-        thousand it barely does. scripts/reward_audit.py reads them on reset
-        steps only, which is why its numbers are the ones to tune against.
+        The env publishes this as extras["log"] and replaces it in _reset_idx.
+        rsl_rl averages that dict over every step of an iteration, so a
+        training log shows these totals mixed with the snapshots held between
+        resets. scripts/reward_audit.py reads them on reset steps alone.
         """
         out = {}
         n = max(int(env_ids.numel()), 1)

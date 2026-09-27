@@ -4,8 +4,8 @@
 #
 #   * the observation dimension is derived from the terms
 #   * every term declares its width and assembly asserts each tensor matches
-#   * the spec hashes, so a policy trained against one layout cannot be loaded
-#     against another
+#   * the spec hashes on its layout, and a policy carries the hash it trained
+#     against
 #
 # Imports torch only, so the specs can be read without Isaac Lab.
 
@@ -71,11 +71,8 @@ class ObsTerm:
 
 
 class ObsSpec:
-    """An ordered list of observation terms.
-
-    Order is part of the contract the hash pins down: a policy trained with
-    terms in one order cannot read an observation assembled in another.
-    """
+    """An ordered list of observation terms. Order is part of the contract
+    the hash pins down."""
 
     def __init__(self, terms: list[ObsTerm]) -> None:
         names = [t.name for t in terms]
@@ -93,11 +90,8 @@ class ObsSpec:
         return [t.name for t in self.terms]
 
     def schema_hash(self) -> str:
-        """Stable 12-char digest of (name, dim) pairs in order.
-
-        Ignores `note`, so reordering or resizing a term changes the hash and
-        editing its comment does not.
-        """
+        """Stable 12-char digest of (name, dim) pairs in order. `note` is
+        excluded."""
         payload = "|".join(f"{t.name}:{t.dim}" for t in self.terms)
         return hashlib.sha256(payload.encode()).hexdigest()[:12]
 
@@ -170,16 +164,15 @@ def navigate_obs_spec(
 ) -> ObsSpec:
     """Observation for the navigation skill.
 
-    The terrain scan carries the ground the rover has itself excavated: 0.19 m
-    pits and spoil piles against a 0.30 m wheel radius, which proprioception
-    reaches only once the machine is already on them.
+    The terrain scan carries the ground the rover has itself excavated:
+    0.19 m pits and spoil piles against a 0.30 m wheel radius.
 
-    Two windows: far_scan reaches 4.0 m past the front of the machine for
-    choosing a line, near_scan resolves one wheel width for choosing where to
-    put a wheel.
+    Two windows: far_scan reaches 4.0 m past the front of the machine, at the
+    scale of a line through the terrain; near_scan resolves one wheel width,
+    at the scale of a single wheel placement.
 
     A cell the sensor did not measure reads scan_invalid, which sits outside
-    the clipped range of a real height and so needs no separate mask.
+    the clipped range of a real height.
     """
     terms = [
         ObsTerm("base_lin_vel", 3, "body frame"),
@@ -205,28 +198,26 @@ def excavate_obs_spec(
     """Observation for the excavation skill.
 
     `terrain_scan` is a 2-D window, 2.0 x 1.0 m at 0.125 m, centred on the
-    front drum. It carries the two things the machine answers laterally: the
-    approach angle relative to the face, which it yaws to correct, and the
-    lateral slope, which tips it.
+    front drum. It carries the approach angle relative to the face and the
+    lateral slope.
 
     `drum_phase` is (sin, cos) of the vane count times the rotor angle, so it
     reads phase within a pocket and is identical for every pocket. Six vanes
     at 2.9 rad/s put a pocket mouth at the inlet every 0.36 s, 9 steps at
     25 Hz.
 
-    `arm_torque` is the load sensor, and it weighs what the arm carries: soil
-    the drum is buried in is held by the ground and does not appear here.
+    `arm_torque` is the load sensor. It weighs what the arm carries, which is
+    the soil held clear of the ground.
 
     The cut command is a plane, in three numbers. The rotor is a cylinder, so
-    its cutting edge is a straight line across the swath and the depth is
-    constant across it: the machine ramps along its direction of travel by
-    raising the boom as it advances. `target_level` is in the same frame and
-    units as every cell of terrain_scan, height relative to the front drum
-    clipped to scan_clip, and the two gradients are dimensionless rise over
-    run in the body frame.
+    its cutting edge is a straight line across the swath at a constant depth,
+    and the machine ramps along its direction of travel by raising the boom as
+    it advances. `target_level` is in the same frame and units as every cell
+    of terrain_scan, height relative to the front drum clipped to scan_clip;
+    the two gradients are dimensionless rise over run in the body frame.
 
-    `grad_lateral` is the component the drum cannot cut away. The policy has
-    yaw authority, so a lateral residual is the signal to turn.
+    `grad_lateral` is the component the drum meets across its swath, and the
+    policy answers it with yaw.
     """
     terms = [
         ObsTerm("base_lin_vel", 3, "body frame"),

@@ -85,11 +85,7 @@ class ExcavatorEnvBase(DirectRLEnv):
     # ------------------------------------------------------------------
 
     def _apply_drive(self, forward: torch.Tensor, yaw: torch.Tensor) -> None:
-        """Skid steer from [forward, yaw] in [-1, 1].
-
-        In (forward, yaw) rather than (left, right), so driving straight is
-        yaw = 0, the mean of an untrained policy.
-        """
+        """Skid steer from [forward, yaw] in [-1, 1]. Straight is yaw = 0."""
         v = forward * MAX_WHEEL_SPEED * WHEEL_RADIUS          # m/s
         w = yaw * MAX_YAW_SPEED                               # rad/s
         half_track = 0.5 * TRACK
@@ -172,9 +168,8 @@ class ExcavatorEnvBase(DirectRLEnv):
         """Which of DirectRLEnv's two reset causes fired, plus the count.
 
         Read at the top of _reset_idx, from the buffers DirectRLEnv.step sets
-        immediately before it calls us. terminated + timeout covers every reset
-        the step loop produces, so a sum below 1.0 means something outside that
-        loop reset the env.
+        just before it calls us. terminated + timeout covers every reset the
+        step loop produces.
         """
         out = {"Episode/resets": float(env_ids.numel())}
         for name in ("reset_terminated", "reset_time_outs"):

@@ -124,8 +124,8 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
         gravity=LUNAR_GRAVITY,
     )
 
-    # With generator terrain the origins come from the sub-terrain grid, and
-    # env_spacing is carried because InteractiveSceneCfg requires it.
+    # With generator terrain the origins come from the sub-terrain grid.
+    # env_spacing is a required field on InteractiveSceneCfg.
     scene: NavigateSceneCfg = NavigateSceneCfg(
         num_envs=1024,
         env_spacing=8.0,
@@ -145,10 +145,8 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     spawn_xy_jitter = 3.0                # random offset inside the terrain cell
 
     # Goals are held inside the sub-terrain the env was assigned. Cells are
-    # 32 m and the machine is 3.78 m long, so the margin leaves it room to
-    # turn at the boundary. goal_cell_half is derived in __post_init__ as
-    # 0.5 * cell - margin, which is 13 m: far enough that far_scan's 4 m
-    # lookahead is choosing a line rather than looking past the goal.
+    # 32 m against a 3.78 m machine, and goal_cell_half is derived in
+    # __post_init__ as 0.5 * cell - margin, which is 13 m.
     goal_cell_margin = 3.0
     goal_cell_half = 13.0
 
@@ -184,21 +182,16 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     w_progress = 5.0
     w_bearing = 0.1
     w_goal = 20.0
-    # Charged once on _failed(), never on a timeout or an arrival. Sized
-    # against what an early failure escapes: a fresh policy's per-step
-    # penalties come to about 24 over a full episode, so tipping at step 100
-    # dodges roughly 21 of them.
+    # Charged once on _failed(), never on a timeout or an arrival. A fresh
+    # policy's per-step penalties come to about 24 over a full episode.
     w_fail = 20.0
     w_upright = 2.0
     w_slip = 0.006
-    # Measured on a fresh policy: at 0.05 this came to -29.1, 58% of the
-    # penalty budget, almost all of it the 2*sigma^2*dims offset that carries
-    # no gradient. 0.005 puts it at -2.9, about 12%.
-    w_action_rate = 0.005
+    w_action_rate = 0.005                # ~12% of a fresh policy's penalties
     w_energy = 1.3e-5
     w_time = 0.02
-    # No arm actuator is wired on this tier, so this term reads zero. It is
-    # an assertion in reward form.
+    # Reads zero on this tier: no arm actuator is wired. An assertion in
+    # reward form.
     w_fill_change = 1.0
 
     # --- termination ---
@@ -225,9 +218,8 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
         self.sim.physics = NewtonCfg(
             solver_cfg=MJWarpSolverCfg(
                 # Fixed per-env buffers; overrunning one is an illegal
-                # access. Driving eight machines over generated terrain asks
-                # for njmax 504, and a constraint is a couple of hundred
-                # bytes.
+                # access. Eight machines over generated terrain ask for
+                # njmax 504, and a constraint is a couple of hundred bytes.
                 njmax=2048,
                 nconmax=1024,
                 cone="pyramidal",
@@ -235,10 +227,10 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
                 integrator="implicitfast",
                 use_mujoco_contacts=False,
             ),
-            # Broadphase pair budget against the terrain mesh, a global total.
-            # At 1024 machines the wheels alone put ~29k colliders near the
-            # mesh, ~50 triangles each in an inflated AABB, so ~1.4M pairs. A
-            # pair is a couple of indices, so 10M costs on the order of 160 MB.
+            # Broadphase pair budget against the terrain mesh, a global
+            # total. At 1024 machines the wheels put ~29k colliders near the
+            # mesh at ~50 triangles each in an inflated AABB, about 1.4M
+            # pairs. A pair is a couple of indices; 10M is about 160 MB.
             collision_cfg=NewtonCollisionPipelineCfg(max_triangle_pairs=10_000_000),
             num_substeps=2,
             debug_mode=False,

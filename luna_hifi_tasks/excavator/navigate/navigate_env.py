@@ -73,8 +73,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self.near_scanner = self.scene["near_scanner"]
         self.terrain = self.scene.terrain
         # _record_outcomes moves envs up and down the rows through
-        # update_env_origins, which acts only when terrain_levels was built:
-        # a generator terrain with curriculum=True.
+        # update_env_origins, which acts on the terrain_levels a generator
+        # terrain with curriculum=True builds.
         if getattr(self.terrain, "terrain_levels", None) is None:
             raise RuntimeError(
                 "the terrain importer has no terrain_levels, so difficulty cannot "
@@ -244,9 +244,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         """Goals centred on the spawn position the reset just wrote; see
         _reset_robot on why root_pos_w is not read here.
 
-        The goal stays inside the sub-terrain this env was assigned. The
-        bearing is free and the distance is capped where that ray leaves the
-        cell, which spreads goals over the cell rather than onto its boundary.
+        The goal stays inside the sub-terrain this env was assigned: free
+        bearing, distance capped where that ray leaves the cell.
         """
         c = self.cfg
         n = env_ids.numel()
@@ -284,8 +283,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
-        # Read before super() clears episode_length_buf. reached + failed
-        # should account for every reset that is not a timeout.
+        # Read before super() clears the episode buffers.
         exits = self._exit_stats(env_ids)
         exits["Episode/reached"] = float(self._reached[env_ids].float().mean())
         exits["Episode/failed"] = float(self._failed_now[env_ids].float().mean())

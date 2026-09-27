@@ -140,8 +140,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
              "drift", "upright", "energy", "action_rate", "time"],
             E, dev,
         )
-        # The __post_init__ above spawned the soil from these fields, so this
-        # asserts that it did rather than guarding a live failure mode.
+        # The __post_init__ above spawned the soil from these fields.
         mismatch = cfg.soil_material_mismatch()
         if mismatch is not None:
             raise RuntimeError(
@@ -158,7 +157,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             f"cut ref {cfg.cut_volume_ref:.4f} m3, "
             f"bed grid {cfg.bed_grid_nx} x {cfg.bed_grid_ny} @ {cfg.voxel_size:.3f} m"
         )
-        # Read off the material the solver got, rather than the cfg fields.
+        # Off the material the solver was handed.
         print(
             f"[excavate] soil AS SPAWNED: density {mat.density:.0f} kg/m3, "
             f"friction {mat.friction:.2f}, cohesion (yield_stress) {mat.yield_stress:.0f} Pa, "
@@ -433,13 +432,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._fill_filt.mul_(1.0 - self._fill_alpha).add_(self._fill_kg, alpha=self._fill_alpha)
         cut = self._cut_state(actor_scan)
 
-        # fill differences the exact mass, so summed over an episode it
-        # telescopes to what the drum ended up holding. spill rectifies its
-        # input, which does not telescope: it accumulates every downward step.
-        # Particles cross the bore boundary in both directions every step with
-        # the rotor turning, so the raw signal's total variation is orders of
-        # magnitude larger than its net change. The lagged reading already
-        # built for the load sensor carries sustained loss without that churn.
+        # fill differences the exact mass and telescopes to the load the
+        # episode ended with. spill rectifies its input, so it sums the
+        # downward variation of whatever it is given, and takes the lagged
+        # reading, which moves on sustained loss and not on the particles
+        # crossing the bore boundary each step.
         fill_delta = R.fill_delta_reward(self._fill_kg, self._fill_prev_kg)
         spill_delta = R.fill_delta_reward(self._fill_filt, self._fill_filt_prev)
         fill_frac = self._fill_kg / c.target_load_kg
@@ -458,11 +455,9 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             residual <= c.shape_success_fraction * c.cut_volume_ref
         ) & ~self._cut_fresh
         depth_delta = R.progress_delta(self._above_prev, above, self._cut_fresh)
-        # depth is paid on the reduction in soil above the plane, so overcut is
-        # charged on the growth of the hole below it: both telescope to the
-        # volume the episode ended with, and neither scales with how long the
-        # episode ran. A signed delta rather than a rectified one, so surface
-        # jitter cancels instead of accumulating.
+        # depth pays on the reduction in soil above the plane, overcut
+        # charges on the growth of the hole below it. Both are signed deltas
+        # and telescope to the volume the episode ended with.
         overcut_delta = R.progress_delta(
             self._below_prev, cut["below_volume"], self._cut_fresh
         )

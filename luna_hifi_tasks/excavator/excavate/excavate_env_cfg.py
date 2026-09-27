@@ -270,25 +270,23 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     bed_grid_ny: int = 0
     bed_particles_per_env: int = 0
     drum_capacity_kg: float = DRUM_CAPACITY_KG
-    # Work area times the mean commanded depth, derived in __post_init__. The
-    # depth reward divides by it, so w_depth is points for one nominal cut.
+    # Work area times the mean commanded depth, derived in __post_init__.
+    # depth and overcut divide by it, so their weights are points per nominal
+    # cut.
     cut_volume_ref: float = 0.22
 
-    # The ceiling on envs, asserted by the env. The grid capacities are
-    # absolute totals and the env re-derives them for the count actually being
-    # run, so this is a guard rather than the allocation size.
+    # The ceiling on envs, asserted by the env; the env re-derives the grid
+    # capacities from the count actually being run.
     #
     # The full bed at a 0.03 voxel is 161,001 particles per env, and grid bytes
-    # are next_pow2(8 * envs * 161001) * 192, which makes the cost a step
-    # function. Only the top of each bucket is worth running:
+    # are next_pow2(8 * envs * 161001) * 192, a step function:
     #
     #      <= 26 envs   6.4 GB      <= 104 envs   25.8 GB
     #      <= 52 envs  12.9 GB      <= 208 envs   51.5 GB
     #
-    # 104 sits in 25.8 GB of grid plus ~1.7 GB of particle state and ~0.7 GB of
-    # rigid-solver buffers, which fits an 80 GB H100 with the card half free.
-    # Throughput, not memory, is what decides whether it is usable: 104 envs is
-    # 16.7M coupled particles. scripts/dig_demo.py prints env-steps/sec.
+    # 104 envs is 16.7M coupled particles: 25.8 GB of grid, ~1.7 GB of
+    # particle state, ~0.7 GB of rigid-solver buffers, on an 80 GB H100.
+    # scripts/dig_demo.py prints the env-steps/sec that decides the rest.
     max_num_envs = 104
 
     # actions: [forward, yaw, boom, drum, shroud] in [-1, 1]. Boom, drum and
@@ -355,36 +353,32 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     fill_sensor_bias: float = 0.03           # +- fraction, per episode
 
     # --- success ---
-    # 0.6 of target_load_kg is 24 kg on the front drum, against a best recorded
-    # run of 23.6 kg in 30 s.
+    # 0.6 of target_load_kg is 24 kg on the front drum.
     fill_success_fraction = 0.6
     # "front": the front drum alone. "all": every drum. "mean": the pair
     # averages past the threshold.
     fill_success_mode = "front"
 
     # --- reward weights ---
-    # Scaled so a whole episode of doing a term well is worth tens of points.
-    # fill and depth are the two halves of the task: fill scores what the drum
-    # captures, depth what the ground gives up.
+    # An episode of doing a term well comes to tens of points. fill scores
+    # what the drum captures, depth what the ground gives up.
     #
     # Set from scripts/reward_audit.py, which prints per-term episode totals
-    # over a zero pass and a random walk.
+    # for a stationary and a fresh policy.
     w_fill = 40.0                        # per 2 x target_load_kg captured
     w_depth = 20.0                       # per cut_volume_ref brought to target
     w_overcut = 20.0                     # per cut_volume_ref taken below it
     w_spill = 20.0                       # asymmetry on top of a negative fill
     w_success = 20.0
     # Charged once on _failed(), never on a timeout, a finished shape or a
-    # full drum. Sized against what an early failure escapes: a fresh
-    # policy's per-step penalties come to about 33 over a full episode.
+    # full drum. A fresh policy's per-step penalties come to about 33 over a
+    # full episode.
     w_fail = 20.0
     w_stall = 0.025                      # commanded speed not achieved
     w_drift = 0.01                       # lateral motion, which a yaw also is
     w_upright = 2.0
     w_energy = 1.0e-5
-    # Measured on a fresh policy: -26.4 at 0.05, 47% of the penalty budget.
-    # 0.0075 puts it at -4.0, about 12%.
-    w_action_rate = 0.0075
+    w_action_rate = 0.0075               # ~12% of a fresh policy's penalties
     w_time = 0.005
 
     # --- termination ---
@@ -393,8 +387,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
     # --- scan ---
     # Actor only; the critic sees the bed clean. The window is 2 x 1 m at the
-    # drum, and scan_invalid sits outside +- scan_clip so a dropped cell reads
-    # as its own value rather than a height.
+    # drum, and scan_invalid sits outside +- scan_clip.
     scan_clip = 1.0
     scan_noise_std = 0.015               # m, at scan_range_ref
     scan_dropout = 0.02                  # probability, at scan_range_ref
@@ -419,8 +412,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             "yield_pressure": self.soil_yield_pressure,
         }
         for name, value in values.items():
-            # setattr on a field this build does not have would create an
-            # attribute the solver never reads.
+            # Every name here is a field on the build's own material.
             if not hasattr(mat, name):
                 raise AttributeError(
                     f"MPMParticleMaterialCfg has no field {name!r} on this Isaac Lab "
@@ -451,8 +443,8 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
         All heights in world z:
 
-            wheel plane = the bed surface when the machine stands on the bed,
-                          otherwise 0 -- it is beside the pile, on the ground
+            wheel plane = the bed surface with spawn_on_bed, else 0, the
+                          ground plane beside the pile
             drum bottom = wheel plane + pivot - ARM_LEN*sin(angle) - SHROUD_OUT_R
             target      = bed surface - cut
 
@@ -512,17 +504,16 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         )
 
         # Wheels rest on z = 0 in the shared asset cfg: the bed surface with
-        # spawn_on_bed, the ground plane otherwise.
+        # spawn_on_bed, the ground plane without it.
         z = SPAWN_Z + (self.bed_top if self.spawn_on_bed else 0.0)
         self.scene.excavator.init_state.pos = (0.0, 0.0, z)
 
         total_particles = self.bed_particles_per_env * self.max_num_envs
         active = _next_pow2(int(self.grid_cap_multiplier * total_particles))
-        # A leaf is a block of 8^3 = 512 cells, so >> 7 keeps four times the
-        # minimum of one leaf per 512 cells. Capacity is bounded by the grid's
-        # spatial spread rather than the particle count, and a random policy
-        # scatters soil well past the bed it spawned in, so the floors hold
-        # what a scattered bed needs: 16384 leaf blocks is about 400 MB.
+        # A leaf is a block of 8^3 = 512 cells, so >> 7 is four times the
+        # minimum of one leaf per 512. Capacity follows the grid's spatial
+        # spread, which grows past the bed as soil scatters; the floors hold
+        # 16384 leaf blocks, about 400 MB.
         leaf = max(active >> self.grid_leaf_shift, 16384)
         lower = max(leaf >> 3, 4096)
         upper = max(lower >> 3, 1024)

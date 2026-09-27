@@ -6,11 +6,9 @@
 #   python scripts/check_excavator.py
 #
 # It runs in its own environment, separate from Isaac Lab's. mj_geomDistance
-# measures from mujoco 3.13, while MJWarp, the rigid solver the excavator runs
-# on, is built against ~=3.11.
-#
-# The version Isaac Lab's venv wants is the one newton's runtime check prints,
-# not the one pip's resolver quotes from isaacsim-core:
+# measures from mujoco 3.13; MJWarp, the rigid solver the excavator runs on,
+# is built against ~=3.11. Newton's runtime check prints the version Isaac
+# Lab's venv wants:
 #
 #   RuntimeWarning: MuJoCo dependency version mismatch with Newton's declared
 #   requirements: mujoco==3.8.0 (requires ~=3.11.0)
@@ -19,23 +17,23 @@
 #   .venv-geom/bin/pip install -e ".[assets]"     # declares mujoco>=3.13
 #   .venv-geom/bin/python scripts/check_excavator.py
 #
-# excavator.py is loaded straight off disk below, so the install is only for
-# the dependency.
+# excavator.py is loaded straight off disk below; the install is for the
+# dependency.
 #
 # The checks:
 #
 #   mass table        every body carrying a joint has inertia
 #   swept envelopes   what the vanes and the shroud reach, measured in each
-#                     box's own frame, since a shroud plate's width runs along
-#                     the arc rather than radially
+#                     box's own frame, where a shroud plate's width runs along
+#                     the arc
 #   shell continuity  adjacent plates overlap, leaving no hole for MPM
 #                     particles
 #   inlet probe       ray-cast around the drum axis, confirming the shroud has
 #                     exactly one opening, where the geometry says
 #   clearance sweep   arm swept through ARM_RANGE against the wheels and
-#                     frame. MuJoCo does not test a body against its own
-#                     parent and Isaac articulations default to
-#                     self_collision=False, so the pairs are walked directly.
+#                     frame, walking the pairs directly. MuJoCo filters a body
+#                     against its own parent, and Isaac articulations default
+#                     to self_collision=False.
 #
 # Exit status is 1 if any check fails.
 
@@ -50,9 +48,8 @@ import pathlib
 import mujoco
 import numpy as np
 
-# Loaded straight off disk rather than as
-# luna_hifi_tasks.excavator.excavator, whose package __init__ registers the
-# gym tasks and pulls in Isaac Lab. This check needs MuJoCo alone.
+# Loaded straight off disk. The package __init__ registers the gym tasks and
+# pulls in Isaac Lab; this check needs MuJoCo alone.
 _SRC = pathlib.Path(__file__).resolve().parents[1] / "luna_hifi_tasks" / "excavator" / "excavator.py"
 _spec = importlib.util.spec_from_file_location("_excavator_geometry", _SRC)
 X = importlib.util.module_from_spec(_spec)
@@ -367,8 +364,7 @@ def check_clearance(m: mujoco.MjModel, d: mujoco.MjData, fail: list[str]) -> Non
             fail.append(f"swept clearance to the {label} is {worst[0]:.4f} m "
                         f"< {MIN_CLEARANCE} ({worst[1]} vs {worst[2]})")
 
-    # The yoke straddles the drum, so that pair is checked explicitly, at
-    # every drum phase.
+    # The yoke straddles the drum. Checked explicitly, at every drum phase.
     print("\n=== yoke vs drum (parent/child: no simulator will report this) ===")
     for side in ("front", "rear"):
         yoke = _body_geoms(m, f"arm_{side}_body")

@@ -148,11 +148,10 @@ def mpm_particle_state(mpm_object) -> tuple[torch.Tensor, torch.Tensor]:
 
     Particles are already shaped per-environment, so the env index is a
     repeat_interleave over a fixed stride. `.torch` is a zero-copy view onto
-    the warp array, so the returned tensor aliases live simulation memory and
-    is valid until the next step.
+    the warp array, and the returned tensor aliases live simulation memory
+    until the next step.
 
-    Per-particle mass comes from `mpm_grid_particle_mass` on the spawn cfg;
-    MPMObjectData does not carry it.
+    Per-particle mass comes from `mpm_grid_particle_mass` on the spawn cfg.
     """
     pos = mpm_object.data.particle_pos_w.torch          # (E, P, 3)
     num_envs = mpm_object.num_instances
@@ -172,8 +171,7 @@ def mpm_grid_particle_mass(cfg) -> float:
     against this number.
 
     The lattice resolution is ceil()ed per axis, so cell_volume is the true
-    extent divided by that resolution rather than
-    voxel_size**3 / particles_per_cell.
+    extent divided by that resolution.
     """
     import math as _math
 

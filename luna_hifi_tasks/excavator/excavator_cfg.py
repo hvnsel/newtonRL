@@ -38,7 +38,7 @@ EXCAVATOR_USD_PATH = ASSETS_DIR / "excavator" / "excavator.usda"
 # absorbs. scripts/run_task.py prints the real paths.
 EXCAVATOR_PRIM = "{ENV_REGEX_NS}/Excavator"
 CHASSIS_PRIM = EXCAVATOR_PRIM + "/Geometry/chassis"
-# Coupler configs take expanded regexes, not the {ENV_REGEX_NS} placeholder.
+# Coupler configs take expanded regexes.
 EXCAVATOR_PRIM_REGEX = r"/World/envs/env_.*/Excavator"
 # Wheels, rotors and shrouds. The shroud is what retains the load.
 SOIL_CONTACT_BODIES_REGEX = (
@@ -90,8 +90,8 @@ SHROUD_EFFORT = 200.0
 
 
 def usd_status() -> str | None:
-    """None if the converted asset is present and not older than its source,
-    otherwise a message naming the fix."""
+    """None if the converted asset is present and newer than its source,
+    else a message naming the fix."""
     source = Path(__file__).with_name("excavator.py")
     rebuild = (
         "  rebuild it (from the Isaac Lab directory):\n"
@@ -139,10 +139,10 @@ EXCAVATOR_CFG = ArticulationCfg(
             stiffness=0.0,
             damping=400.0,
         ),
-        # Position drive, sized by dig load rather than gravity. Holding a
-        # full drum out horizontally is 229 N-m at lunar gravity, and the
-        # vertical component of digging resistance is larger. Raise this, not
-        # the drum torque, if the arm sags or is driven up out of the cut.
+        # Position drive, sized by dig load. Holding a full drum out
+        # horizontally is 229 N-m at lunar gravity, and the vertical component
+        # of digging resistance is larger. Raise this if the arm sags or is
+        # driven up out of the cut.
         "arms": ImplicitActuatorCfg(
             joint_names_expr=JOINT_ARMS,
             effort_limit_sim=ARM_EFFORT,
@@ -150,8 +150,8 @@ EXCAVATOR_CFG = ArticulationCfg(
             stiffness=2500.0,
             damping=250.0,
         ),
-        # Velocity drive. Cutting torque is set by soil strength rather than
-        # weight. Raise if a rotor stalls in soil.
+        # Velocity drive. Cutting torque follows soil strength. Raise if a
+        # rotor stalls in soil.
         "drums": ImplicitActuatorCfg(
             joint_names_expr=JOINT_DRUMS,
             effort_limit_sim=DRUM_EFFORT,

@@ -56,7 +56,7 @@ def _parse(argv):
                    help="give up after this many env steps per policy")
     add_launcher_args(p)
     # visualizer_cfgs is empty on this path, so the named type selects
-    # nothing and no window opens. "none" is not a type this build accepts.
+    # nothing and no window opens.
     p.set_defaults(device=None, visualizer=["newton_gl"])
     args, hydra_args = setup_preset_cli(p, argv)
     sys.argv = [sys.argv[0]] + hydra_args

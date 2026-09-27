@@ -132,8 +132,7 @@ def sample_height_grid(
 ) -> torch.Tensor:
     """Bilinear sample of a per-env height grid. Returns (E, N).
 
-    Query points outside the grid return `outside_value` rather than the
-    clamped edge height.
+    Query points outside the grid return `outside_value`.
     """
     E, ny, nx = grid.shape
     local = query_xy - env_origins[:, None, :2]

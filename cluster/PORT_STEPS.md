@@ -194,13 +194,17 @@ generated from `excavator.py` and is large. It should not be committed.
 
 ## Step 5 -- edit `README.md`
 
-SOURCE's README was restructured after this step was first written; the
-excavator material now lives inside `## 1. One-time setup`, in the block that
-starts at the comment `# 1. Check the geometry before converting`. Copy that
-block, plus the excavator rows in `## Repo layout`, into the matching places
-in TARGET's README.
+Copy the section titled **"Rebuild the excavator asset (whenever
+`excavator.py` changes)"** from SOURCE's README -- lines 122 to 189, a `###`
+heading inside `## 1. One-time setup`. It sits between
+`### Convert the tricycle asset (once)` and `## 2. Daily commands`. Paste it
+in the same place in TARGET.
 
-Appended only -- no existing README text needs to change.
+68 lines, appended only -- no existing README text changes.
+
+Then add the excavator rows to TARGET's own `## Repo layout` tree. Do not
+replace that tree with SOURCE's: SOURCE's lists no `soil_simulations/` and
+describes the redesigned tricycle.
 
 ---
 

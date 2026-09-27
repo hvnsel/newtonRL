@@ -516,12 +516,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
         # Read before the flags are cleared below.
-        exits = {
-            "Episode/shape_done": float(self._shape_done[env_ids].float().mean()),
-            "Episode/drum_full": float(self._drum_full[env_ids].float().mean()),
-            "Episode/failed": float(self._failed_now[env_ids].float().mean()),
-            "Episode/length": float(self.episode_length_buf[env_ids].float().mean()),
-        }
+        exits = self._exit_stats(env_ids)
+        exits["Episode/shape_done"] = float(self._shape_done[env_ids].float().mean())
+        exits["Episode/drum_full"] = float(self._drum_full[env_ids].float().mean())
+        exits["Episode/failed"] = float(self._failed_now[env_ids].float().mean())
         super()._reset_idx(env_ids)
 
         n, dev, c = env_ids.numel(), self.device, self.cfg

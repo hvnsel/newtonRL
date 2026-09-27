@@ -168,6 +168,22 @@ class ExcavatorEnvBase(DirectRLEnv):
     # reset
     # ------------------------------------------------------------------
 
+    def _exit_stats(self, env_ids: torch.Tensor) -> dict[str, float]:
+        """Which of DirectRLEnv's two reset causes fired, plus the count.
+
+        Read at the top of _reset_idx, from the buffers DirectRLEnv.step sets
+        immediately before it calls us. terminated + timeout covers every reset
+        the step loop produces, so a sum below 1.0 means something outside that
+        loop reset the env.
+        """
+        out = {"Episode/resets": float(env_ids.numel())}
+        for name in ("reset_terminated", "reset_time_outs"):
+            buf = getattr(self, name, None)
+            if buf is not None:
+                key = "terminated" if "terminated" in name else "timeout"
+                out[f"Episode/{key}"] = float(buf[env_ids].float().mean())
+        return out
+
     def _reset_robot(
         self,
         env_ids: torch.Tensor,

@@ -126,6 +126,130 @@ scp "hzhang993@login-phoenix.pace.gatech.edu:/storage/scratch1/5/hzhang993/luna/
 
 ---
 
+## 8. Clone the repo
+
+Into scratch, not `$HOME` -- `$HOME` is 20 GB and Omniverse writes there
+regardless of `XDG_CACHE_HOME`.
+
+```bash
+cd $LUNA_SCRATCH
+git clone https://github.com/<owner>/Luna_HiFi.git
+cd Luna_HiFi
+export REPO=$LUNA_SCRATCH/Luna_HiFi
+```
+
+For a private repo git asks for a username and password over HTTPS; the
+password is a GitHub personal access token with `repo` scope, not the account
+password. The `GIT_TERMINAL_PROMPT=1` and `unset SSH_ASKPASS` from step 0 are
+what let it ask at all.
+
+To avoid retyping the token every pull, without writing it into `.git/config`
+where a `git remote -v` would print it:
+
+```bash
+git config --global credential.helper 'cache --timeout=36000'
+```
+
+`assets/excavator/` is committed, so the clone carries the converted USD and
+nothing here needs the MJCF converter or `isaacsim`.
+
+Clear the staleness guard. A clone writes every file at checkout time, so
+`excavator.py` and `excavator.usda` land within the same second and
+`usd_status()` compares them with a strict `>` -- whether it fires is down to
+file ordering:
+
+```bash
+touch $REPO/assets/excavator/excavator.usda
+```
+
+---
+
+## 9. Install the package into the container
+
+The `.sif` is read-only, so the install goes to a writable directory on
+scratch that is bound into the container. `--user` puts it in
+`$PYTHONUSERBASE`, which Python adds to `sys.path` on its own:
+
+```bash
+export PYTHONUSERBASE=$LUNA_SCRATCH/pyuser
+mkdir -p $PYTHONUSERBASE
+export BINDS="$BINDS -B $PYTHONUSERBASE:$PYTHONUSERBASE"
+
+apptainer exec --nv $BINDS $SIF \
+  /workspace/isaaclab/isaaclab.sh -p -m pip install --user --no-deps -e $REPO
+```
+
+`--no-deps` because the image already has torch, warp and rsl_rl at the
+versions its solvers were built against, and resolving `dependencies = []`
+against PyPI can only disturb that.
+
+`-m pip`, not a bare `pip`: the image has no `python` or `pip` on `PATH`.
+
+Both `PYTHONUSERBASE` and the repo must stay bound on every later `exec`, or
+the import resolves to nothing.
+
+Check it registered. This needs the entry point from `pyproject.toml` as well
+as the import, so it tests the port's two config edits at once:
+
+```bash
+apptainer exec --nv $BINDS $SIF \
+  /workspace/isaaclab/isaaclab.sh -p -c \
+  "import luna_hifi_tasks, gymnasium as gym; print(luna_hifi_tasks.__file__); print([k for k in gym.registry if 'Luna-' in k])"
+```
+
+Expect the path under `$REPO` and five ids: the tricycle and the four
+excavator tasks. No excavator ids means `luna_hifi_tasks/__init__.py` is
+missing its `from . import excavator`.
+
+---
+
+## 10. Run
+
+Smoke test first -- builds the scene and steps it with no policy, so it
+separates a scene problem from a training problem:
+
+```bash
+apptainer exec --nv $BINDS $SIF \
+  /workspace/isaaclab/isaaclab.sh -p $REPO/scripts/run_task.py \
+  --task Luna-Excavator-Excavate-Micro --num_envs 1 --steps 200
+```
+
+Then navigate, which is the rigid tier and carries no MPM grid:
+
+```bash
+apptainer exec --nv $BINDS $SIF \
+  /workspace/isaaclab/isaaclab.sh -p \
+  /workspace/isaaclab/scripts/reinforcement_learning/rsl_rl/train.py \
+  --task Luna-Excavator-Navigate --num_envs 64 --max_iterations 10 \
+  physics=newton_mjwarp
+```
+
+Then excavate, starting small. The MPM grid is a step function in env count --
+`next_pow2(8 * envs * 161001) * 192` bytes, so 26 envs is 6.4 GB and 52 is
+12.9 GB. `gpu-rtx6000` has 24 GB, so 26 is the ceiling there; `max_num_envs`
+is set to 104 for an 80 GB H100:
+
+```bash
+apptainer exec --nv $BINDS $SIF \
+  /workspace/isaaclab/isaaclab.sh -p \
+  /workspace/isaaclab/scripts/reinforcement_learning/rsl_rl/train.py \
+  --task Luna-Excavator-Excavate --num_envs 8 --max_iterations 10 \
+  physics=newton_mjwarp
+```
+
+Logs land in the working directory, so `cd $REPO` first if you want them
+under the repo rather than wherever you launched from.
+
+Measure throughput before committing to an env count:
+
+```bash
+apptainer exec --nv $BINDS $SIF \
+  /workspace/isaaclab/isaaclab.sh -p $REPO/scripts/dig_demo.py
+```
+
+Sections 8 to 10 are written from the repo and the container's documented
+behaviour, not from a run on PACE. Sections 0 to 7 were measured.
+
 ---
 
 ## Reference

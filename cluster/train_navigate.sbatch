@@ -1,9 +1,8 @@
 #!/bin/bash
 #SBATCH -A gts-jmcnabb3
 #SBATCH -q inferno
-#SBATCH -p gpu-l40s
 #SBATCH -J luna-navigate
-#SBATCH -N 1 --gres=gpu:1
+#SBATCH -N 1 --gres=gpu:l40s:1
 #SBATCH --mem=64G
 #SBATCH -t 12:00:00
 #SBATCH -o %x-%j.out
@@ -20,8 +19,12 @@
 # navigate/agents/rsl_rl_ppo_cfg.py) under
 # $REPO/logs/rsl_rl/excavator_navigate/<timestamp>/.
 #
-# -p gpu-rtx6000 and -p gpu-rtxpro-blackwell also carry RT cores. A bare
-# --gres=gpu:1 with no partition lands on gpu-v100, which does not.
+# The GPU is pinned by TYPE, not partition: PACE treats -p as a hint and
+# reassigns the job, so -p gpu-l40s lands on gpu-v100 and the run dies on
+# "no kernel image is available" -- the image's PyTorch is built for compute
+# capability 7.5 and up, and a V100 is 7.0.
+#
+# sinfo -o "%.20P %.18G" | grep -i gpu   lists the types this cluster offers.
 
 set -u
 
@@ -57,6 +60,13 @@ cp "$LUNA_SCRATCH/isaaclab.sif" "$SIF"
 touch "$REPO/assets/excavator/excavator.usda"
 
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
+GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader)
+case "$GPU" in
+  *V100*|*P100*|*K80*)
+    echo "FATAL: $GPU is compute capability < 7.5; the image has no kernels for it."
+    exit 1 ;;
+esac
+
 echo "envs=$ENVS iterations=$ITERS repo=$REPO"
 
 cd "$REPO"

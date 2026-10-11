@@ -228,10 +228,16 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
                 use_mujoco_contacts=False,
             ),
             # Broadphase pair budget against the terrain mesh, a global
-            # total. At 1024 machines the wheels put ~29k colliders near the
-            # mesh at ~50 triangles each in an inflated AABB, about 1.4M
-            # pairs. A pair is a couple of indices; 10M is about 160 MB.
-            collision_cfg=NewtonCollisionPipelineCfg(max_triangle_pairs=10_000_000),
+            # total. A measured run at 1024 machines on the 32 m terrain peaks
+            # at 12.9M pairs, about 12,600 per machine: the six grousers on
+            # each wheel carry far more triangles into an inflated AABB than a
+            # bare cylinder would. A pair is a couple of indices, so 24M is
+            # about 384 MB.
+            #
+            # Overflow drops the pairs past the budget, so contacts go missing
+            # rather than the run failing, and the log fills with
+            # "Triangle pair buffer overflowed" once per step.
+            collision_cfg=NewtonCollisionPipelineCfg(max_triangle_pairs=24_000_000),
             num_substeps=2,
             debug_mode=False,
             default_shape_cfg=NewtonShapeCfg(margin=0.01),

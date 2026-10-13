@@ -141,7 +141,11 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     goal_dist_range = (3.0, 8.0)         # initial sampling band, metres
     goal_dist_max = 18.0                 # curriculum ceiling
     goal_dist_tol = 0.5                  # reached when closer than this ...
-    goal_heading_tol_rad = 0.35          # ... and facing within this
+    # ... and facing within this. math.pi disables the heading test: arriving
+    # is a position-only condition. Heading at the goal is the excavate
+    # policy's job -- it shimmies to the plane it wants to cut -- so requiring
+    # it here only makes the navigate credit assignment harder for nothing.
+    goal_heading_tol_rad = math.pi
     spawn_xy_jitter = 3.0                # random offset inside the terrain cell
 
     # Goals are held inside the sub-terrain the env was assigned. Cells are
@@ -181,7 +185,12 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # over a zero pass and a random walk.
     w_progress = 5.0
     w_bearing = 0.1
-    w_goal = 20.0
+    # Arriving also stops the per-step penalties, which come to ~0.037/step:
+    # finishing at step 150 instead of timing out at 750 is worth ~22 on its
+    # own, so the bonus does not have to be large. It does have to stay small
+    # enough for the critic to fit, since it lands on a minority of episodes:
+    # the return variance it injects goes as the square of this.
+    w_goal = 30.0
     # Charged once on _failed(), never on a timeout or an arrival. A fresh
     # policy's per-step penalties come to about 24 over a full episode.
     w_fail = 20.0

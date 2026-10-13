@@ -168,10 +168,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
     def _get_rewards(self) -> torch.Tensor:
         c, L = self.cfg, self._log
         p = self._proprio()
-        vec_b, dist, heading = self._goal_in_body()
+        vec_b, dist, _ = self._goal_in_body()
         d = self.robot.data
-
-        self._reached = R.goal_reached(dist, heading[:, 1], c.goal_dist_tol, math.cos(c.goal_heading_tol_rad))
 
         wheel_vel = d.joint_vel.torch[:, self._wheel_ids]
         torque = d.applied_torque.torch[:, self._wheel_ids]
@@ -203,8 +201,18 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
     # ------------------------------------------------------------------
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        c = self.cfg
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         self._failed_now = self._failed()
+        # Arrival is decided here, not in _get_rewards: DirectRLEnv.step calls
+        # dones first, so a flag set by the reward would terminate a step late
+        # and _get_rewards would fire again on that extra step -- the machine
+        # moves 0.04 m per step and cannot leave the tolerance ball in one, so
+        # w_goal got paid twice on every success.
+        _, dist, heading = self._goal_in_body()
+        self._reached = R.goal_reached(
+            dist, heading[:, 1], c.goal_dist_tol, math.cos(c.goal_heading_tol_rad)
+        )
         return self._failed_now | self._reached, time_out
 
     # ------------------------------------------------------------------

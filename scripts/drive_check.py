@@ -81,6 +81,8 @@ def main(argv=None) -> int:
         if n_act > 1:
             action[:, 1] = args.yaw
 
+        env.reset()
+
         zero = torch.zeros_like(action)
         for _ in range(25):
             env.step(zero)

@@ -69,4 +69,12 @@ echo "pid    $!"
 echo "log    $LOG"
 echo "gpu    $GPU"
 echo "envs   $ENVS   iters $ITERS"
-echo "commit $(git rev-parse --short HEAD)  $(git log -1 --format=%s)"
+# HEAD is not what gets trained when files arrive via
+# `git checkout <remote> -- <paths>`, which writes the working tree without
+# moving HEAD. Python imports the working tree, so report that instead.
+DIRTY=$(git diff --quiet HEAD -- luna_hifi_tasks || echo " +local")
+echo "head   $(git rev-parse --short HEAD)$DIRTY"
+echo "config $(grep -hoE '(schedule|learning_rate|entropy_coef)=[^,]+' \
+  luna_hifi_tasks/excavator/navigate/agents/rsl_rl_ppo_cfg.py | tr '\n' ' ')"
+echo "       $(grep -hoE '(w_goal|goal_heading_tol_rad) = \S+' \
+  luna_hifi_tasks/excavator/navigate/navigate_env_cfg.py | tr '\n' ' ')"

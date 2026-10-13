@@ -41,11 +41,8 @@ def main(argv=None) -> int:
     args = _parse(argv)
     torch.manual_seed(0)
 
-    from luna_hifi_tasks.excavator.excavator_cfg import (
-        MAX_WHEEL_SPEED,
-        WHEEL_RADIUS,
-        usd_status,
-    )
+    from luna_hifi_tasks.excavator.excavator import WHEEL_RADIUS
+    from luna_hifi_tasks.excavator.excavator_cfg import MAX_WHEEL_SPEED, usd_status
 
     problem = usd_status()
     if problem is not None:

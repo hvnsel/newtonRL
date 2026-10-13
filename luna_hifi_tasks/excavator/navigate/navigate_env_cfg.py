@@ -138,7 +138,21 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     state_space = NAV_CRITIC.dim         # 231, critic only
 
     # --- goals ---
-    goal_dist_range = (3.0, 8.0)         # initial sampling band, metres
+    # The initial sampling band, metres. This is the curriculum's bottom rung
+    # and it has to be one the policy can actually clear, because
+    # _record_outcomes only ever widens the band: there is no demotion, so a
+    # band that starts too hard is where training stays. At 3-8 m a fresh
+    # policy arrives 8% of the time against a curriculum_success_rate of 0.7,
+    # and goal_dist_hi sat at 8.0 for 1800 iterations without moving.
+    #
+    # 1.5-3.0 m is a real drive -- 1.5 m is half the machine's length, 57
+    # steps at 1.1 m/s -- while leaving +-19 deg of heading slack at the near
+    # end against the 0.5 m tolerance, so arrivals are frequent enough to
+    # teach the critic what arriving is worth. The band then widens by
+    # curriculum_step on each window that clears the threshold. The low end
+    # stays put, which keeps short goals in the mix and stops the policy
+    # forgetting them as the ceiling rises.
+    goal_dist_range = (1.5, 3.0)
     goal_dist_max = 18.0                 # curriculum ceiling
     goal_dist_tol = 0.5                  # reached when closer than this ...
     # ... and facing within this. math.pi disables the heading test: arriving

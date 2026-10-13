@@ -40,7 +40,11 @@ class ExcavatorNavigatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.002,
+        # 0.002 let the std run down to 0.04 by iteration 1800, which is a
+        # deterministic policy: once there it cannot explore its way out of
+        # whatever it has converged to, and it converged to creeping 2.6 m
+        # and stopping. Back to 0.005.
+        entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=3.0e-4,

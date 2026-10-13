@@ -69,6 +69,9 @@ def main(argv=None) -> int:
             env_cfg.scene.terrain.max_init_terrain_level, gen.num_rows - 1
         )
 
+    args.device = env_cfg.sim.device
+    env_cfg.validate()
+
     with launch_simulation(env_cfg, args):
         env = gym.make(args.task, cfg=env_cfg)
         u = env.unwrapped

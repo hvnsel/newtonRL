@@ -14,11 +14,13 @@ the machine can reach.
 from __future__ import annotations
 
 import argparse
+import sys
 
 import gymnasium as gym
 import torch
 
 from isaaclab.app import add_launcher_args, launch_simulation
+from isaaclab_tasks.utils import setup_preset_cli
 from isaaclab_tasks.utils.hydra import resolve_task_config
 
 import luna_hifi_tasks  # noqa: F401  (registers Luna-* tasks)
@@ -34,7 +36,12 @@ def _parse(argv=None):
     p.add_argument("--terrain_rows", type=int, default=None)
     p.add_argument("--terrain_cols", type=int, default=None)
     add_launcher_args(p)
-    return p.parse_known_args(argv)[0]
+    p.set_defaults(device=None, visualizer=["newton_gl"])
+    # resolve_task_config runs Hydra, which re-reads sys.argv, so this
+    # script's own flags are split off first and the remainder handed over.
+    args, hydra_args = setup_preset_cli(p, argv)
+    sys.argv = [sys.argv[0]] + hydra_args
+    return args
 
 
 def main(argv=None) -> int:

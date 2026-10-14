@@ -134,7 +134,11 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
     # actions: [forward, yaw] in [-1, 1]. No arm or drum actuator is wired.
     action_space = 2
-    observation_space = NAV_OBS.dim      # 247
+    # Whether the actor sees the terrain scan. False drops both scans from the
+    # policy observation, 247 inputs down to 23, leaving velocities, attitude,
+    # the goal and the last action. The critic keeps the clean scan regardless.
+    actor_scan = True
+    observation_space = NAV_OBS.dim      # 247, or 23 without the scan
     state_space = NAV_CRITIC.dim         # 231, critic only
 
     # --- goals ---
@@ -237,6 +241,7 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     def __post_init__(self) -> None:
         cell = min(self.scene.terrain.terrain_generator.size)
         self.goal_cell_half = 0.5 * cell - self.goal_cell_margin
+        self.observation_space = navigate_obs_spec(include_scan=self.actor_scan).dim
 
         self.sim.physics = NewtonCfg(
             solver_cfg=MJWarpSolverCfg(

@@ -136,6 +136,7 @@ def navigate_obs_spec(
     near_cells: int = NAV_NEAR_CELLS,
     num_arms: int = 2,
     num_wheels: int = 4,
+    include_scan: bool = True,
 ) -> ObsSpec:
     """Observation for the navigation skill.
 
@@ -156,9 +157,17 @@ def navigate_obs_spec(
         ObsTerm("arm_pos", num_arms, "held stowed here, but it moves the CG"),
         ObsTerm("drum_fill", num_arms, "0 on the rigid tier; keeps the layout"),
         ObsTerm("last_action", 2, "[forward, yaw]"),
-        ObsTerm("far_scan", far_cells, "16x8 at 0.45 m, chassis-relative heights"),
-        ObsTerm("near_scan", near_cells, "12x8 at 0.20 m, one cell per wheel width"),
     ]
+    # The two scans are 224 of the 247 inputs, against the 4 that carry the
+    # goal. On flat ground they are 224 channels of near-constant height plus
+    # whatever degrade_scan injects, and the actor has to find the goal
+    # underneath them; the critic reads the clean scan through its own spec
+    # either way, so dropping them here costs the value function nothing.
+    if include_scan:
+        terms += [
+            ObsTerm("far_scan", far_cells, "16x8 at 0.45 m, chassis-relative heights"),
+            ObsTerm("near_scan", near_cells, "12x8 at 0.20 m, one cell per wheel width"),
+        ]
     return ObsSpec(terms)
 
 

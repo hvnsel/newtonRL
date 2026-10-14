@@ -20,7 +20,8 @@ from ..excavator_cfg import MAX_WHEEL_SPEED
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rewards as R
 from ..mdp.terrain import degrade_scan, nav_far_pattern, nav_near_pattern, scan_from_raycaster
-from .navigate_env_cfg import NAV_CRITIC, NAV_OBS, SCANNER_HEIGHT, ExcavatorNavigateEnvCfg
+from ..mdp.observations import navigate_obs_spec
+from .navigate_env_cfg import NAV_CRITIC, SCANNER_HEIGHT, ExcavatorNavigateEnvCfg
 
 
 class ExcavatorNavigateEnv(ExcavatorEnvBase):
@@ -62,7 +63,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
              "action_rate", "energy", "time", "fill_change"],
             E, dev,
         )
-        print(NAV_OBS.describe())
+        self._obs_spec = navigate_obs_spec(include_scan=self.cfg.actor_scan)
+        print(self._obs_spec.describe())
         print(NAV_CRITIC.describe())
 
     # ------------------------------------------------------------------
@@ -133,7 +135,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
                 c.scan_range_ref, c.scan_invalid,
             )
 
-        policy = NAV_OBS.assemble({
+        parts = {
             "base_lin_vel": p["base_lin_vel"],
             "base_ang_vel": p["base_ang_vel"],
             "projected_gravity": p["projected_gravity"],
@@ -143,9 +145,11 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             "arm_pos": p["arm_pos"],
             "drum_fill": self._drum_fill,
             "last_action": self._actions,
-            "far_scan": degrade(far, self._far_pattern),
-            "near_scan": degrade(near, self._near_pattern),
-        })
+        }
+        if c.actor_scan:
+            parts["far_scan"] = degrade(far, self._far_pattern)
+            parts["near_scan"] = degrade(near, self._near_pattern)
+        policy = self._obs_spec.assemble(parts)
 
         wheel_vel = self.robot.data.joint_vel.torch
         v_fwd = p["base_lin_vel"][:, 0]

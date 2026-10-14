@@ -30,6 +30,9 @@ set -u
 
 ENVS="${ENVS:-1024}"
 ITERS="${ITERS:-2000}"
+# Hydra overrides, e.g. EXTRA="env.actor_scan=false env.w_goal=50". Env config
+# sits under env., the PPO config under agent.
+EXTRA="${EXTRA:-}"
 
 export LUNA_SCRATCH=/storage/scratch1/5/$USER/luna
 export REPO=$LUNA_SCRATCH/Luna_HiFi
@@ -67,14 +70,15 @@ case "$GPU" in
     exit 1 ;;
 esac
 
-echo "envs=$ENVS iterations=$ITERS repo=$REPO"
+echo "envs=$ENVS iterations=$ITERS repo=$REPO extra=${EXTRA:-none}"
 
 cd "$REPO"
 apptainer exec --nv $BINDS "$SIF" \
   /workspace/isaaclab/isaaclab.sh train --rl_library rsl_rl \
   --task Luna-Excavator-Navigate \
   --num_envs "$ENVS" \
-  --max_iterations "$ITERS"
+  --max_iterations "$ITERS" \
+  $EXTRA
 
 echo "exit $?"
 ls -lh logs/rsl_rl/excavator_navigate/*/ | tail -20

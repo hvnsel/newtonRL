@@ -23,18 +23,59 @@ from isaaclab.utils.configclass import configclass
 from .mdp.terrain import excavation_height_field_np
 
 
+def _terrain_origin(
+    height_field: np.ndarray, cfg: HfTerrainBaseCfg, height: int | None = None
+) -> np.ndarray:
+    """The origin [m] in the generated height field's local frame.
+
+    z is the tallest point within about a metre of the centre, which is what
+    puts a machine spawned there on top of the terrain instead of inside it.
+    x and y are half the physical span, so they use (N - 1) where the height
+    window uses `// 2`; for an odd pixel count the two differ by a fraction of
+    a pixel, which is Isaac Lab's own behaviour and not worth diverging from.
+
+    Duplicated from isaaclab.terrains.height_field.hf_terrains, which keeps it
+    private, on the same grounds as mdp/sensors.quat_apply_inverse: depending
+    on a private name across a package boundary is worse than eight lines.
+    """
+    cx = height_field.shape[0] // 2
+    cy = height_field.shape[1] // 2
+    if height is None:
+        radius = max(1, int(1.0 / cfg.horizontal_scale))
+        height = np.max(
+            height_field[
+                max(0, cx - radius) : cx + radius,
+                max(0, cy - radius) : cy + radius,
+            ]
+        )
+    return np.array([
+        (height_field.shape[0] - 1) * cfg.horizontal_scale / 2,
+        (height_field.shape[1] - 1) * cfg.horizontal_scale / 2,
+        height * cfg.vertical_scale,
+    ])
+
+
 @height_field_to_mesh
-def excavation_terrain(difficulty: float, cfg: "HfExcavationTerrainCfg") -> np.ndarray:
+def excavation_terrain(
+    difficulty: float, cfg: "HfExcavationTerrainCfg"
+) -> tuple[np.ndarray, np.ndarray]:
     """Height-field function in the form Isaac Lab's decorator takes.
 
     By the time this runs the decorator has shrunk `cfg.size` by the border,
     so the pixel counts below are the inner region and the returned array goes
     straight into the padded buffer, as in Isaac's random_uniform_terrain.
+
+    Returns (field, origin), which is what height_field_to_mesh unpacks on
+    Isaac Lab 3.0: it writes the field into the padded buffer and shifts the
+    origin's xy by the border width. The 3.0.0-rc1 the cluster image was
+    built from took the bare field instead, so returning one array there
+    raises "too many values to unpack" as the decorator tries to unpack the
+    array's rows.
     """
     width_pixels = int(cfg.size[0] / cfg.horizontal_scale)
     length_pixels = int(cfg.size[1] / cfg.horizontal_scale)
     rng = np.random.default_rng(cfg.seed) if cfg.seed is not None else np.random.default_rng()
-    return excavation_height_field_np(
+    field = excavation_height_field_np(
         width_pixels,
         length_pixels,
         cfg.horizontal_scale,
@@ -49,6 +90,7 @@ def excavation_terrain(difficulty: float, cfg: "HfExcavationTerrainCfg") -> np.n
         slope=cfg.slope,
         noise=cfg.noise,
     )
+    return field, _terrain_origin(field, cfg)
 
 
 @configclass

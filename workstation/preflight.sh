@@ -138,6 +138,20 @@ echo
 echo "=== rootless fallbacks ==="
 # Only worth reading if Docker came back refused. Both of these run entirely
 # as you, with no group membership and no daemon.
+# Podman is the one that needs nothing: rootless by design, no daemon, no
+# group, and it runs OCI images with the same arguments as docker.
+if command -v podman >/dev/null; then
+  ok "podman $(podman --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1): rootless, no group needed"
+  note "This replaces docker outright. Check it can see the GPU:"
+  note "  podman run --rm --device nvidia.com/gpu=all ubuntu:22.04 nvidia-smi -L"
+  note "If that fails it needs a CDI spec, which does need root once:"
+  note "  sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml"
+  note "Then:  CONTAINER=podman bash workstation/dev.sh ..."
+else
+  note "no podman. It is the best no-root option if an admin will install it:"
+  note "  sudo apt install podman"
+fi
+note ""
 if command -v apptainer >/dev/null || command -v singularity >/dev/null; then
   APP=$(command -v apptainer || command -v singularity)
   ok "$APP present: runs as you, no daemon, no group"
@@ -152,12 +166,16 @@ else
 fi
 note ""
 note "Or skip containers entirely -- Isaac Sim pip-installs into a venv in your"
-note "home directory and needs no root at all:"
+note "home directory and needs no root at all. Ask the index which versions"
+note "exist rather than trusting a pin from anywhere else: Isaac Lab 3.0 pairs"
+note "with a specific Isaac Sim major, and the wrong one fails late and"
+note "confusingly, after a 10 GB download."
 note "  python3 -m venv ~/isaacenv && . ~/isaacenv/bin/activate"
 note "  pip install --upgrade pip"
-note "  pip install 'isaacsim[all,extscache]==5.0.0' --extra-index-url https://pypi.nvidia.com"
-note "Then clone Isaac Lab 3.0 and run its ./isaaclab.sh --install. This is the"
-note "best path for iteration anyway: no container boundary, native viewer."
+note "  pip index versions isaacsim --extra-index-url https://pypi.nvidia.com"
+note "Then install the version matching the Isaac Lab release you clone, and"
+note "run its installer. This repo additionally needs isaaclab_newton and"
+note "isaaclab_contrib, both of which are in the release/3.0.0 source tree."
 
 echo
 if [ "$fail" -eq 0 ]; then

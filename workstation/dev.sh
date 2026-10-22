@@ -20,6 +20,10 @@
 set -eu
 
 IMAGE="${IMAGE:-nvcr.io/nvidia/isaac-lab:3.0.0-rc1}"
+# podman takes the same arguments and needs no daemon or group membership, so
+# on a box where you are not in the docker group it is a drop-in:
+#   CONTAINER=podman workstation/dev.sh ...
+CONTAINER="${CONTAINER:-docker}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE="${LUNA_STATE:-$HOME/.luna}"
 MOUNT=/workspace/luna
@@ -45,8 +49,12 @@ fi
 TTY_ARGS=()
 [ -t 0 ] && TTY_ARGS=(-it)
 
-exec docker run --rm "${TTY_ARGS[@]}" \
-  --gpus all \
+# podman addresses GPUs through CDI rather than --gpus.
+GPU_ARGS=(--gpus all)
+[ "$CONTAINER" = podman ] && GPU_ARGS=(--device nvidia.com/gpu=all)
+
+exec "$CONTAINER" run --rm "${TTY_ARGS[@]}" \
+  "${GPU_ARGS[@]}" \
   --ipc host \
   -v "$REPO:$MOUNT" \
   -w "$MOUNT" \

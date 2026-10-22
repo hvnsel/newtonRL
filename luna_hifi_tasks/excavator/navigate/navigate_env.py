@@ -58,6 +58,18 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._far_pattern = nav_far_pattern(dev)
         self._near_pattern = nav_near_pattern(dev)
 
+        self._trace = None
+        self._trace_step = 0
+        if cfg.goal_trace_envs > 0:
+            self._trace_n = min(int(cfg.goal_trace_envs), E)
+            # Line buffered, so a run killed with Ctrl+C still leaves usable
+            # rows rather than an empty file.
+            self._trace = open(cfg.goal_trace_path, "w", buffering=1)
+            self._trace.write(
+                "step,ep_step,env,x,y,yaw,goal_x,goal_y,dist,speed_fwd,reached,timeout\n"
+            )
+            print(f"[trace] writing {self._trace_n} env(s) to {cfg.goal_trace_path}")
+
         self._log = R.TermLogger(
             ["progress", "bearing", "goal", "fail", "upright", "slip",
              "action_rate", "energy", "time", "fill_change"],
@@ -217,7 +229,34 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._reached = R.goal_reached(
             dist, heading[:, 1], c.goal_dist_tol, math.cos(c.goal_heading_tol_rad)
         )
+        if self._trace is not None:
+            self._write_trace(dist, time_out)
         return self._failed_now | self._reached, time_out
+
+    def _write_trace(self, dist: torch.Tensor, time_out: torch.Tensor) -> None:
+        """One CSV row per env per step, in the env frame.
+
+        Positions are env-relative so several envs are comparable; _goal_pos_w
+        is in world coordinates, hence the same subtraction.
+        """
+        n = self._trace_n
+        o = self.scene.env_origins[:n, :2]
+        pos = (self.robot.data.root_pos_w.torch[:n, :2] - o).tolist()
+        goal = (self._goal_pos_w[:n] - o).tolist()
+        yaw = self._base_yaw()[:n].tolist()
+        spd = self.robot.data.root_lin_vel_b.torch[:n, 0].tolist()
+        d = dist[:n].tolist()
+        reached = self._reached[:n].tolist()
+        tout = time_out[:n].tolist()
+        ep = self.episode_length_buf[:n].tolist()
+        for i in range(n):
+            self._trace.write(
+                f"{self._trace_step},{ep[i]},{i},"
+                f"{pos[i][0]:.4f},{pos[i][1]:.4f},{yaw[i]:.4f},"
+                f"{goal[i][0]:.4f},{goal[i][1]:.4f},"
+                f"{d[i]:.4f},{spd[i]:.4f},{int(reached[i])},{int(tout[i])}\n"
+            )
+        self._trace_step += 1
 
     # ------------------------------------------------------------------
     # reset

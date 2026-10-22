@@ -179,6 +179,19 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     goal_yaw_spread = 0.5                # rad, 1 sigma
     goal_yaw_random_frac = 0.15
 
+    # --- trace ---
+    # Per-step CSV of where the machine is, where the goal is and how fast it
+    # is going, for this many envs. 0 disables it.
+    #
+    # This exists because nothing renders the goal, so footage cannot answer
+    # the question that matters: arrival is `dist < goal_dist_tol` with no
+    # velocity clause, so a machine that drives through the ball at full speed
+    # scores exactly the same as one that stops in it. The speed on the step
+    # `reached` fires is what separates them, and it is a number, not a
+    # picture.
+    goal_trace_envs: int = 0
+    goal_trace_path: str = "goal_trace.csv"
+
     # --- curriculum ---
     # Two independent ladders. Goal distance widens globally on the success
     # rate over a window of finished episodes; terrain difficulty is per-env

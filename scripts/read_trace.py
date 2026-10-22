@@ -85,18 +85,36 @@ def main(argv=None) -> int:
     print()
     if arrival_speeds:
         n = len(arrival_speeds)
-        mean = sum(arrival_speeds) / n
+        # speed_fwd is body-frame x and therefore SIGNED: reversing reads
+        # negative. Averaging it directly lets a machine arriving backwards at
+        # 1.5 cancel one arriving forwards at 1.5 and reports a sedate 0.0.
+        # Magnitude is the only thing that answers "was it still moving".
+        mag = [abs(v) for v in arrival_speeds]
+        mean = sum(mag) / n
+        reverse = [v for v in arrival_speeds if v < 0]
+        over = [v for v in mag if v > TOP_SPEED]
         print(f"arrivals: {n}")
-        print(f"  speed at arrival   mean {mean:.2f}  min {min(arrival_speeds):.2f}  "
-              f"max {max(arrival_speeds):.2f} m/s")
-        print(f"  as a fraction of the {TOP_SPEED} m/s top speed: {mean / TOP_SPEED:.0%}")
+        print(f"  |speed| at arrival  mean {mean:.2f}  min {min(mag):.2f}  max {max(mag):.2f} m/s")
+        print(f"  against the {TOP_SPEED} m/s commanded cap: {mean / TOP_SPEED:.0%}")
         print()
         if mean > 0.5 * TOP_SPEED:
-            print("  -> It is driving THROUGH the goal, not stopping at it. Arrival has")
-            print("     no velocity condition, so this is the reward being satisfied as")
-            print("     written, not the policy misbehaving.")
+            print("  -> Driving THROUGH the goal, not stopping at it. goal_reached has no")
+            print("     velocity clause, so this is the reward satisfied as written.")
         else:
-            print("  -> It is slowing into the goal.")
+            print("  -> Slowing into the goal.")
+        if reverse:
+            rm = sum(abs(v) for v in reverse) / len(reverse)
+            print()
+            print(f"  -> {len(reverse)}/{n} ({len(reverse)/n:.0%}) arrive IN REVERSE, mean {rm:.2f} m/s.")
+            print("     bearing_alignment clamps forward_speed to [0, 1], so reversing")
+            print("     forgoes that reward but is never penalised, and nothing else in")
+            print("     the reward refers to heading. Backwards is near-equally optimal.")
+        if over:
+            print()
+            print(f"  -> {len(over)}/{n} ({len(over)/n:.0%}) exceed the {TOP_SPEED} m/s the wheels can")
+            print(f"     command, up to {max(mag):.2f}. The drive is a velocity servo, so the")
+            print("     body is outrunning its own wheels: sliding, or running downhill")
+            print("     under lunar gravity. Check wheel_slip if this matters.")
     else:
         print("no episode in this trace ended in an arrival")
 

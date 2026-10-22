@@ -13,6 +13,13 @@ assets = ["mujoco>=3.13"]       # below this mj_geomDistance silently returns 0.
                                 # for every pair, which makes every clearance and
                                 # passage number in check_excavator.py a fiction
 
+# Isaac Lab's VideoRecorder is built by DirectRLEnv._init_sim whenever
+# cfg.video_recorders is non-empty, which --video sets, and it raises on import
+# rather than degrading, so `play --video` fails at env construction without
+# this. Install it into the Isaac Lab venv, not here:
+#   uv pip install --python <isaaclab>/.venv/bin/python 'moviepy<2'
+video = ["moviepy<2"]
+
 [project.entry-points."isaaclab.tasks"]
 "luna_hifi_tasks" = "luna_hifi_tasks"
 

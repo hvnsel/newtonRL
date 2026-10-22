@@ -91,6 +91,23 @@ uv pip install --python ~/IsaacLab/.venv/bin/python -e .
 ~/IsaacLab/.venv/bin/python scripts/run_task.py --task Luna-Excavator-Navigate --num_envs 4
 ```
 
+Then use `workstation/train.sh` for everything after, which resolves the venv
+interpreter and runs from the repo root so checkpoints land where peek.py
+looks:
+
+```bash
+workstation/train.sh train --rl_library rsl_rl \
+  --task Luna-Excavator-Navigate --num_envs 1024 --max_iterations 400 \
+  env.actor_scan=false
+```
+
+Do not use `isaaclab.sh`. It resolves its own interpreter, and where the system
+python is older than the venv's it picks the wrong one and dies on `No module
+named 'tomllib'` -- stdlib from 3.11 on, so that message means 3.10 ran it. It
+is deprecated in favour of `uv run isaaclab`, which resolves the project from
+the working directory and therefore wants to run from the Isaac Lab tree rather
+than from here.
+
 Two notes on version drift. The cluster ran `3.0.0-rc1`, whose compiled
 bytecode in this checkout is `cpython-311`, so it was Python 3.11; final
 `release/3.0.0` moved to 3.12 and Isaac Sim 6.2. The repo code is compatible

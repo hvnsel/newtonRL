@@ -30,7 +30,77 @@ The two that actually block:
 - **Compute capability ≥ 7.5.** The image's PyTorch has no kernels below it —
   this is what killed a cluster job that landed on a V100 (7.0). A 3090 is 8.6.
 
-## 2. One-time setup
+## 2. No root: uv, Python 3.12, and no Isaac Sim
+
+If preflight says you are not in the `docker` group and have no sudo, this is
+the path. It installs entirely under your home directory.
+
+Isaac Lab 3.0's root `pyproject.toml` pins, verified against
+`release/3.0.0`:
+
+| | pin |
+|---|---|
+| Python | `>=3.12,<3.13` |
+| Isaac Sim | `isaacsim[all,extscache]==6.2.0.0` — **optional**, see below |
+| newton | `newton[sim]==1.6.1` |
+| warp-lang | `1.17.0` |
+| mujoco | `~=3.12.0`, plus `mujoco-warp~=3.12.0` |
+
+Ubuntu 22.04 ships Python 3.10, which is outside that range, and `deadsnakes`
+needs root. `uv` solves both problems: one binary into `~/.local/bin`, no root,
+and it supplies its own interpreters. Isaac Lab's pyproject has a `[tool.uv]`
+section with `override-dependencies`, so uv is the project's own tooling rather
+than a workaround.
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"          # add to ~/.bashrc
+uv python install 3.12
+
+git clone -b release/3.0.0 https://github.com/isaac-sim/IsaacLab.git ~/IsaacLab
+cd ~/IsaacLab
+uv sync                                        # Kit-less: no Isaac Sim
+```
+
+**Try it without Isaac Sim first.** The 3.0.0 README states that Kit-less
+Newton workflows do not require Isaac Sim, and this repo is a Newton workload:
+MJWarp for the rigid tier, MPM for soil, and `drive_check.py` already defaults
+to `visualizer=["newton_gl"]`, which is Newton's own GL viewer rather than Kit.
+Skipping it avoids a 10+ GB download and the whole Kit shader-cache problem.
+
+The parts that might still pull Kit in are the `DomeLightCfg` in
+`NavigateSceneCfg` and loading `assets/excavator/excavator.usda`. If an import
+fails on either, add Isaac Sim:
+
+```bash
+uv sync --extra isaacsim
+```
+
+`isaacsim` and `importers` are the two extra names in that pyproject. Confirm
+what is on offer rather than guessing:
+
+```bash
+sed -n '/\[project.optional-dependencies\]/,/^\[/p' ~/IsaacLab/pyproject.toml
+```
+
+Then put this package in the same environment and run the port checks:
+
+```bash
+cd ~/newtonRL
+uv pip install --python ~/IsaacLab/.venv/bin/python -e .
+~/IsaacLab/.venv/bin/python scripts/run_task.py --task Luna-Excavator-Navigate --num_envs 4
+```
+
+Two notes on version drift. The cluster ran `3.0.0-rc1`, whose compiled
+bytecode in this checkout is `cpython-311`, so it was Python 3.11; final
+`release/3.0.0` moved to 3.12 and Isaac Sim 6.2. The repo code is compatible
+either way — `root_quat_w` is documented `(x, y, z, w)` in `release/3.0.0`,
+which is what `yaw_from_quat` assumes. And the README warns `release/3.0.0` is
+under active development and may break, so pin the clone to that tag rather
+than tracking `develop`.
+
+## 3. One-time setup, with Docker
+
 
 ```bash
 # The image the cluster .sif was built from. ~25 GB unpacked.
@@ -47,7 +117,7 @@ pip install -e '.[assets]'
 `dev.sh` keeps Kit's shader caches and that install in `$LUNA_STATE`
 (default `~/.luna`). Without it every start pays the five-minute cold compile.
 
-## 3. Verify the port
+## 4. Verify the port
 
 ```bash
 workstation/dev.sh isaaclab -p scripts/run_task.py --task Luna-Excavator-Navigate --num_envs 4
@@ -63,7 +133,7 @@ Geometry, with no container at all:
 python scripts/check_excavator.py
 ```
 
-## 4. Run
+## 5. Run
 
 ```bash
 # navigate: measured 13.3 GB at 1024 envs, so this fits 24 GB with room
@@ -84,7 +154,7 @@ an L40S: 142 SMs versus 82, though the 3090 has 8% *more* memory bandwidth
 2000-iteration navigate run is ~13–15 h instead of 8.5 — against a queue of
 zero.
 
-## 5. Excavate: iterate on Micro, train on the full bed
+## 6. Excavate: iterate on Micro, train on the full bed
 
 Three beds are already registered, and the small ones are the reason excavate
 iteration does not need a cluster:
@@ -145,7 +215,7 @@ gap is 5.2 grains clear at the 0.03 m voxel and 2.7 at 0.05, and granular
 material arches below about four, making ~0.046 m the hard ceiling. 0.03 → 0.04
 buys 2.3× fewer particles and spends most of that margin.
 
-## 6. Excavate: what to look at first
+## 7. Excavate: what to look at first
 
 Standing suspects for why the rover does not learn to dig, in the order the
 viewer settles them fastest. All of these are Micro-bed questions.

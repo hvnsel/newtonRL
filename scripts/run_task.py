@@ -305,12 +305,19 @@ def main(argv=None) -> int:
             drive = torch.zeros(u.num_envs, 2, device=u.device)
             drive[:, 0] = 0.6
             drive[:, 1] = 0.2
-            x0 = u.robot.data.root_pos_w.torch[:, 0].clone()
+            p0 = u.robot.data.root_pos_w.torch[:, :2].clone()
             for _ in range(args.steps):
                 obs, *_ = env.step(drive)
-            dx = u.robot.data.root_pos_w.torch[:, 0] - x0
-            print(f"  x displacement per env: {dx.tolist()[:8]}")
-            _check(bool((dx.abs() > 0.5).any()), "machine moved under a forward command (wheel sign and drive mapping)", failures)
+            # Planar distance, not world x. yaw 0.2 is 0.2 * MAX_YAW_SPEED =
+            # 0.6 rad/s, so over these steps the commanded turn passes a full
+            # revolution and the sign of any single world axis says nothing.
+            moved = torch.linalg.norm(u.robot.data.root_pos_w.torch[:, :2] - p0, dim=-1)
+            print(f"  distance moved per env: {[round(v, 2) for v in moved.tolist()[:8]]}")
+            print(f"  min {moved.min():.2f}  max {moved.max():.2f}  mean {moved.mean():.2f} m")
+            # all(), not any(): with any() a single moving env passes the check
+            # while the rest sit still, which is a failure mode worth catching
+            # here rather than inferring it from a reward curve days later.
+            _check(bool((moved > 0.5).all()), "EVERY env moved under a forward command (wheel sign and drive mapping)", failures)
 
         _check(bool(torch.isfinite(obs["policy"]).all()), "policy observation finite after stepping", failures)
         env.close()

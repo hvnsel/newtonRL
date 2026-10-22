@@ -8,6 +8,8 @@
 
 set -u
 fail=0
+# $USER is not set in every shell, and set -u makes that fatal mid-report.
+WHO="${USER:-$(id -un)}"
 ok()   { printf '  \033[32mok\033[0m    %s\n' "$1"; }
 bad()  { printf '  \033[31mBAD\033[0m   %s\n' "$1"; fail=$((fail+1)); }
 note() { printf '        %s\n' "$1"; }
@@ -53,16 +55,43 @@ else
 fi
 
 echo
+echo "=== root ==="
+# On a managed lab machine this is the question that decides everything below:
+# adding yourself to the docker group needs root, and without it Docker is not
+# available to you at all no matter that it is installed and running.
+HAVE_SUDO=no
+if [ "$(id -u)" -eq 0 ]; then
+  HAVE_SUDO=yes; ok "running as root"
+elif sudo -n true 2>/dev/null; then
+  HAVE_SUDO=yes; ok "passwordless sudo"
+elif sudo -nv 2>&1 | grep -q 'password'; then
+  HAVE_SUDO=maybe; ok "sudo available (will prompt for a password)"
+else
+  note "no sudo. Docker needs group membership an admin has to grant, so the"
+  note "rootless paths below are the ones open to you."
+fi
+
+echo
 echo "=== Docker and the container toolkit ==="
 if ! command -v docker >/dev/null; then
   bad "docker not found:  sudo apt install docker.io"
 else
   ok "docker $(docker --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
   if ! docker info >/dev/null 2>&1; then
-    bad "cannot talk to the docker daemon. Either it is not running, or this"
-    note "user is not in the docker group:"
-    note "  sudo systemctl enable --now docker"
-    note "  sudo usermod -aG docker \$USER   # then log out and back in"
+    if id -nG | tr ' ' '\n' | grep -qx docker; then
+      bad "in the docker group but still refused: the group is not active in"
+      note "this shell. Log out and back in, or:  exec newgrp docker"
+    elif [ "$HAVE_SUDO" = no ]; then
+      bad "not in the docker group, and no sudo to add yourself. Ask whoever"
+      note "administers this box to run:"
+      note "  sudo usermod -aG docker ${WHO}"
+      note "Until then, see the rootless fallbacks printed at the end."
+    else
+      bad "not in the docker group. Add yourself, then log out and back in:"
+      note "  sudo usermod -aG docker ${WHO}"
+      note "  exec newgrp docker        # or just reconnect"
+      note "If the daemon is also stopped:  sudo systemctl enable --now docker"
+    fi
   else
     ok "docker daemon reachable without sudo"
     # The real test: does a container see the GPU? Isaac Sim needs
@@ -104,6 +133,31 @@ else
   note "no DISPLAY. Headless training works; the viewer needs X on the box"
   note "itself, or x11-forwarding, or run the GUI from a local session."
 fi
+
+echo
+echo "=== rootless fallbacks ==="
+# Only worth reading if Docker came back refused. Both of these run entirely
+# as you, with no group membership and no daemon.
+if command -v apptainer >/dev/null || command -v singularity >/dev/null; then
+  APP=$(command -v apptainer || command -v singularity)
+  ok "$APP present: runs as you, no daemon, no group"
+  note "This is the cluster's own path. Build the image once, then run it:"
+  note "  apptainer build ~/isaaclab.sif docker://nvcr.io/nvidia/isaac-lab:3.0.0-rc1"
+  note "Expect ~45 min and 70 GB of scratch while it builds. cluster/build_sif.sbatch"
+  note "is the same recipe, and IMAGE=~/isaaclab.sif is understood by dev.sh only"
+  note "after swapping docker run for apptainer exec -- see Setup.md."
+else
+  note "no apptainer. It needs root to install, but once installed it runs"
+  note "rootless:  sudo apt install apptainer"
+fi
+note ""
+note "Or skip containers entirely -- Isaac Sim pip-installs into a venv in your"
+note "home directory and needs no root at all:"
+note "  python3 -m venv ~/isaacenv && . ~/isaacenv/bin/activate"
+note "  pip install --upgrade pip"
+note "  pip install 'isaacsim[all,extscache]==5.0.0' --extra-index-url https://pypi.nvidia.com"
+note "Then clone Isaac Lab 3.0 and run its ./isaaclab.sh --install. This is the"
+note "best path for iteration anyway: no container boundary, native viewer."
 
 echo
 if [ "$fail" -eq 0 ]; then

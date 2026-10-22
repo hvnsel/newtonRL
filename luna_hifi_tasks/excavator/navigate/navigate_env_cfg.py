@@ -159,6 +159,16 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     goal_dist_range = (1.5, 3.0)
     goal_dist_max = 18.0                 # curriculum ceiling
     goal_dist_tol = 0.5                  # reached when closer than this ...
+    # ... and slower than this, as a planar speed magnitude.
+    #
+    # Friction is 1.0 and lunar gravity 1.62, so the traction-limited stop is
+    # mu*g = 1.62 m/s^2: from the 1.5 m/s top speed that is 0.69 m, longer than
+    # the 0.5 m tolerance radius. The machine therefore cannot enter the ball
+    # at speed and pull up inside it -- it has to be slowing on approach, which
+    # is the whole point. 0.25 m/s is a sixth of top speed and takes 0.02 m to
+    # shed, so the condition is comfortably satisfiable once the approach is
+    # right.
+    goal_speed_tol = 0.25                # m/s
     # ... and facing within this. math.pi disables the heading test: arriving
     # is a position-only condition. Heading at the goal is the excavate
     # policy's job -- it shimmies to the plane it wants to cut -- so requiring

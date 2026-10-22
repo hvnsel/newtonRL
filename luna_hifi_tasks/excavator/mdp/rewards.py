@@ -93,12 +93,24 @@ def bearing_alignment(
 
 def goal_reached(
     dist: torch.Tensor,
+    speed: torch.Tensor,
     heading_err_cos: torch.Tensor,
     dist_tol: float,
+    speed_tol: float,
     heading_tol_cos: float,
 ) -> torch.Tensor:
-    """Within `dist_tol` metres and facing within the tolerance angle."""
-    return (dist < dist_tol) & (heading_err_cos > heading_tol_cos)
+    """Within `dist_tol` metres, slower than `speed_tol`, and facing within the
+    tolerance angle.
+
+    `speed` is a magnitude, not body-frame x. The machine carries a drum at
+    each end and drives either way, so arriving in reverse is arriving; a
+    signed test would fail half of the perfectly good approaches. Taking the
+    planar norm also catches a machine sliding sideways into the ball.
+
+    Without the speed term this reads "touched the point", and a machine
+    crossing the ball at full speed scores what one settling inside it scores.
+    """
+    return (dist < dist_tol) & (speed < speed_tol) & (heading_err_cos > heading_tol_cos)
 
 
 def heading_error_sin_cos(goal_yaw: torch.Tensor, base_yaw: torch.Tensor) -> torch.Tensor:

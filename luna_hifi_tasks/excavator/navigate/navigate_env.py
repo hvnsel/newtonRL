@@ -226,8 +226,10 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         # moves 0.04 m per step and cannot leave the tolerance ball in one, so
         # w_goal got paid twice on every success.
         _, dist, heading = self._goal_in_body()
+        speed = torch.linalg.norm(self.robot.data.root_lin_vel_b.torch[:, :2], dim=-1)
         self._reached = R.goal_reached(
-            dist, heading[:, 1], c.goal_dist_tol, math.cos(c.goal_heading_tol_rad)
+            dist, speed, heading[:, 1],
+            c.goal_dist_tol, c.goal_speed_tol, math.cos(c.goal_heading_tol_rad),
         )
         if self._trace is not None:
             self._write_trace(dist, time_out)

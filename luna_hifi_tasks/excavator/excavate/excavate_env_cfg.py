@@ -60,7 +60,7 @@ MPM_ENTRY = "soil" # Entry name for the MPM object in the coupler
 
 # Particle spacing, and the margin the coupler inflates colliders by. 
 
-VOXEL_SIZE = 0.03
+VOXEL_SIZE = 0.04
 MPM_COLLIDER_MARGIN = 0.5 * VOXEL_SIZE
 MPM_PARTICLES_PER_CELL = 1.0 # should be set higher for more accurate simulations
 MPM_VISUAL_COLOR = (0.62, 0.55, 0.45)

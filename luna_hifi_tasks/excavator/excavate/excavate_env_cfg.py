@@ -226,6 +226,14 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     rigid_njmax: int = 8192
     rigid_nconmax: int = 32768
 
+    # Capturing the step as a CUDA graph reserves a memory pool covering every
+    # allocation the capture touched, and MPM's transients make that pool
+    # gigabytes. Instantiating it is what fails first on a 24 GB card: the
+    # capture itself succeeds, then wp_cuda_graph_create_exec reports CUDA
+    # error 2. Turning it off costs per-step launch overhead, which is noise
+    # against a step that already takes seconds at this particle count.
+    use_cuda_graph: bool = True
+
     # Active cells per leaf node, as a right shift: 7 is one leaf per 128
     # cells, four times the minimum for 8^3 blocks. Each step down costs 512
     # cells of storage.
@@ -579,7 +587,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             ),
             collision_cfg=NewtonCollisionPipelineCfg(soft_contact_max=0),
             num_substeps=1,
-            use_cuda_graph=True,
+            use_cuda_graph=self.use_cuda_graph,
         )
         self.sim.use_newton_actuators = True
 

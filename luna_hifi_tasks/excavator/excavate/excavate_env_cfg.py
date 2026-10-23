@@ -334,11 +334,11 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     fill_sensor_bias: float = 0.03           # +- fraction, per episode
 
     # --- success ---
-    # 0.6 of target_load_kg is 24 kg on the front drum.
+    # 0.6 of target_load_kg is 24 kg in each drum.
     fill_success_fraction = 0.6
     # "front": the front drum alone. "all": every drum. "mean": the pair
     # averages past the threshold.
-    fill_success_mode = "front"
+    fill_success_mode = "all"
 
     # --- reward weights ---
     # An episode of doing a term well comes to tens of points. fill scores

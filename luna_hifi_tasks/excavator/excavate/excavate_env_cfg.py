@@ -325,6 +325,13 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # (leaf, lower and upper) to 4 (upper alone), so this is the remainder.
     grid_upper_min: int = 4096
 
+    # Whether the MPM solver partitions its grid per world. One world runs
+    # clean; every multi-world configuration fails the rebuild on lower and
+    # upper internal nodes while those are provisioned about a thousand times
+    # over what the span geometrically needs, which points at the multi-world
+    # path rather than at any budget. Exposed so the two can be compared.
+    mpm_separate_worlds: bool = True
+
     # --- regolith ---
     #
     # The yield surface is
@@ -673,7 +680,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             collider_basis="pic27",
                             collider_velocity_mode="forward",
                             solver="auto",
-                            separate_worlds=True,
+                            separate_worlds=self.mpm_separate_worlds,
                             # Must be False on a coupled entry.
                             project_outside_colliders=False,
                             # upper <= lower <= leaf <= active

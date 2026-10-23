@@ -189,6 +189,27 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     goal_yaw_spread = 0.5                # rad, 1 sigma
     goal_yaw_random_frac = 0.15
 
+    # --- playback ---
+    # Keep an episode alive this many steps after it arrives, instead of
+    # terminating on the frame the flag fires. 0 is off.
+    #
+    # For validation footage only. Arriving is the thing worth watching and
+    # the episode currently cuts at the exact instant it happens, so the clip
+    # never shows the machine actually stopped at the point. 75 steps is three
+    # seconds of it sitting there.
+    #
+    # Leave it at 0 for training: during the hold the machine is still inside
+    # the tolerance and still slow, so goal_reached stays true and w_goal is
+    # paid on every held step.
+    goal_hold_steps: int = 0
+
+    # Where the playback camera sits and what it points at. The action spans a
+    # disc of goal_cell_half around the cell centre, so the camera has to clear
+    # that radius by some margin or the machine drives out of frame -- which is
+    # what eye=(6, 6, 4) did against a 13 m traverse.
+    camera_eye: tuple[float, float, float] = (26.0, 26.0, 18.0)
+    camera_lookat: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
     # --- trace ---
     # Per-step CSV of where the machine is, where the goal is and how fast it
     # is going, for this many envs. 0 disables it.
@@ -301,5 +322,9 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
         super().play_mode()
         self.scene.num_envs = min(self.scene.num_envs, 16)
         self.sim.visualizer_cfgs = [
-            NewtonGLVisualizerCfg(eye=(6.0, 6.0, 4.0), lookat=(0.0, 0.0, 0.0))
+            NewtonGLVisualizerCfg(
+                # tuple(): a Hydra override arrives as a list.
+                eye=tuple(self.camera_eye),
+                lookat=tuple(self.camera_lookat),
+            )
         ]

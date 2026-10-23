@@ -58,6 +58,9 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._far_pattern = nav_far_pattern(dev)
         self._near_pattern = nav_near_pattern(dev)
 
+        # Steps still to run before an arrived episode is allowed to end.
+        self._hold_left = torch.zeros(E, dtype=torch.long, device=dev)
+
         self._trace = None
         self._trace_step = 0
         if cfg.goal_trace_envs > 0:
@@ -234,7 +237,22 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         )
         if self._trace is not None:
             self._write_trace(dist, time_out)
-        return self._failed_now | self._reached, time_out
+
+        done = self._failed_now | self._reached
+        if c.goal_hold_steps > 0:
+            # Start the countdown on the first step that arrives, then end the
+            # episode when it runs out, so playback shows the machine stopped
+            # at the point rather than cutting on the frame it gets there.
+            # _reached itself is untouched, so the reward, the curriculum and
+            # Episode/reached all keep their meaning.
+            start = self._reached & (self._hold_left == 0)
+            # +1 so goal_hold_steps is the number of EXTRA steps the episode
+            # runs: one tick of the counter is spent on the arriving step itself.
+            self._hold_left = torch.where(start, c.goal_hold_steps + 1, self._hold_left)
+            holding = self._hold_left > 0
+            self._hold_left = torch.where(holding, self._hold_left - 1, self._hold_left)
+            done = self._failed_now | (holding & (self._hold_left == 0))
+        return done, time_out
 
     def _write_trace(self, dist: torch.Tensor, time_out: torch.Tensor) -> None:
         """One CSV row per env per step, in the env frame.
@@ -363,6 +381,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._prev_dist[env_ids] = d0
         self._start_dist[env_ids] = d0.clamp_min(1e-3)
         self._reached[env_ids] = False
+        self._hold_left[env_ids] = 0
         self._failed_now[env_ids] = False
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0

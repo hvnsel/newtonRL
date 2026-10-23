@@ -114,6 +114,13 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._failed_now = torch.zeros(E, dtype=torch.bool, device=dev)
         # Which failures were the machine running out of bed, for the log.
         self._off_bed = torch.zeros(E, dtype=torch.bool, device=dev)
+        # Furthest any particle got from its env origin this episode. The MPM
+        # grid's point mask drops non-finite positions but nothing else, so a
+        # particle flung to a large finite position is still packed into the
+        # index grid and the NanoVDB tree has to span out to it: one escapee
+        # 84 km out exceeds 16,384 lower nodes, and 671 km exceeds 4,096 upper
+        # ones, which no capacity can be provisioned against.
+        self._particle_max_m = torch.zeros(E, device=dev)
         self._last_terms: dict[str, torch.Tensor] = {}
         # Last step's bed, which a reset samples for the surface the drum
         # comes down on.
@@ -469,6 +476,9 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         d = self.robot.data
 
         pos, env = self._particles()
+        d_env = torch.linalg.norm(pos - self.scene.env_origins[env], dim=-1)
+        d_env = torch.nan_to_num(d_env, nan=0.0, posinf=0.0, neginf=0.0)
+        self._particle_max_m.scatter_reduce_(0, env, d_env, reduce="amax")
         self._bed_grid = self._bed_heightmap(pos, env)
         actor_scan, _ = self._scans(self._bed_grid)
         self._fill_kg = self._compute_fill(pos, env)
@@ -617,6 +627,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         exits["Episode/drum_full"] = float(self._drum_full[env_ids].float().mean())
         exits["Episode/failed"] = float(self._failed_now[env_ids].float().mean())
         exits["Episode/off_bed"] = float(self._off_bed[env_ids].float().mean())
+        exits["Episode/particle_max_m"] = float(self._particle_max_m[env_ids].max())
         super()._reset_idx(env_ids)
 
         n, dev, c = env_ids.numel(), self.device, self.cfg
@@ -682,6 +693,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._drum_full[env_ids] = False
         self._failed_now[env_ids] = False
         self._off_bed[env_ids] = False
+        self._particle_max_m[env_ids] = 0.0
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
 

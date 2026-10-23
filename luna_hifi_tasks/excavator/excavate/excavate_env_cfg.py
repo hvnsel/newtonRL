@@ -330,14 +330,19 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # upper internal nodes while those are provisioned about a thousand times
     # over what the span geometrically needs, which points at the multi-world
     # path rather than at any budget. Exposed so the two can be compared.
-    # "particles" rather than "auto". A grid-backed warm start is what makes
-    # a masked reset illegal on a shared grid: the solver raises unless the
-    # mask is None, and newton_manager always passes one, so separate_worlds
-    # off is otherwise unusable under Isaac Lab at any env count above 1.
-    # "particles" keeps the warm start on a point basis, which the reset check
-    # skips; "none" drops it entirely and costs solver iterations. "grid" and
+    # "none" rather than "auto". A grid-backed warm start is what makes a
+    # masked reset illegal on a shared grid: the check escapes only on a None
+    # mask, which newton_manager never passes, so separate_worlds off is
+    # otherwise unusable under Isaac Lab above one env. The impulse field
+    # already escapes, since collider_basis "pic27" builds a PointBasisSpace.
+    # The stress field does not: this setting governs how its warm start
+    # transfers, not its basis, which comes from strain_basis "P0" and is
+    # cell-wise. "none" leaves the field unallocated so the check skips it,
+    # at the cost of the implicit solve starting cold each step. "grid" and
     # "smoothed" are rejected outright with a rebuildable sparse grid.
-    mpm_warmstart_mode: str = "particles"
+    #
+    # Set here rather than overridden: Hydra reads a bare none as null.
+    mpm_warmstart_mode: str = "none"
 
     # Early termination has to be off with separate_worlds off: a masked
     # reset cannot clear grid-backed warm starts on a shared grid, so the

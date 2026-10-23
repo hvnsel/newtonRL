@@ -502,8 +502,20 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         )
 
         wheel_cmd_rad = self._forward_cmd / WHEEL_RADIUS
-        all_vel = d.joint_vel.torch
-        all_tau = d.applied_torque.torch
+        # _failed has already run this step and nonfinite_state has flagged a
+        # diverged env, so it is resetting regardless and its fail charge is
+        # the signal that matters. Zeroing the state the per-step terms read
+        # keeps one blown-up env from ending the run: a NaN anywhere in the
+        # reward vector stops the trainer outright. The raise below still
+        # fires for a nonfinite term that is not explained by diverged state,
+        # which would be a reward bug rather than a sim one.
+        def finite(t: torch.Tensor) -> torch.Tensor:
+            return torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0)
+
+        all_vel = finite(d.joint_vel.torch)
+        all_tau = finite(d.applied_torque.torch)
+        base_lin_vel = finite(p["base_lin_vel"])
+        projected_gravity = finite(p["projected_gravity"])
         load_ref = 2.0 * c.target_load_kg
 
         # Signed weighted terms, kept so a scripted run can read a step
@@ -518,9 +530,9 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             "fail": -c.w_fail * self._failed_now.float(),
             "overcut": c.w_overcut * overcut_delta / c.cut_volume_ref,
             "spill": -c.w_spill * R.spill_penalty(spill_delta) / load_ref,
-            "stall": -c.w_stall * R.stall_penalty(wheel_cmd_rad, p["base_lin_vel"][:, 0], WHEEL_RADIUS),
-            "drift": -c.w_drift * R.drift_penalty(p["base_lin_vel"], self._forward_cmd),
-            "upright": -c.w_upright * R.upright_penalty(p["projected_gravity"]),
+            "stall": -c.w_stall * R.stall_penalty(wheel_cmd_rad, base_lin_vel[:, 0], WHEEL_RADIUS),
+            "drift": -c.w_drift * R.drift_penalty(base_lin_vel, self._forward_cmd),
+            "upright": -c.w_upright * R.upright_penalty(projected_gravity),
             "energy": -c.w_energy * R.energy_penalty(all_tau, all_vel),
             "action_rate": -c.w_action_rate * R.action_rate_penalty(self._actions, self._prev_actions),
             "time": -c.w_time * torch.ones(self.num_envs, device=self.device),

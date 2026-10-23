@@ -318,6 +318,13 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # it sizes active voxels, and VOXEL_CAPACITY_EXCEEDED is never set.
     grid_leaf_shift: int = 3
 
+    # Floor on upper internal nodes, which the shift alone cannot reach: upper
+    # derives from lower >> 3, so shift 3 leaves it at 1024 and raising it
+    # further would mean shift 2, quadrupling the leaf array to move a node
+    # count that is small and cheap. Shift 3 took the rebuild status from 7
+    # (leaf, lower and upper) to 4 (upper alone), so this is the remainder.
+    grid_upper_min: int = 4096
+
     # --- regolith ---
     #
     # The yield surface is
@@ -614,7 +621,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         # 16384 leaf blocks, about 400 MB.
         leaf = max(active >> self.grid_leaf_shift, 16384)
         lower = max(leaf >> 3, 4096)
-        upper = max(lower >> 3, 1024)
+        upper = max(lower >> 3, self.grid_upper_min)
         print(
             f"[excavate] bed {length:.1f} x {width:.1f} x {self.bed_depth:.2f} m at "
             f"{self.voxel_size:.3f} m voxel -> {self.bed_particles_per_env} particles/env "

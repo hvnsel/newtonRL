@@ -6,9 +6,9 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class ExcavatorExcavatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 256 # Number of steps to run per environment before updating the policy
-    max_iterations = 3000 # Maximum number of training iterations to run
-    save_interval = 100 # Interval at which to save the model and training state
+    num_steps_per_env = 64 # Number of steps to run per environment before updating the policy
+    max_iterations = 800 # Maximum number of training iterations to run
+    save_interval = 25 # Interval at which to save the model and training state
     experiment_name = "excavator_excavate"
     empirical_normalization = False
     obs_groups = {"actor": ["policy"], "critic": ["policy", "critic"]} # the critic has privileged access to observations not available to the actor
@@ -30,7 +30,7 @@ class ExcavatorExcavatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=3.0e-4,
-        schedule="adaptive",
+        schedule="fixed",
         gamma=0.997,
         lam=0.95,
         desired_kl=0.01,

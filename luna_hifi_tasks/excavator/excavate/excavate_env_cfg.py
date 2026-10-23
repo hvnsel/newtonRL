@@ -307,7 +307,16 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # Active cells per leaf node, as a right shift: 7 is one leaf per 128
     # cells, four times the minimum for 8^3 blocks. Each step down costs 512
     # cells of storage.
-    grid_leaf_shift: int = 7
+    #
+    # 3 rather than 7, because the node tree is what runs out first and the
+    # floors it otherwise sits at are sized for one undisturbed bed. Measured
+    # at 4 envs over 18 s of real digging: shift 7 and 4 both fail the rebuild
+    # with LEAF, LOWER and UPPER capacity exceeded, 3 is clean and still fits
+    # 24 GB. The shift has to be judged against worked soil -- a short run
+    # never disturbs enough of the bed to grow the tree, and will pass at any
+    # setting. grid_cap_multiplier is a separate budget and cannot substitute:
+    # it sizes active voxels, and VOXEL_CAPACITY_EXCEEDED is never set.
+    grid_leaf_shift: int = 3
 
     # --- regolith ---
     #

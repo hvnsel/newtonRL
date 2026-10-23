@@ -590,7 +590,13 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         self._failed_now = self._failed()
-        return self._failed_now | self._shape_done, time_out
+        terminated = self._failed_now | self._shape_done
+        if not self.cfg.terminate_early:
+            # Every world has to reset on the same step for the shared MPM
+            # grid, so nothing ends an episode but the timeout. The flags
+            # above are still set, and success and fail still pay.
+            terminated = torch.zeros_like(terminated)
+        return terminated, time_out
 
     # ------------------------------------------------------------------
     # reset

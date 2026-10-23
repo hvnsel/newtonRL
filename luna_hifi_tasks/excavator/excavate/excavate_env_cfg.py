@@ -330,6 +330,19 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # upper internal nodes while those are provisioned about a thousand times
     # over what the span geometrically needs, which points at the multi-world
     # path rather than at any budget. Exposed so the two can be compared.
+    # Early termination has to be off with separate_worlds off: a masked
+    # reset cannot clear grid-backed warm starts on a shared grid, so the
+    # solver requires every world to reset on the same step. With episodes
+    # running their full length that holds, since all envs start together and
+    # time out together. The shape_done and failed flags are still raised for
+    # the reward and the logs, they just stop ending the episode.
+    #
+    # It also removes a reward artifact rather than only working around the
+    # solver: ending on success means the policy never sees what follows a
+    # finished cut, so it never learns to stop cutting. Running to the timeout
+    # leaves overcut to charge for digging past the plane.
+    terminate_early: bool = False
+
     # False: measured over 18 s of digging, 4 envs run the rebuild clean with
     # per-world partitioning off, while 2 envs fail with it on and 1 env is
     # clean either way. The beds sit 9 m apart and are 8 m long, so a shared

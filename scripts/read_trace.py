@@ -87,7 +87,10 @@ def main(argv=None) -> int:
                 math.dist((a["x"], a["y"]), (b["x"], b["y"]))
                 for a, b in zip(ep, ep[1:])
             )
-            peak = max(r["speed_fwd"] for r in ep)
+            # |speed|, not body-frame x: this machine drives either way, and a
+            # signed max reads ~0.00 for an episode run entirely in reverse --
+            # ep 6 above covered 18 m of path and reported a peak of 0.07.
+            peak = max(abs(r["speed"]) for r in ep)
             outcome = "reached" if last["reached"] else ("timeout" if last["timeout"] else "cut")
             if last["reached"]:
                 # signed, so the reverse split below can still be counted

@@ -495,9 +495,19 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     #
     # Set from scripts/reward_audit.py, which prints per-term episode totals
     # for a stationary and a fresh policy.
-    w_fill = 40.0                        # per 2 x target_load_kg captured
-    w_depth = 20.0                       # per cut_volume_ref brought to target
-    w_overcut = 20.0                     # per cut_volume_ref taken below it
+    # fill pays w_fill / (2 * target_load_kg) per kg into the drum and depth
+    # pays w_depth / (cut_volume_ref * soil_density) per kg brought down to
+    # the plane, so levelling only beats filling per kg when
+    #     w_depth > w_fill * cut_volume_ref * soil_density / (2 * target_load)
+    # which at 0.2208 m3 and 1500 kg/m3 is w_depth > 4.14 * w_fill. At 40 and
+    # 20 that was inverted by a factor of eight, and fill has no ceiling: it
+    # normalises by 80 kg and keeps paying past it. 10 and 100 puts a finished
+    # cut at 120 points against 19 for a packed drum.
+    w_fill = 10.0                        # per 2 x target_load_kg captured
+    w_depth = 100.0                      # per cut_volume_ref brought to target
+    # Matched to w_depth: they are the reward and the penalty for the same
+    # surface, and leaving this behind would make overcutting nearly free.
+    w_overcut = 100.0                    # per cut_volume_ref taken below it
     w_spill = 20.0                       # asymmetry on top of a negative fill
     w_success = 20.0
     # Charged once on _failed(), never on a timeout, a finished shape or a

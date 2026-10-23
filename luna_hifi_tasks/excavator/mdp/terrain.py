@@ -188,7 +188,11 @@ def scan_from_heightfield(
     """Rigid tier. Returns (E, N) chassis-relative heights, clipped."""
     pts = scan_points_world(origin_w, quat_w, pattern, yaw_offset)
     h = sample_height_grid(heightfield, pts, env_origins, grid_lower, cell_size, outside_value)
-    return (reference_z.unsqueeze(-1) - (h + env_origins[:, 2:3])).clamp(-clip, clip)
+    out = reference_z.unsqueeze(-1) - (h + env_origins[:, 2:3])
+    # clamp passes NaN through, so the same guard scan_from_raycaster applies:
+    # a single nonfinite particle height rasterises into a cell and every
+    # sample that gathers it carries the NaN into the observation and reward.
+    return torch.nan_to_num(out, nan=clip, posinf=clip, neginf=-clip).clamp(-clip, clip)
 
 
 # ---------------------------------------------------------------------------

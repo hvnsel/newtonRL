@@ -526,6 +526,22 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             "time": -c.w_time * torch.ones(self.num_envs, device=self.device),
         }
         reward = L.add_all(self._last_terms)
+        # The trainer's own check reports only that some reward was NaN, which
+        # does not say which of twelve terms produced it. The soil-derived
+        # terms are each masked against nonfinite heights already; the state
+        # ones are not all covered by _failed's nonfinite_state, which reads
+        # pos, root_lin_vel_b and joint_vel but neither applied_torque nor
+        # projected_gravity. One reduction per step buys the term name.
+        if not torch.isfinite(reward).all():
+            bad = {
+                k: int((~torch.isfinite(v)).sum())
+                for k, v in self._last_terms.items()
+                if not torch.isfinite(v).all()
+            }
+            raise RuntimeError(
+                f"nonfinite reward from terms {bad}; "
+                f"envs={self.num_envs} step={int(self.episode_length_buf.max())}"
+            )
         self._fill_prev_kg[:] = self._fill_kg
         self._fill_filt_prev[:] = self._fill_filt
         self._above_prev[:] = above

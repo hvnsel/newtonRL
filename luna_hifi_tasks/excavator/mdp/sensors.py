@@ -39,7 +39,9 @@ def soil_heightmap(
     gx = torch.floor((local[:, 0] - grid_lower[0]) / cell_size).long()
     gy = torch.floor((local[:, 1] - grid_lower[1]) / cell_size).long()
 
-    inside = (gx >= 0) & (gx < nx) & (gy >= 0) & (gy < ny)
+    # A particle with finite xy and a nonfinite z clears the bounds test and
+    # then wins the amax for its cell, so the height has to be tested too.
+    inside = (gx >= 0) & (gx < nx) & (gy >= 0) & (gy < ny) & torch.isfinite(local[:, 2])
     gx, gy = gx[inside], gy[inside]
     env = particle_env[inside]
     z = local[inside, 2]

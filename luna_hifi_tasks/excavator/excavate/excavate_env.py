@@ -139,6 +139,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._fill_bias = torch.zeros(E, 2, device=dev)
         step_dt = cfg.sim.dt * cfg.decimation
         self._fill_alpha = step_dt / (cfg.fill_sensor_tau + step_dt)
+        # spill's own filter, slow enough to be blind to vane passage.
+        self._spill_filt = torch.zeros(E, 2, device=dev)
+        self._spill_filt_prev = torch.zeros(E, 2, device=dev)
+        self._spill_alpha = step_dt / (cfg.spill_filter_tau + step_dt)
 
         self._log = R.TermLogger(
             ["fill", "depth", "success", "fail", "overcut", "spill", "stall",
@@ -469,6 +473,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         actor_scan, _ = self._scans(self._bed_grid)
         self._fill_kg = self._compute_fill(pos, env)
         self._fill_filt.mul_(1.0 - self._fill_alpha).add_(self._fill_kg, alpha=self._fill_alpha)
+        self._spill_filt.mul_(1.0 - self._spill_alpha).add_(self._fill_kg, alpha=self._spill_alpha)
         cut = self._cut_state(actor_scan)
 
         # fill differences the exact mass and telescopes to the load the
@@ -477,7 +482,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # reading, which moves on sustained loss and not on the particles
         # crossing the bore boundary each step.
         fill_delta = R.fill_delta_reward(self._fill_kg, self._fill_prev_kg)
-        spill_delta = R.fill_delta_reward(self._fill_filt, self._fill_filt_prev)
+        spill_delta = R.fill_delta_reward(self._spill_filt, self._spill_filt_prev)
         fill_frac = self._fill_kg / c.target_load_kg
         if c.fill_success_mode == "all":
             self._drum_full = R.drums_full(fill_frac, c.fill_success_fraction)
@@ -556,6 +561,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             )
         self._fill_prev_kg[:] = self._fill_kg
         self._fill_filt_prev[:] = self._fill_filt
+        self._spill_filt_prev[:] = self._spill_filt
         self._above_prev[:] = above
         self._below_prev[:] = cut["below_volume"]
         self._cut_fresh[:] = False
@@ -643,6 +649,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._fill_prev_kg[env_ids] = 0.0
         self._fill_filt[env_ids] = 0.0
         self._fill_filt_prev[env_ids] = 0.0
+        self._spill_filt[env_ids] = 0.0
+        self._spill_filt_prev[env_ids] = 0.0
         self._fill_bias[env_ids] = (
             torch.rand(n, 2, device=dev) * 2.0 - 1.0
         ) * c.fill_sensor_bias

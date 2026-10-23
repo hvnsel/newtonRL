@@ -470,6 +470,14 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # stays on the critic as drum_fill_mass.
     target_load_kg: float = 40.0
     fill_sensor_tau: float = 0.3             # s
+    # spill reads its own, much slower filter. The load sensor's 0.3 s is
+    # right for a boom-torque weighing, but it is 0.83 of a vane period at
+    # 6 vanes and 2.9 rad/s, so it passes 19% of the per-vane fill ripple.
+    # spill rectifies and sums whatever it is given, so every vane that
+    # passed charged for the mass leaving the bore behind it: 150 kg charged
+    # over an episode that captured 23. At 2.0 s the ripple is down to 3%
+    # and the term moves on sustained loss, which is what it is for.
+    spill_filter_tau: float = 2.0            # s
     fill_sensor_noise: float = 0.05          # fraction of the reading
     fill_sensor_abs_kg: float = 0.5
     fill_sensor_bias: float = 0.03           # +- fraction, per episode

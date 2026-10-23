@@ -224,7 +224,17 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
     scene: ExcavateSceneCfg = ExcavateSceneCfg(
         num_envs=16,
-        env_spacing=12.0, # beds are 8 m long. Meant to keep origins apart
+        # Beds are 8 m long, so origins have to stay at least that far apart.
+        # Beyond that, keep them as close as possible: the MPM sparse grid's
+        # node tree is budgeted by the span it has to cover, not by particle
+        # count, and it is the first thing to run out. At 4 envs a 12.0 m
+        # spacing spans 20 x 14 m and the rebuild fails every step with
+        # LOWER and UPPER internal node capacity exceeded; 9.0 m spans
+        # 17 x 11 m and is clean. Raising the node counts does not help --
+        # only shrinking the span does, which is what the solver's own error
+        # suggests. grid_cap_multiplier is unrelated: it sizes active voxels,
+        # and VOXEL_CAPACITY_EXCEEDED is never among the flags.
+        env_spacing=9.0,
         replicate_physics=True,
     )
 

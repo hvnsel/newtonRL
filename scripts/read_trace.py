@@ -24,6 +24,8 @@ import math
 from collections import defaultdict
 
 TOP_SPEED = 1.5         # MAX_WHEEL_SPEED * WHEEL_RADIUS
+DIST_TOL = 0.5          # cfg.goal_dist_tol
+SPEED_TOL = 0.25        # cfg.goal_speed_tol
 DT = 0.04               # policy step
 
 
@@ -32,6 +34,8 @@ def _parse(argv=None):
     p.add_argument("trace")
     p.add_argument("--plot", default=None, help="write a PNG of the xy paths here")
     p.add_argument("--env", type=int, default=0, help="which env to plot")
+    p.add_argument("--episodes", type=int, nargs="*", default=None,
+                   help="episode indices to plot; default is all of them")
     return p.parse_args(argv)
 
 
@@ -58,6 +62,8 @@ def main(argv=None) -> int:
         for raw in csv.DictReader(fh):
             r = {k: (int(v) if k in ("step", "ep_step", "env", "reached", "timeout")
                      else float(v)) for k, v in raw.items()}
+            # Traces written before `speed` existed only carry body-frame x.
+            r.setdefault("speed", abs(r["speed_fwd"]))
             by_env[r["env"]].append(r)
 
     if not by_env:
@@ -77,6 +83,7 @@ def main(argv=None) -> int:
             peak = max(r["speed_fwd"] for r in ep)
             outcome = "reached" if last["reached"] else ("timeout" if last["timeout"] else "cut")
             if last["reached"]:
+                # signed, so the reverse split below can still be counted
                 arrival_speeds.append(last["speed_fwd"])
             print(f"{env:>4} {k:>4} {first['dist']:>8.2f} {last['dist']:>7.2f} "
                   f"{first['dist'] - last['dist']:>7.2f} {len(ep):>6} {path:>7.2f} "
@@ -124,27 +131,84 @@ def main(argv=None) -> int:
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
         except ImportError:
-            print(f"\n--plot needs matplotlib; everything above needed nothing extra")
+            print("\n--plot needs matplotlib:")
+            print("  uv pip install --python <isaaclab>/.venv/bin/python matplotlib")
+            print("Everything above needed nothing extra.")
             return 0
+
         eps = _episodes(by_env.get(args.env, []))
-        fig, (ax, bx) = plt.subplots(1, 2, figsize=(13, 6))
+        if args.episodes:
+            eps = [eps[i] for i in args.episodes if i < len(eps)]
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        (ax, bx), (cx, dx) = axes
+
+        # 1. the path, in the goal's frame rather than the terrain's, so every
+        #    episode is comparable and the setpoint sits at the origin.
         for k, ep in enumerate(eps):
-            ax.plot([r["x"] for r in ep], [r["y"] for r in ep], lw=1.4,
-                    label=f"ep {k} ({'reached' if ep[-1]['reached'] else 'timeout'})")
-            ax.plot(ep[0]["x"], ep[0]["y"], "o", ms=5, color="black")
-            ax.plot(ep[0]["goal_x"], ep[0]["goal_y"], "*", ms=16)
-            bx.plot([r["ep_step"] * DT for r in ep], [r["dist"] for r in ep], lw=1.4)
+            gx, gy = ep[0]["goal_x"], ep[0]["goal_y"]
+            hit = ep[-1]["reached"]
+            ax.plot([r["x"] - gx for r in ep], [r["y"] - gy for r in ep],
+                    lw=1.3, alpha=0.85 if hit else 0.5,
+                    ls="-" if hit else "--",
+                    label=f"ep {k}" + ("" if hit else " (timeout)"))
+            ax.plot(ep[0]["x"] - gx, ep[0]["y"] - gy, "o", ms=5, color="black")
+            ax.plot(ep[-1]["x"] - gx, ep[-1]["y"] - gy,
+                    "x" if not hit else "*", ms=10 if hit else 7)
+        ax.add_patch(plt.Circle((0, 0), DIST_TOL, fill=False, ls="--", color="red", lw=1.5))
+        ax.plot(0, 0, "+", ms=14, color="red", mew=2)
         ax.set_aspect("equal")
-        ax.set_xlabel("x [m]")
-        ax.set_ylabel("y [m]")
-        ax.set_title(f"env {args.env}: path (dot = spawn, star = goal)")
-        ax.legend(fontsize=8)
+        ax.set_xlabel("x relative to goal [m]")
+        ax.set_ylabel("y relative to goal [m]")
+        ax.set_title(f"path in the goal frame  (+ = setpoint, dashed = {DIST_TOL} m tolerance)")
         ax.grid(alpha=0.3)
-        bx.axhline(0.5, ls="--", lw=1, color="red")
+        if len(eps) <= 8:
+            ax.legend(fontsize=8, loc="best")
+
+        # 2. the error signal the policy is actually closing
+        for ep in eps:
+            bx.plot([r["ep_step"] * DT for r in ep], [r["dist"] for r in ep], lw=1.3,
+                    alpha=0.85 if ep[-1]["reached"] else 0.45)
+        bx.axhline(DIST_TOL, ls="--", lw=1.5, color="red")
         bx.set_xlabel("time [s]")
-        bx.set_ylabel("distance to goal [m]")
-        bx.set_title("distance to goal (dashed = 0.5 m tolerance)")
+        bx.set_ylabel("distance to setpoint [m]")
+        bx.set_title("tracking error")
         bx.grid(alpha=0.3)
+
+        # 3. speed against the gate. Planar magnitude, which is what
+        #    goal_reached tests; body-frame x would read negative in reverse.
+        for ep in eps:
+            cx.plot([r["ep_step"] * DT for r in ep], [r["speed"] for r in ep], lw=1.3,
+                    alpha=0.85 if ep[-1]["reached"] else 0.45)
+        cx.axhline(SPEED_TOL, ls="--", lw=1.5, color="red")
+        cx.axhline(TOP_SPEED, ls=":", lw=1.2, color="grey")
+        cx.set_xlabel("time [s]")
+        cx.set_ylabel("planar speed [m/s]")
+        cx.set_title(f"speed  (dashed = {SPEED_TOL} m/s gate, dotted = {TOP_SPEED} m/s cap)")
+        cx.grid(alpha=0.3)
+
+        # 4. where it is pointing versus where the goal is. Near 180 means it
+        #    is driving the traverse in reverse, which this machine is built to
+        #    do -- a drum at each end.
+        for ep in eps:
+            err = []
+            for r in ep:
+                want = math.atan2(r["goal_y"] - r["y"], r["goal_x"] - r["x"])
+                e = (want - r["yaw"] + math.pi) % (2 * math.pi) - math.pi
+                err.append(abs(math.degrees(e)))
+            dx.plot([r["ep_step"] * DT for r in ep], err, lw=1.3,
+                    alpha=0.85 if ep[-1]["reached"] else 0.45)
+        dx.axhline(90, ls=":", lw=1.2, color="grey")
+        # A reverse traverse sits at exactly 180, which ylim(0, 180) draws on
+        # the top spine and hides -- the one thing this panel exists to show.
+        dx.axhline(180, ls="--", lw=1.2, color="red", alpha=0.6)
+        dx.set_ylim(-6, 192)
+        dx.set_yticks([0, 45, 90, 135, 180])
+        dx.set_xlabel("time [s]")
+        dx.set_ylabel("|bearing to setpoint| [deg]")
+        dx.set_title("heading error  (near 0 = nose first, near 180 = reversing)")
+        dx.grid(alpha=0.3)
+
+        fig.suptitle(f"env {args.env}: {len(eps)} episode(s) against the setpoint", fontsize=13)
         fig.tight_layout()
         fig.savefig(args.plot, dpi=130)
         print(f"\nwrote {args.plot}")

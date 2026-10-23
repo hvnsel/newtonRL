@@ -66,7 +66,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             # rows rather than an empty file.
             self._trace = open(cfg.goal_trace_path, "w", buffering=1)
             self._trace.write(
-                "step,ep_step,env,x,y,yaw,goal_x,goal_y,dist,speed_fwd,reached,timeout\n"
+                "step,ep_step,env,x,y,yaw,goal_x,goal_y,dist,speed_fwd,speed,"
+                "reached,timeout\n"
             )
             print(f"[trace] writing {self._trace_n} env(s) to {cfg.goal_trace_path}")
 
@@ -246,7 +247,10 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         pos = (self.robot.data.root_pos_w.torch[:n, :2] - o).tolist()
         goal = (self._goal_pos_w[:n] - o).tolist()
         yaw = self._base_yaw()[:n].tolist()
-        spd = self.robot.data.root_lin_vel_b.torch[:n, 0].tolist()
+        vel = self.robot.data.root_lin_vel_b.torch[:n, :2]
+        spd = vel[:, 0].tolist()
+        # What goal_reached actually gates on: the planar magnitude.
+        mag = torch.linalg.norm(vel, dim=-1).tolist()
         d = dist[:n].tolist()
         reached = self._reached[:n].tolist()
         tout = time_out[:n].tolist()
@@ -256,7 +260,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
                 f"{self._trace_step},{ep[i]},{i},"
                 f"{pos[i][0]:.4f},{pos[i][1]:.4f},{yaw[i]:.4f},"
                 f"{goal[i][0]:.4f},{goal[i][1]:.4f},"
-                f"{d[i]:.4f},{spd[i]:.4f},{int(reached[i])},{int(tout[i])}\n"
+                f"{d[i]:.4f},{spd[i]:.4f},{mag[i]:.4f},"
+                f"{int(reached[i])},{int(tout[i])}\n"
             )
         self._trace_step += 1
 

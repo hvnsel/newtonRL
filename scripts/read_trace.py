@@ -36,6 +36,9 @@ def _parse(argv=None):
     p.add_argument("--env", type=int, default=0, help="which env to plot")
     p.add_argument("--episodes", type=int, nargs="*", default=None,
                    help="episode indices to plot; default is all of them")
+    p.add_argument("--include-cut", action="store_true",
+                   help="also plot the episode Ctrl+C interrupted; by default the "
+                        "figure shows only episodes that ran to an arrival or a timeout")
     p.add_argument("--frame", choices=("goal", "terrain"), default="goal",
                    help="goal: every path normalised so the setpoint is the origin, "
                         "which makes episodes comparable. terrain: absolute env "
@@ -143,6 +146,19 @@ def main(argv=None) -> int:
         eps = _episodes(by_env.get(args.env, []))
         if args.episodes:
             eps = [eps[i] for i in args.episodes if i < len(eps)]
+        if not args.include_cut:
+            # Whichever episode was in flight when the run was interrupted ends
+            # neither reached nor timed out. Its truncated path and whatever
+            # speed it happened to hold at that instant are artefacts of when
+            # Ctrl+C landed, so they do not belong on a plot of behaviour.
+            whole = [e for e in eps if e[-1]["reached"] or e[-1]["timeout"]]
+            if len(whole) != len(eps):
+                print(f"  ({len(eps) - len(whole)} interrupted episode(s) left out of "
+                      f"the figure; --include-cut keeps them)")
+            eps = whole
+        if not eps:
+            print("no complete episode to plot")
+            return 0
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         (ax, bx), (cx, dx) = axes
 

@@ -203,11 +203,23 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # paid on every held step.
     goal_hold_steps: int = 0
 
-    # Where the playback camera sits and what it points at. The action spans a
-    # disc of goal_cell_half around the cell centre, so the camera has to clear
-    # that radius by some margin or the machine drives out of frame -- which is
-    # what eye=(6, 6, 4) did against a 13 m traverse.
-    camera_eye: tuple[float, float, float] = (26.0, 26.0, 18.0)
+    # Where the playback camera sits and what it points at.
+    #
+    # The machine can be anywhere in a disc the goal distance wide, so framing
+    # a 13 m goal means framing 26 m of ground. The visualizer's focal_length
+    # is 12 mm, which is a wide lens under any sensor convention -- between 82
+    # and 121 degrees horizontally depending on the aperture it assumes -- and
+    # at 20.5 m that 26 m fills 36% to 73% of the width. Comfortably inside the
+    # frame either way.
+    #
+    # The old eye=(6, 6, 4) sat 9.4 m out, closer to the subject than the
+    # subject travels: at the narrow end the action spanned 159% of the width
+    # and the machine drove off the edge.
+    #
+    # There is no setting that shows a 26 m traverse and a 3.4 m machine large
+    # at once; at this distance the machine is 5-10% of the width. Shorten the
+    # goals for a tighter shot.
+    camera_eye: tuple[float, float, float] = (13.0, 13.0, 9.0)
     camera_lookat: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     # --- trace ---

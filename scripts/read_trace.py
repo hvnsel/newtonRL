@@ -36,6 +36,10 @@ def _parse(argv=None):
     p.add_argument("--env", type=int, default=0, help="which env to plot")
     p.add_argument("--episodes", type=int, nargs="*", default=None,
                    help="episode indices to plot; default is all of them")
+    p.add_argument("--frame", choices=("goal", "terrain"), default="goal",
+                   help="goal: every path normalised so the setpoint is the origin, "
+                        "which makes episodes comparable. terrain: absolute env "
+                        "coordinates, which shows where the goals actually were.")
     return p.parse_args(argv)
 
 
@@ -142,24 +146,35 @@ def main(argv=None) -> int:
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         (ax, bx), (cx, dx) = axes
 
-        # 1. the path, in the goal's frame rather than the terrain's, so every
-        #    episode is comparable and the setpoint sits at the origin.
+        # 1. the path. In the goal's frame every episode overlays and is
+        #    comparable; in the terrain frame you see where the goals actually
+        #    were, which is the only way to tell a policy that favours a
+        #    direction from bearings that simply came up similar.
+        terrain = args.frame == "terrain"
         for k, ep in enumerate(eps):
-            gx, gy = ep[0]["goal_x"], ep[0]["goal_y"]
+            ox, oy = (0.0, 0.0) if terrain else (ep[0]["goal_x"], ep[0]["goal_y"])
             hit = ep[-1]["reached"]
-            ax.plot([r["x"] - gx for r in ep], [r["y"] - gy for r in ep],
+            ax.plot([r["x"] - ox for r in ep], [r["y"] - oy for r in ep],
                     lw=1.3, alpha=0.85 if hit else 0.5,
                     ls="-" if hit else "--",
                     label=f"ep {k}" + ("" if hit else " (timeout)"))
-            ax.plot(ep[0]["x"] - gx, ep[0]["y"] - gy, "o", ms=5, color="black")
-            ax.plot(ep[-1]["x"] - gx, ep[-1]["y"] - gy,
+            ax.plot(ep[0]["x"] - ox, ep[0]["y"] - oy, "o", ms=5, color="black")
+            ax.plot(ep[-1]["x"] - ox, ep[-1]["y"] - oy,
                     "x" if not hit else "*", ms=10 if hit else 7)
-        ax.add_patch(plt.Circle((0, 0), DIST_TOL, fill=False, ls="--", color="red", lw=1.5))
-        ax.plot(0, 0, "+", ms=14, color="red", mew=2)
+            if terrain:
+                ax.add_patch(plt.Circle((ep[0]["goal_x"], ep[0]["goal_y"]), DIST_TOL,
+                                        fill=False, ls="--", color="red", lw=1.2))
+                ax.plot(ep[0]["goal_x"], ep[0]["goal_y"], "+", ms=11, color="red", mew=1.8)
+        if not terrain:
+            ax.add_patch(plt.Circle((0, 0), DIST_TOL, fill=False, ls="--", color="red", lw=1.5))
+            ax.plot(0, 0, "+", ms=14, color="red", mew=2)
         ax.set_aspect("equal")
-        ax.set_xlabel("x relative to goal [m]")
-        ax.set_ylabel("y relative to goal [m]")
-        ax.set_title(f"path in the goal frame  (+ = setpoint, dashed = {DIST_TOL} m tolerance)")
+        ax.set_xlabel("x [m]" if terrain else "x relative to goal [m]")
+        ax.set_ylabel("y [m]" if terrain else "y relative to goal [m]")
+        ax.set_title(
+            "path in the env frame  (+ = each goal, dot = spawn)" if terrain
+            else f"path in the goal frame  (+ = setpoint, dashed = {DIST_TOL} m tolerance)"
+        )
         ax.grid(alpha=0.3)
         if len(eps) <= 8:
             ax.legend(fontsize=8, loc="best")

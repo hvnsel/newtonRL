@@ -330,7 +330,11 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # upper internal nodes while those are provisioned about a thousand times
     # over what the span geometrically needs, which points at the multi-world
     # path rather than at any budget. Exposed so the two can be compared.
-    mpm_separate_worlds: bool = True
+    # False: measured over 18 s of digging, 4 envs run the rebuild clean with
+    # per-world partitioning off, while 2 envs fail with it on and 1 env is
+    # clean either way. The beds sit 9 m apart and are 8 m long, so a shared
+    # grid cannot let one env's soil reach another's.
+    mpm_separate_worlds: bool = False
 
     # --- regolith ---
     #

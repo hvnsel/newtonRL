@@ -103,13 +103,21 @@ def scan_points_world(
     origin_w: torch.Tensor,     # (E, 3) chassis or drum position
     quat_w: torch.Tensor,       # (E, 4) x,y,z,w
     pattern: torch.Tensor,      # (N, 2)
+    yaw_offset: torch.Tensor | None = None,   # (E,) rad, added to the chassis yaw
 ) -> torch.Tensor:
     """Place the scan pattern in the world. Returns (E, N, 2) of xy.
 
     Rotated by yaw only, so the sampling grid stays flat as the machine
     pitches and rolls and the same terrain always reads the same.
+
+    `yaw_offset` turns the pattern away from the chassis heading. The
+    excavator carries a drum at each end and cuts with whichever one leads,
+    so a scan taken at the rear drum has to look out the back: pi there
+    points the window at unbroken ground instead of back through the machine.
     """
     yaw = yaw_from_quat(quat_w)
+    if yaw_offset is not None:
+        yaw = yaw + yaw_offset
     c, s = torch.cos(yaw), torch.sin(yaw)
     px, py = pattern[:, 0].unsqueeze(0), pattern[:, 1].unsqueeze(0)
     wx = origin_w[:, 0:1] + c.unsqueeze(-1) * px - s.unsqueeze(-1) * py
@@ -175,9 +183,10 @@ def scan_from_heightfield(
     reference_z: torch.Tensor,      # (E,) usually the chassis height
     clip: float = 1.0,
     outside_value: float = -1.0,
+    yaw_offset: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Rigid tier. Returns (E, N) chassis-relative heights, clipped."""
-    pts = scan_points_world(origin_w, quat_w, pattern)
+    pts = scan_points_world(origin_w, quat_w, pattern, yaw_offset)
     h = sample_height_grid(heightfield, pts, env_origins, grid_lower, cell_size, outside_value)
     return (reference_z.unsqueeze(-1) - (h + env_origins[:, 2:3])).clamp(-clip, clip)
 

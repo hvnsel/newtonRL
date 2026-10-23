@@ -121,6 +121,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # Soil still above target last step, and a mask for an episode's
         # first step, which has no previous value to difference against.
         self._above_prev = torch.zeros(E, device=dev)
+        # Which drum leads, 0 front and 1 rear, latched against the commanded
+        # drive so it does not flip while the machine is near a standstill.
+        self._lead = torch.zeros(E, dtype=torch.long, device=dev)
+
         self._below_prev = torch.zeros(E, device=dev)
         self._cut_fresh = torch.ones(E, dtype=torch.bool, device=dev)
 
@@ -180,6 +184,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         lo, hi = self.cfg.arm_range
         slo, shi = self.cfg.shroud_range
         self._apply_drive(a[:, 0], a[:, 1])
+        self._update_lead()
         self._apply_arms(lo + 0.5 * (a[:, 2] + 1.0) * (hi - lo))
         self._apply_drums(a[:, 3] * MAX_DRUM_SPEED)
         self._apply_shrouds(slo + 0.5 * (a[:, 4] + 1.0) * (shi - slo))
@@ -187,6 +192,30 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     # ------------------------------------------------------------------
     # soil sensing: these are the methods that gather information about the soil state and parse it for the agent's observations
     # ------------------------------------------------------------------
+
+    def _update_lead(self) -> None:
+        """Latch which drum is cutting from the sign of the commanded drive.
+
+        _forward_cmd is the drive in m/s and signed, so its sign is the
+        policy's own intent rather than a noisy measurement. Inside the
+        deadband the previous choice stands: without that the scan would swing
+        180 degrees on any step the command grazed zero.
+        """
+        v = self._forward_cmd
+        db = self.cfg.dig_lead_deadband
+        front = torch.zeros_like(self._lead)
+        rear = torch.ones_like(self._lead)
+        self._lead = torch.where(v > db, front, torch.where(v < -db, rear, self._lead))
+
+    def _lead_drum(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """(E, 3) position of the leading drum and (E,) the yaw to scan along.
+
+        pi for the rear drum, which is a 180-degree copy: its scan window has
+        to point out the back of the machine, at ground it has not cut yet.
+        """
+        pos = self._drum_poses()[0]
+        idx = self._lead.view(-1, 1, 1).expand(-1, 1, pos.shape[-1])
+        return pos.gather(1, idx).squeeze(1), self._lead.to(pos.dtype) * math.pi
 
     def _particles(self) -> tuple[torch.Tensor, torch.Tensor]:
         return mpm_particle_state(self.soil)
@@ -216,15 +245,17 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         d = self.robot.data
         quat = d.root_quat_w.torch
         chassis = d.root_pos_w.torch
-        front = self._drum_poses()[0][:, 0]
+        lead, lead_yaw = self._lead_drum()
 
-        def sample(origin, pattern):
+        def sample(origin, pattern, yaw_offset=None):
             return scan_from_heightfield(
                 bed, origin, quat, pattern, self.scene.env_origins,
                 c.bed_grid_lower, c.voxel_size, origin[:, 2], clip=c.scan_clip,
+                yaw_offset=yaw_offset,
             )
 
-        actor = sample(front, self._dig_pattern)
+        actor = sample(lead, self._dig_pattern, lead_yaw)
+        # The critic reads the chassis, which has no leading end.
         critic = torch.cat(
             [sample(chassis, self._far_pattern), sample(chassis, self._near_pattern)], dim=-1
         )
@@ -242,7 +273,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         indicates how far the actual ground is from this target.
         """
         clip = self.cfg.scan_clip
-        front = self._drum_poses()[0][:, 0]
+        front, lead_yaw = self._lead_drum()
         drum_z = front[:, 2]
 
         floor = self.scene.env_origins[:, 2] + BED_FLOOR_Z
@@ -265,11 +296,14 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # convention every scan backend uses: reference height minus ground
         # height, so a lower surface reads larger.
         pts = scan_points_world(
-            front, self.robot.data.root_quat_w.torch, self._dig_pattern
+            front, self.robot.data.root_quat_w.torch, self._dig_pattern, lead_yaw
         )[:, self._footprint]
         t = (drum_z.unsqueeze(-1) - plane_at(pts)).clamp(-clip, clip)
         level = (drum_z - plane_at(front[:, :2])).clamp(-clip, clip)
-        grad_b = R.world_to_body_xy(self._target_grad, self._base_yaw())
+        # Same frame as the scan: with the rear drum leading, body +x points
+        # back along the direction of travel, so the gradient the machine is
+        # about to climb flips with it.
+        grad_b = R.world_to_body_xy(self._target_grad, self._base_yaw() + lead_yaw)
         foot = actor_scan[:, self._footprint]
         # t - foot is (drum - target) - (drum - ground) = ground - target, so
         # the drum's own height cancels. Positive is soil still standing above
@@ -572,6 +606,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
         self._above_prev[env_ids] = 0.0
         self._below_prev[env_ids] = 0.0
+        self._lead[env_ids] = 0
         self._cut_fresh[env_ids] = True
         self._shape_done[env_ids] = False
         self._drum_full[env_ids] = False

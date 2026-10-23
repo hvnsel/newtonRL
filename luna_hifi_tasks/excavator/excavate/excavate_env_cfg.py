@@ -282,6 +282,17 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
     # --- actions ---
     action_smoothing = 0.3
+    # Which drum the dig observation is taken from: the one leading, since the
+    # rear assembly is a 180-degree copy and the same drum command spins it the
+    # way that cuts when travelling the other way. The machine is meant to
+    # shuttle, cutting both directions without turning -- turning a skid steer
+    # on regolith at a sixth of a g is where it loses traction.
+    #
+    # The choice is held through a commanded speed smaller than this, so it
+    # does not chatter every time the drive crosses zero and jerk the whole
+    # scan 180 degrees between steps.
+    dig_lead_deadband: float = 0.05      # m/s of commanded drive
+
     arm_range = ARM_RANGE
     shroud_range = SHROUD_RANGE
 

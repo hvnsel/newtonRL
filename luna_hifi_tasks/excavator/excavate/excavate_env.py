@@ -104,7 +104,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._target_xy = torch.zeros(E, 2, device=dev)
         self._target_z0 = torch.zeros(E, device=dev)
         self._target_grad = torch.zeros(E, 2, device=dev)
-        # Which of the two exits ended the episode: the shape is cut, or the drum is full and wants a dump.
+        # The episode's exit: the commanded plane is cut. Carrying the spoil
+        # is not the deliverable -- a pass of the commanded length yields
+        # several times what the pair can hold, so the drums filling is
+        # recorded for the log and does not end the pass.
         self._shape_done = torch.zeros(E, dtype=torch.bool, device=dev)
         self._drum_full = torch.zeros(E, dtype=torch.bool, device=dev)
         # Set in _get_dones, which runs before _get_rewards in the same step.
@@ -535,7 +538,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         self._failed_now = self._failed()
-        return self._failed_now | self._shape_done | self._drum_full, time_out
+        return self._failed_now | self._shape_done, time_out
 
     # ------------------------------------------------------------------
     # reset

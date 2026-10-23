@@ -147,6 +147,45 @@ def _mpm_ground() -> RigidObjectCfg:
     )
 
 
+def _bed_wall(name: str) -> RigidObjectCfg:
+    """Hidden kinematic plate retaining one side of the bed.
+
+    Without these the bed is a box with four free faces, and a cohesionless
+    soil cannot hold one: the angle of repose equals the friction angle, so a
+    0.25 m face slumps 0.30 m and the usable width shrinks by that much from
+    each side. Real regolith continues past where a test bed stops, and a
+    retaining plate is a closer approximation of that than a collapsing face.
+
+    They also pay for themselves in memory. The grid is sparse with zero
+    padding, so it follows the particles: soil that spreads outward grows the
+    grid and spends active cells, which is the budget that caps env count.
+
+    Sized and placed in __post_init__, and listed by name on the MPM coupler
+    entry the same way MPMGround is. The top sits flush with the soil surface
+    so the plates retain the bed without standing in the machine's way --
+    leaving the bed is caught geometrically in _failed instead.
+    """
+    return RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/BedWall" + name,
+        init_state=RigidObjectCfg.InitialStateCfg(),
+        spawn=sim_utils.CuboidCfg(
+            size=(1.0, 1.0, 1.0),
+            rigid_props=UsdPhysicsRigidBodyCfg(
+                rigid_body_enabled=True, kinematic_enabled=True
+            ),
+            collision_props=NewtonCollisionPropertiesCfg(
+                collision_enabled=True,
+                contact_margin=MPM_COLLIDER_MARGIN,
+                contact_gap=0.0,
+            ),
+            physics_material=RigidBodyMaterialBaseCfg(
+                static_friction=0.5, dynamic_friction=0.5
+            ),
+            visible=False,
+        ),
+    )
+
+
 @configclass
 class ExcavateSceneCfg(InteractiveSceneCfg):
     ground = AssetBaseCfg(
@@ -161,6 +200,10 @@ class ExcavateSceneCfg(InteractiveSceneCfg):
 
     excavator: ArticulationCfg = EXCAVATOR_CFG
     mpm_ground: RigidObjectCfg = _mpm_ground()
+    bed_wall_xlo: RigidObjectCfg = _bed_wall("Xlo")
+    bed_wall_xhi: RigidObjectCfg = _bed_wall("Xhi")
+    bed_wall_ylo: RigidObjectCfg = _bed_wall("Ylo")
+    bed_wall_yhi: RigidObjectCfg = _bed_wall("Yhi")
     soil: MPMObjectCfg = SOIL_CFG
 
 # ---------------------------------------------------------------------------
@@ -193,6 +236,23 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     bed_x: tuple[float, float] = (-3.0, 5.0)
     bed_y: tuple[float, float] = (-1.0, 1.0)
     bed_depth: float = 0.25
+    # Retaining plates outside each bed face. A few voxels is enough; the
+    # plates are kinematic and only ever take a normal load.
+    bed_wall_thickness: float = 0.10
+    # Only meaningful for a bed the machine stands on and cuts from within.
+    # Where the bed is a pile reached from outside, a plate on the near face
+    # sits exactly where the drum comes down, so the plates are parked below
+    # the floor instead of being removed, which would change the asset count
+    # the coupler is built against.
+    bed_walls: bool = True
+
+    # How far the chassis origin may sit from a bed face before the episode
+    # is a failure. At the dig angle the machine reaches 1.81 m fore and aft
+    # of its origin and 0.6 m to each side, so these are its own half-extents:
+    # the episode ends as the machine runs out of bed rather than when it
+    # touches a plate, which needs no contact query and cannot be missed.
+    bed_margin_x: float = 1.81
+    bed_margin_y: float = 0.60
     # Particle spacing, and half of it is the margin the coupler inflates
     # every collider by. The 0.185 m gap between vane tips is 5.2 grains clear
     # at 0.03, 2.7 at 0.05; granular material arches below about four. Particle
@@ -248,9 +308,14 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # At zero cohesion the regolith behaves as dry sand and shears off the lip;
     # a few hundred Pa and the cut travels as a clod the lifters carry round.
     # Lunar simulants sit around 0.1-1 kPa.
-    soil_density: float = 1800.0
+    # Surface regolith, from the Apollo in-situ estimates. Density runs
+    # 1300-1500 kg/m3 at the surface and reaches 1800-1900 below about 0.3 m,
+    # so 1800 was compacted regolith, not surface. Friction angle is 30-50 deg,
+    # and cohesion 0.1-1 kPa -- 0 Pa is dry sand, and a cohesionless soil also
+    # cannot hold the bed's faces, which is what the retaining plates are for.
+    soil_density: float = 1500.0
     soil_friction: float = 0.84              # tan(40 deg)
-    soil_cohesion: float = 0.0               # yield_stress, Pa
+    soil_cohesion: float = 500.0             # yield_stress, Pa
     soil_yield_pressure: float = 1.0e12      # Pa, compression cap
 
     # Derived in __post_init__ and read off the cfg.
@@ -280,7 +345,11 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     arm_start_jitter = 0.10              # rad
     spawn_yaw_jitter = 0.40              # rad
     spawn_x_jitter = 0.55                # m
-    spawn_y_jitter = 0.55                # m
+    # Was 0.55, which spawned the machine outside bed_margin_y and would fail
+    # the episode on its first step. It also put the work area's far edge at
+    # 1.15 m against a bed half-width of 1.00, so the commanded cut ran off
+    # the bed entirely. 0.30 keeps both inside: 0.30 + 0.60 = 0.90 < 1.00.
+    spawn_y_jitter = 0.30                # m
 
     # Episodes an env keeps its bed before every particle goes back to its
     # spawn cell. The MPM grid is one spawner shared by all envs, so a carried
@@ -491,6 +560,28 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             -0.05,
         )
 
+        # Retaining plates, just outside each bed face, their tops flush with
+        # the soil surface. The x plates run the full width plus both y plates
+        # so the corners are closed.
+        t = self.bed_wall_thickness
+        h = self.bed_top
+        cx = 0.5 * (self.bed_x[0] + self.bed_x[1])
+        cy = 0.5 * (self.bed_y[0] + self.bed_y[1])
+        parked = not self.bed_walls
+        for wall, size, pos in (
+            (self.scene.bed_wall_xlo, (t, width + 2.0 * t, h),
+             (self.bed_x[0] - 0.5 * t, cy, 0.5 * h)),
+            (self.scene.bed_wall_xhi, (t, width + 2.0 * t, h),
+             (self.bed_x[1] + 0.5 * t, cy, 0.5 * h)),
+            (self.scene.bed_wall_ylo, (length, t, h),
+             (cx, self.bed_y[0] - 0.5 * t, 0.5 * h)),
+            (self.scene.bed_wall_yhi, (length, t, h),
+             (cx, self.bed_y[1] + 0.5 * t, 0.5 * h)),
+        ):
+            wall.spawn.size = (0.01, 0.01, 0.01) if parked else size
+            wall.spawn.collision_props.contact_margin = margin
+            wall.init_state.pos = (0.0, 0.0, -10.0) if parked else pos
+
         # Wheels rest on z = 0 in the shared asset cfg: the bed surface with
         # spawn_on_bed, the ground plane without it.
         z = SPAWN_Z + (self.bed_top if self.spawn_on_bed else 0.0)
@@ -565,7 +656,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             max_lower_node_count=lower,
                             max_upper_node_count=upper,
                         ),
-                        bodies=[r"/World/envs/env_.*/MPMGround"],
+                        bodies=[r"/World/envs/env_.*/(MPMGround|BedWall.*)"],
                         all_particles=True,
                         include_static_shapes=False,
                         include_child_joints=False,
@@ -628,6 +719,8 @@ class ExcavatorExcavateSmallEnvCfg(ExcavatorExcavateEnvCfg):
     bed_y: tuple[float, float] = (-0.55, 0.55)
     bed_depth: float = 0.16
     spawn_on_bed: bool = False
+    # A plate on the near face would stand where the drum comes down.
+    bed_walls: bool = False
 
     # Cohesive enough that a cut clod survives the trip into the bore.
     soil_cohesion: float = 800.0

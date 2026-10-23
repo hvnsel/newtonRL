@@ -112,6 +112,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._drum_full = torch.zeros(E, dtype=torch.bool, device=dev)
         # Set in _get_dones, which runs before _get_rewards in the same step.
         self._failed_now = torch.zeros(E, dtype=torch.bool, device=dev)
+        # Which failures were the machine running out of bed, for the log.
+        self._off_bed = torch.zeros(E, dtype=torch.bool, device=dev)
         self._last_terms: dict[str, torch.Tensor] = {}
         # Last step's bed, which a reset samples for the surface the drum
         # comes down on.
@@ -535,6 +537,28 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     # terminations
     # ------------------------------------------------------------------
 
+    def _failed(self) -> torch.Tensor:
+        """The base failures, plus running out of bed.
+
+        The bed is retained on all four faces, so there is soil right up to
+        the plate and nothing to warn the machine it has reached the end. This
+        is a geometric test on the chassis origin against the bed faces inset
+        by the machine's own half-extents, which needs no contact query and
+        cannot be missed by one. Reaching a plate is the end of the episode,
+        not something to drive along.
+        """
+        bad = super()._failed()
+        c = self.cfg
+        # Only a bed the machine stands on bounds where it may be. Where the
+        # bed is a pile reached from outside, the machine is meant to be off it.
+        if not c.spawn_on_bed:
+            return bad
+        xy = self.robot.data.root_pos_w.torch[:, :2] - self.scene.env_origins[:, :2]
+        lo = xy.new_tensor([c.bed_x[0] + c.bed_margin_x, c.bed_y[0] + c.bed_margin_y])
+        hi = xy.new_tensor([c.bed_x[1] - c.bed_margin_x, c.bed_y[1] - c.bed_margin_y])
+        self._off_bed = ((xy < lo) | (xy > hi)).any(dim=-1)
+        return bad | self._off_bed
+
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         self._failed_now = self._failed()
@@ -552,6 +576,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         exits["Episode/shape_done"] = float(self._shape_done[env_ids].float().mean())
         exits["Episode/drum_full"] = float(self._drum_full[env_ids].float().mean())
         exits["Episode/failed"] = float(self._failed_now[env_ids].float().mean())
+        exits["Episode/off_bed"] = float(self._off_bed[env_ids].float().mean())
         super()._reset_idx(env_ids)
 
         n, dev, c = env_ids.numel(), self.device, self.cfg
@@ -614,6 +639,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._shape_done[env_ids] = False
         self._drum_full[env_ids] = False
         self._failed_now[env_ids] = False
+        self._off_bed[env_ids] = False
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
 

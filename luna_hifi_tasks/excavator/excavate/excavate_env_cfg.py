@@ -214,7 +214,25 @@ class ExcavateSceneCfg(InteractiveSceneCfg):
 class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
     decimation = 4 # Render every 4 simulation steps
-    episode_length_s = 20.0
+    # 21 s of commanded cut after settle_seconds of unpaid settling below.
+    episode_length_s = 24.0
+    # The bed is re-spawned on its spawn lattice every soil_reset_every
+    # episodes and then consolidates under its own weight. Measured off a
+    # replay: 7.23 cm of subsidence over soil the machine never went near,
+    # against a commanded trim of one 4 cm voxel. Every progress term is a
+    # difference against the surface at episode start, so a bed still settling
+    # reads as soil excavated -- 111.2 kg of "removal" against 117.1 kg of
+    # pure settlement, and 642 of 675 work-area cells "cleared" without the
+    # machine reaching the work area at all. shape_done was firing on
+    # subsidence, which is why it sat at 0.49 across three different rewards.
+    #
+    # So the surface is sampled after the bed has stopped moving, not when it
+    # is spawned. _cut_fresh holds for this long, which already zeroes every
+    # delta, blocks shape_done and keeps re-capturing the reference surface,
+    # so the reference ends up being the settled bed. Set it from the
+    # subsidence curve: long enough that the remaining drift over an episode
+    # is small against a voxel.
+    settle_seconds: float = 3.0
 
     sim: SimulationCfg = SimulationCfg(
         dt=1.0 / 100.0,

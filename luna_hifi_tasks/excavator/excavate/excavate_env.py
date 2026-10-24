@@ -157,6 +157,14 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
         self._below_prev = torch.zeros(E, device=dev)
         self._cut_fresh = torch.ones(E, dtype=torch.bool, device=dev)
+        # Steps of settling still owed. _cut_fresh is this being non-zero, so
+        # one step of it reproduces the old behaviour exactly.
+        self._settle_steps = max(
+            1, round(cfg.settle_seconds / (cfg.sim.dt * cfg.decimation))
+        )
+        self._settle_left = torch.full(
+            (E,), self._settle_steps, dtype=torch.long, device=dev
+        )
 
         # Load sensor: first-order lag plus a per-episode calibration bias.
         self._fill_filt = torch.zeros(E, 2, device=dev)
@@ -649,7 +657,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._removal_prev[:] = removal
         self._unheld_prev[:] = unheld
         self._below_prev[:] = cut["below_volume"]
-        self._cut_fresh[:] = False
+        self._settle_left = (self._settle_left - 1).clamp_min(0)
+        self._cut_fresh[:] = self._settle_left > 0
         return reward
 
     # ------------------------------------------------------------------
@@ -717,6 +726,13 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         exits["Episode/removed_kg"] = float(self._removed_kg[env_ids].mean())
         exits["Episode/payload_kg"] = float(self._payload_kg[env_ids].mean())
         exits["Episode/cut_total_kg"] = float(self._cut_total_kg[env_ids].mean())
+        # The reference surface itself, in kilograms of soil standing over the
+        # plane when the settle ended. A nominal cut is cut_volume_ref; this
+        # drifting far above it means the bed is still consolidating when the
+        # episode starts and settle_seconds is too short.
+        exits["Episode/above_init_kg"] = float(
+            (self._above_init[env_ids] * self.cfg.soil_density).mean()
+        )
         exits["Episode/failed"] = float(self._failed_now[env_ids].float().mean())
         exits["Episode/off_bed"] = float(self._off_bed[env_ids].float().mean())
         exits["Episode/escaped"] = float(self._escaped[env_ids].float().mean())
@@ -785,6 +801,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._below_prev[env_ids] = 0.0
         self._lead[env_ids] = 0
         self._cut_fresh[env_ids] = True
+        self._settle_left[env_ids] = self._settle_steps
         self._shape_done[env_ids] = False
         self._shape_newly_done[env_ids] = False
         self._drum_full[env_ids] = False

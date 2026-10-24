@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 import sys
 from pathlib import Path
 
@@ -110,66 +111,115 @@ def _load_policy(device: str, ckpt: Path):
     from it dies on KeyError 'class_name' inside resolve_class, because Isaac
     Lab fills that in on the train path and load_cfg_from_registry does not.
 
-    The state dict already holds everything needed. Layer widths come from the
-    weight shapes, so this does not care what actor_hidden_dims says, and the
-    observation normaliser is read from the same file as the weights it was
-    fitted alongside. ELU is the activation the config asks for; there is no
-    way to recover it from shapes, so it is the one assumption here, and the
-    layer list is printed so a mismatch is visible rather than silent.
+    Nothing about the file's layout is assumed. rsl_rl has written the weights
+    both as one model_state_dict with actor.N.weight keys and as a separate
+    actor_state_dict whose keys carry no prefix at all, so the Linears are
+    found by looking for 2-D weight tensors, ordered on the last integer in
+    the key, and the chain is then checked to connect end to end -- which is
+    what would catch a wrong grouping. Widths come from the shapes, so
+    actor_hidden_dims is irrelevant here.
+
+    ELU is the one thing no shape can recover, so it is the single assumption,
+    and everything found is printed so a mismatch is visible rather than
+    silent.
     """
     import torch.nn as nn
 
     blob = torch.load(str(ckpt), map_location=device, weights_only=False)
-    state = blob.get("model_state_dict", blob)
 
-    # actor.0.weight, actor.2.weight, ... -- the even indices are the Linears.
-    widths: dict[int, tuple[int, int]] = {}
-    for key, value in state.items():
-        parts = key.split(".")
-        if parts[0] == "actor" and parts[-1] == "weight" and value.dim() == 2:
-            widths[int(parts[1])] = tuple(value.shape)
-    if not widths:
+    def walk(d, prefix=""):
+        """Every tensor in a dict of dicts, keyed by its dotted path."""
+        out = {}
+        if not isinstance(d, dict):
+            return out
+        for k, v in d.items():
+            path = f"{prefix}{k}"
+            if isinstance(v, dict):
+                out.update(walk(v, f"{path}."))
+            elif hasattr(v, "dim"):
+                out[path] = v
+        return out
+
+    flat = walk(blob)
+    if not flat:
+        raise SystemExit(f"no tensors anywhere in {ckpt}; it holds {sorted(blob)}")
+
+    # The actor's Linears: 2-D weights that are neither the critic's nor a
+    # normaliser's. "actor_state_dict" counts as naming the actor, so a plain
+    # "0.weight" under it is kept.
+    mats: dict[int, tuple[str, tuple[int, int]]] = {}
+    for key, value in flat.items():
+        low = key.lower()
+        if value.dim() != 2 or not low.endswith("weight"):
+            continue
+        if "critic" in low or "norm" in low or "optimizer" in low:
+            continue
+        nums = re.findall(r"\d+", key)
+        if not nums:
+            continue
+        mats[int(nums[-1])] = (key, tuple(value.shape))
+    if not mats:
         raise SystemExit(
-            f"no actor.*.weight in {ckpt}; it holds {sorted(state)[:12]}"
+            f"found no actor Linear weights in {ckpt}.\n"
+            f"tensors present: {sorted(flat)}"
         )
 
+    order = sorted(mats)
+    print("[play] actor layers found:")
+    for i in order:
+        key, (out_f, in_f) = mats[i]
+        print(f"         {key:40s} {in_f:4d} -> {out_f:4d}")
+
+    # A wrong grouping shows up here, not as garbage actions.
+    for a, b in zip(order, order[1:]):
+        if mats[a][1][0] != mats[b][1][1]:
+            raise SystemExit(
+                f"these do not chain: {mats[a][0]} outputs {mats[a][1][0]} but "
+                f"{mats[b][0]} takes {mats[b][1][1]}. The layout is not what "
+                f"this assumed; tensors present: {sorted(flat)}"
+            )
+
     layers: list[nn.Module] = []
-    order = sorted(widths)
     for n, idx in enumerate(order):
-        out_f, in_f = widths[idx]
+        out_f, in_f = mats[idx][1]
         layers.append(nn.Linear(in_f, out_f))
         if n != len(order) - 1:
             layers.append(nn.ELU())
     actor = nn.Sequential(*layers)
 
-    # Sequential numbers its own children 0,1,2..., which matches the saved
-    # indices only when every gap is one activation. Map by position instead.
     own = [i for i, m in enumerate(actor) if isinstance(m, nn.Linear)]
     with torch.no_grad():
-        for mine, theirs in zip(own, order):
-            actor[mine].weight.copy_(state[f"actor.{theirs}.weight"])
-            actor[mine].bias.copy_(state[f"actor.{theirs}.bias"])
+        for mine, idx in zip(own, order):
+            wkey = mats[idx][0]
+            bkey = wkey[: -len("weight")] + "bias"
+            if bkey not in flat:
+                raise SystemExit(f"{wkey} has no matching {bkey}")
+            actor[mine].weight.copy_(flat[wkey])
+            actor[mine].bias.copy_(flat[bkey])
     actor.to(device).eval()
 
     # The normaliser the actor was trained behind, if the run used one.
-    # EmpiricalNormalization has been spelt both mean/var and _mean/_var, and
-    # stores them shaped (1, D), so match on the trimmed leaf and flatten.
+    # EmpiricalNormalization has been spelt mean/var and _mean/_var, and keeps
+    # them shaped (1, D), so match on the trimmed leaf and flatten.
     mean = var = None
-    for key, value in state.items():
-        if "normalizer" not in key or "critic" in key:
+    for key, value in flat.items():
+        low = key.lower()
+        if "norm" not in low or "critic" in low:
             continue
-        leaf = key.rsplit(".", 1)[-1].lstrip("_")
+        leaf = key.rsplit(".", 1)[-1].lstrip("_").lower()
         if leaf == "mean":
             mean = value.to(device).flatten()
         elif leaf == "var":
             var = value.to(device).flatten()
-    norm = "none"
-    if mean is not None and var is not None:
-        norm = f"mean/var over {mean.numel()} dims"
 
-    in_dim = widths[order[0]][1]
+    in_dim = mats[order[0]][1][1]
+    if mean is not None and mean.numel() != in_dim:
+        print(f"[play] ignoring a normaliser of {mean.numel()} dims against an "
+              f"actor input of {in_dim}")
+        mean = var = None
+    norm = f"mean/var over {mean.numel()} dims" if mean is not None else "none"
     print(f"[play] actor {in_dim} -> "
-          f"{' -> '.join(str(widths[i][0]) for i in order)}, elu, obs norm: {norm}")
+          f"{' -> '.join(str(mats[i][1][0]) for i in order)}, elu, obs norm: {norm}")
     print(f"[play] checkpoint iteration {blob.get('iter', 'unknown')}")
 
     def policy(obs: torch.Tensor) -> torch.Tensor:

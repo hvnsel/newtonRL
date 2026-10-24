@@ -135,6 +135,19 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # Soil still above target last step, and a mask for an episode's
         # first step, which has no previous value to difference against.
         self._above_prev = torch.zeros(E, device=dev)
+        # The work area's soil volume at the start of the episode. Removal is
+        # measured against this rather than accumulated from per-step deltas:
+        # above_volume rises again when soil slumps back in, and a per-step
+        # delta rectified at zero would ratchet that noise into free progress.
+        self._above_init = torch.zeros(E, device=dev)
+        # Telescoping references for the two mass-balance terms, so an episode
+        # total reads directly in kilograms.
+        self._removal_prev = torch.zeros(E, device=dev)
+        self._unheld_prev = torch.zeros(E, device=dev)
+        # The balance itself, in kilograms, for the log. Declared here because
+        # a reset can flush the log before the first reward step has run.
+        self._removed_kg = torch.zeros(E, device=dev)
+        self._payload_kg = torch.zeros(E, device=dev)
         # Which drum leads, 0 front and 1 rear, latched against the commanded
         # drive so it does not flip while the machine is near a standstill.
         self._lead = torch.zeros(E, dtype=torch.long, device=dev)
@@ -154,8 +167,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._spill_alpha = step_dt / (cfg.spill_filter_tau + step_dt)
 
         self._log = R.TermLogger(
-            ["fill", "depth", "success", "fail", "overcut", "spill", "stall",
-             "drift", "upright", "energy", "action_rate", "time"],
+            ["removal", "unheld", "success", "fail", "overcut", "spill",
+             "stall", "drift", "upright", "energy", "action_rate", "time"],
             E, dev,
         )
         # The __post_init__ above spawned the soil from these fields.
@@ -488,21 +501,16 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._spill_filt.mul_(1.0 - self._spill_alpha).add_(self._fill_kg, alpha=self._spill_alpha)
         cut = self._cut_state(actor_scan)
 
-        # fill differences the exact mass and telescopes to the load the
-        # episode ended with. spill rectifies its input, so it sums the
-        # downward variation of whatever it is given, and takes the lagged
-        # reading, which moves on sustained loss and not on the particles
-        # crossing the bore boundary each step.
-        # Clamped to the target load per drum, so the telescoped sum tops out at
-        # w_fill. Uncapped it paid for every kilogram the drums ended up
-        # holding: at iteration 198 that was 172 kg against a pair that carries
-        # about 52 kg at normal packing, so the policy was burying the drums and
-        # compacting them to half of solid, and had to dig below the plane to do
-        # it. Capping pays for filling, not for packing.
+        # spill rectifies its input, so it sums the downward variation of
+        # whatever it is given, and takes the lagged reading, which moves on
+        # sustained loss and not on the particles crossing the bore boundary
+        # each step. The payload below is capped at the target load per drum:
+        # uncapped, progress counted every kilogram the drums ended up
+        # holding, and at iteration 198 that was 172 kg in a pair that carries
+        # about 52 at normal packing, reached by burying the drums and
+        # compacting the soil to half of solid, which needed a cut below the
+        # plane. The cap pays for filling, not for packing.
         cap = c.target_load_kg
-        fill_delta = R.fill_delta_reward(
-            self._fill_kg.clamp(max=cap), self._fill_prev_kg.clamp(max=cap)
-        )
         spill_delta = R.fill_delta_reward(self._spill_filt, self._spill_filt_prev)
         fill_frac = self._fill_kg / c.target_load_kg
         if c.fill_success_mode == "all":
@@ -513,18 +521,48 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             self._drum_full = R.front_drum_full(fill_frac, c.fill_success_fraction)
 
         above = cut["above_volume"]
+        self._above_init = torch.where(self._cut_fresh, above, self._above_init)
+
+        # --- the mass balance ----------------------------------------------
+        # removal: mass gone from the commanded work area since the episode
+        #   began, measured against the opening surface rather than summed
+        #   from per-step deltas.
+        # payload: mass the drums hold, per drum capped at the target load so
+        #   that burying and compacting them buys nothing -- an earlier
+        #   uncapped version paid for 172 kg in a pair that carries about 52,
+        #   which it reached by digging below the plane.
+        # unheld: the gap between the two, both ways. Displacing the layer
+        #   leaves payload at zero and cancels the removal payment; packing
+        #   the drums past what was cut is charged for the excess.
+        removal = ((self._above_init - above) * c.soil_density).clamp_min(0.0)
+        payload = self._fill_kg.clamp(max=cap).sum(dim=-1)
+        unheld = (removal - payload).abs()
+        self._removed_kg = removal
+        self._payload_kg = payload
+        removal_delta = torch.where(
+            self._cut_fresh, torch.zeros_like(removal),
+            removal - self._removal_prev,
+        )
+        unheld_delta = torch.where(
+            self._cut_fresh, torch.zeros_like(unheld),
+            unheld - self._unheld_prev,
+        )
+
         # Shape achieved: the ground matches the commanded plane both ways,
-        # after at least one step.
+        # the spoil is accounted for, after at least one step. Without the
+        # capture test the residual alone was met by shoving the layer out of
+        # the work area, which at iteration 18 of the previous run cleared
+        # 24.8 kg and kept 0.34 of it.
         residual = above + cut["below_volume"]
         was_done = self._shape_done
         self._shape_done = (
-            residual <= c.shape_success_fraction * c.cut_volume_ref
-        ) & ~self._cut_fresh
+            (residual <= c.shape_success_fraction * c.cut_volume_ref)
+            & (payload >= c.capture_min_fraction * removal)
+            & ~self._cut_fresh
+        )
         self._shape_newly_done = self._shape_done & ~was_done
-        depth_delta = R.progress_delta(self._above_prev, above, self._cut_fresh)
-        # depth pays on the reduction in soil above the plane, overcut
-        # charges on the growth of the hole below it. Both are signed deltas
-        # and telescope to the volume the episode ended with.
+        # overcut charges on the growth of the hole below the plane: a signed
+        # delta, telescoping to the volume the episode ended with.
         overcut_delta = R.progress_delta(
             self._below_prev, cut["below_volume"], self._cut_fresh
         )
@@ -549,8 +587,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # Signed weighted terms, kept so a scripted run can read a step
         # reward term by term.
         self._last_terms = {
-            "fill": c.w_fill * fill_delta / load_ref,
-            "depth": c.w_depth * depth_delta / c.cut_volume_ref,
+            "removal": c.w_removal * removal_delta / load_ref,
+            "unheld": -c.w_unheld * unheld_delta / load_ref,
             # Once per episode, on the step the shape is first met. _get_dones
             # runs before _get_rewards, so the flag set here is only seen by the
             # termination on the following step -- and the reward for that step
@@ -592,6 +630,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._fill_filt_prev[:] = self._fill_filt
         self._spill_filt_prev[:] = self._spill_filt
         self._above_prev[:] = above
+        self._removal_prev[:] = removal
+        self._unheld_prev[:] = unheld
         self._below_prev[:] = cut["below_volume"]
         self._cut_fresh[:] = False
         return reward
@@ -644,6 +684,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         exits = self._exit_stats(env_ids)
         exits["Episode/shape_done"] = float(self._shape_done[env_ids].float().mean())
         exits["Episode/drum_full"] = float(self._drum_full[env_ids].float().mean())
+        # In kilograms, so the balance is read rather than divided back out of
+        # a reward by a weight and a volume reference.
+        exits["Episode/removed_kg"] = float(self._removed_kg[env_ids].mean())
+        exits["Episode/payload_kg"] = float(self._payload_kg[env_ids].mean())
         exits["Episode/failed"] = float(self._failed_now[env_ids].float().mean())
         exits["Episode/off_bed"] = float(self._off_bed[env_ids].float().mean())
         exits["Episode/particle_max_m"] = float(self._particle_max_m[env_ids].max())
@@ -705,6 +749,9 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._set_work_area(env_ids, anchor_xy, yaw)
 
         self._above_prev[env_ids] = 0.0
+        self._above_init[env_ids] = 0.0
+        self._removal_prev[env_ids] = 0.0
+        self._unheld_prev[env_ids] = 0.0
         self._below_prev[env_ids] = 0.0
         self._lead[env_ids] = 0
         self._cut_fresh[env_ids] = True

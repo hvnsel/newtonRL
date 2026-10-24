@@ -394,10 +394,14 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     bed_grid_ny: int = 0
     bed_particles_per_env: int = 0
     drum_capacity_kg: float = DRUM_CAPACITY_KG
-    # Work area times the mean commanded depth, derived in __post_init__.
-    # depth and overcut divide by it, so their weights are points per nominal
-    # cut.
-    cut_volume_ref: float = 0.22
+    # Work area times the mean commanded depth, derived in __post_init__,
+    # which overwrites whatever stands here. The value below is what the
+    # current work area and cut depth produce (0.9 x 1.2 m taken down one
+    # 0.04 m voxel, 64.8 kg at 1500 kg/m3) so that reading this field off the
+    # class gives the right order of magnitude. It previously read 0.22, five
+    # times the truth, which is an easy way to misconvert a logged reward
+    # back into kilograms.
+    cut_volume_ref: float = 0.0432
 
     max_num_envs = 104
 
@@ -518,30 +522,57 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     fill_success_mode = "all"
 
     # --- reward weights ---
-    # An episode of doing a term well comes to tens of points. fill scores
-    # what the drum captures, depth what the ground gives up.
+    # One payer, on a quantity the sim conserves.
     #
+    # Three terms used to pay for one physical event and each was separately
+    # cheatable. depth paid for the work area's surface dropping, which a
+    # blade push achieves without excavating; fill paid for mass in the drums,
+    # which digging anywhere on the bed achieves without touching the work
+    # area; success paid for a small residual, which displacement achieves
+    # too. Measured: at one iteration the drums held 45.4 kg while only
+    # 20.4 kg had left the work area -- payload exceeding removal, i.e. mining
+    # off-target. At another, 24.8 kg left the work area and 0.34 kg was kept.
+    #
+    # So there is one payer and one penalty, on two instantaneous states:
+    #     removal = mass gone from the work area since the episode began
+    #     unheld  = |removal - payload|, the mass the pass failed to hold
+    # removal pays for cutting the commanded area and nothing else, so soil
+    # taken from elsewhere on the bed earns zero. unheld charges the gap both
+    # ways: displacing the layer leaves payload at zero and cancels the whole
+    # removal payment, and burying the drums past what was cut is charged for
+    # the excess rather than rewarded for it. The single optimum is payload ==
+    # removal -- keep exactly what you cut -- which is the task.
+    #
+    # Each is a function of state, not an accumulated delta, so an episode's
+    # total telescopes to the final value and a mid-pass fluctuation (soil
+    # entering the bore before the heightfield registers it) cannot ratchet
+    # into free progress.
+    #
+    # Both normalise by 2 x target_load_kg, so a weight is points per 80 kg.
+    # unheld is the larger of the two on purpose: at equal weights pushing the
+    # whole layer aside nets exactly zero, and zero is not a deterrent when
+    # every alternative also costs energy. At 120 it nets -15. Checked against
+    # the five cases -- ideal 72.9, measured capture 49.5, packing 40.4,
+    # pushing -14.6, off-target mining -54.0 -- in which order they must fall.
     # Set from scripts/reward_audit.py, which prints per-term episode totals
     # for a stationary and a fresh policy.
-    # fill pays w_fill / (2 * target_load_kg) per kg into the drum and depth
-    # pays w_depth / (cut_volume_ref * soil_density) per kg brought down to
-    # the plane, so levelling only beats filling per kg when
-    #     w_depth > w_fill * cut_volume_ref * soil_density / (2 * target_load)
-    # which at 0.2208 m3 and 1500 kg/m3 is w_depth > 4.14 * w_fill. At 40 and
-    # 20 that was inverted by a factor of eight, and fill has no ceiling: it
-    # normalises by 80 kg and keeps paying past it. 10 and 100 puts a finished
-    # cut at 120 points against 19 for a packed drum.
-    w_fill = 10.0                        # per 2 x target_load_kg captured
-    w_depth = 100.0                      # per cut_volume_ref brought to target
-    # Matched to w_depth: they are the reward and the penalty for the same
+    w_removal = 100.0                    # per 2 x target_load_kg cut on-target
+    w_unheld = 120.0                     # per 2 x target_load_kg not held
+    # Fraction of the mass removed from the work area that must still be in
+    # the drums for the shape to count as achieved. Measured capture over a
+    # pass is 0.733, and a 70%-cleared cut is 45.4 kg against a pair that
+    # carries about 52, so 0.50 is inside what the hardware does and leaves
+    # room for the stragglers at the end of a pass costing capture.
+    capture_min_fraction: float = 0.50
+    # Matched to w_removal: they are the reward and the penalty for the same
     # surface, and leaving this behind would make overcutting nearly free.
-    # 2x w_depth, not matched to it: going below the plane costs twice what
+    # 2x w_removal, not matched to it: going below the plane costs twice what
     # coming down to it earns, because another pass can always take more and
     # nothing can put soil back. Also what stops overcutting from paying for
     # itself -- the policy dug past the plane to pack its drums, and at 100
     # the fill it bought was worth more than the overcut it cost.
     w_overcut = 200.0                    # per cut_volume_ref taken below it
-    w_spill = 20.0                       # asymmetry on top of a negative fill
+    w_spill = 20.0                       # asymmetry on top of a loss of payload
     # 40, which is what the double-paid 20 was actually worth all along. Made
     # explicit now that success pays once.
     w_success = 40.0
@@ -634,7 +665,8 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
     def __post_init__(self) -> None:
         # One nominal cut: the whole work area taken down by the mean
-        # commanded depth. w_depth reads as points for finishing a cut, and
+        # commanded depth. It is what removal, unheld and overcut divide
+        # by, so their weights read as points per nominal cut, and
         # shape_success_fraction as the residual allowed at the end.
         lo, hi = self.cut_depth_range
         self.cut_volume_ref = (

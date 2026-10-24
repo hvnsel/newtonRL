@@ -101,23 +101,85 @@ def _resolve_checkpoint(run: str | None, ckpt: str | None) -> Path:
     return max(models, key=index)
 
 
-def _load_policy(env, task: str, device: str, ckpt: Path):
-    """The rsl_rl inference policy for `ckpt`.
+def _load_policy(device: str, ckpt: Path):
+    """Rebuild the actor straight out of the checkpoint.
 
-    Isolated because it is the one part of this script that leans on Isaac
-    Lab's own helper names. If it raises, the traceback says which import or
-    signature moved, and nothing else here has to change.
+    Deliberately touches neither rsl_rl nor isaaclab_rl. Going through
+    OnPolicyRunner needs the training-time agent config, and the registry copy
+    of it does not carry what this rsl_rl build wants: constructing the runner
+    from it dies on KeyError 'class_name' inside resolve_class, because Isaac
+    Lab fills that in on the train path and load_cfg_from_registry does not.
+
+    The state dict already holds everything needed. Layer widths come from the
+    weight shapes, so this does not care what actor_hidden_dims says, and the
+    observation normaliser is read from the same file as the weights it was
+    fitted alongside. ELU is the activation the config asks for; there is no
+    way to recover it from shapes, so it is the one assumption here, and the
+    layer list is printed so a mismatch is visible rather than silent.
     """
-    from isaaclab_tasks.utils import load_cfg_from_registry
-    from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
-    from rsl_rl.runners import OnPolicyRunner
+    import torch.nn as nn
 
-    agent_cfg = load_cfg_from_registry(task, "rsl_rl_cfg_entry_point")
-    cfg = agent_cfg if isinstance(agent_cfg, dict) else agent_cfg.to_dict()
-    wrapped = RslRlVecEnvWrapper(env)
-    runner = OnPolicyRunner(wrapped, cfg, log_dir=None, device=device)
-    runner.load(str(ckpt))
-    return wrapped, runner.get_inference_policy(device=device)
+    blob = torch.load(str(ckpt), map_location=device, weights_only=False)
+    state = blob.get("model_state_dict", blob)
+
+    # actor.0.weight, actor.2.weight, ... -- the even indices are the Linears.
+    widths: dict[int, tuple[int, int]] = {}
+    for key, value in state.items():
+        parts = key.split(".")
+        if parts[0] == "actor" and parts[-1] == "weight" and value.dim() == 2:
+            widths[int(parts[1])] = tuple(value.shape)
+    if not widths:
+        raise SystemExit(
+            f"no actor.*.weight in {ckpt}; it holds {sorted(state)[:12]}"
+        )
+
+    layers: list[nn.Module] = []
+    order = sorted(widths)
+    for n, idx in enumerate(order):
+        out_f, in_f = widths[idx]
+        layers.append(nn.Linear(in_f, out_f))
+        if n != len(order) - 1:
+            layers.append(nn.ELU())
+    actor = nn.Sequential(*layers)
+
+    # Sequential numbers its own children 0,1,2..., which matches the saved
+    # indices only when every gap is one activation. Map by position instead.
+    own = [i for i, m in enumerate(actor) if isinstance(m, nn.Linear)]
+    with torch.no_grad():
+        for mine, theirs in zip(own, order):
+            actor[mine].weight.copy_(state[f"actor.{theirs}.weight"])
+            actor[mine].bias.copy_(state[f"actor.{theirs}.bias"])
+    actor.to(device).eval()
+
+    # The normaliser the actor was trained behind, if the run used one.
+    # EmpiricalNormalization has been spelt both mean/var and _mean/_var, and
+    # stores them shaped (1, D), so match on the trimmed leaf and flatten.
+    mean = var = None
+    for key, value in state.items():
+        if "normalizer" not in key or "critic" in key:
+            continue
+        leaf = key.rsplit(".", 1)[-1].lstrip("_")
+        if leaf == "mean":
+            mean = value.to(device).flatten()
+        elif leaf == "var":
+            var = value.to(device).flatten()
+    norm = "none"
+    if mean is not None and var is not None:
+        norm = f"mean/var over {mean.numel()} dims"
+
+    in_dim = widths[order[0]][1]
+    print(f"[play] actor {in_dim} -> "
+          f"{' -> '.join(str(widths[i][0]) for i in order)}, elu, obs norm: {norm}")
+    print(f"[play] checkpoint iteration {blob.get('iter', 'unknown')}")
+
+    def policy(obs: torch.Tensor) -> torch.Tensor:
+        x = obs
+        if mean is not None and var is not None:
+            x = (x - mean) / torch.sqrt(var + 1e-8)
+        # The mean action, not a sample: this is a readout, not a rollout.
+        return actor(x)
+
+    return policy, in_dim
 
 
 def main(argv=None) -> int:
@@ -159,7 +221,7 @@ def main(argv=None) -> int:
     with launch_simulation(env_cfg, args):
         env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array" if frame_dir else None)
         u = env.unwrapped
-        wrapped, policy = _load_policy(env, args.task, str(u.device), ckpt)
+        policy, in_dim = _load_policy(str(u.device), ckpt)
 
         dt = u.step_dt
         steps = int(args.seconds / dt)
@@ -167,14 +229,23 @@ def main(argv=None) -> int:
         print(f"[play] {steps} steps of {dt:.4f}s, {u.cfg.bed_particles_per_env} particles/env")
 
         rows: list[dict] = []
-        obs, _ = wrapped.reset()
+        obs, _ = env.reset()
+        actor_obs = obs["policy"] if isinstance(obs, dict) else obs
+        if actor_obs.shape[-1] != in_dim:
+            raise SystemExit(
+                f"the checkpoint's actor takes {in_dim} inputs and this env's "
+                f"actor group is {actor_obs.shape[-1]} wide. The observation "
+                f"spec changed since the run, so the weights do not apply."
+            )
         frames_written = 0
         frames_off = frame_dir is None
 
         for i in range(steps):
             with torch.inference_mode():
-                action = policy(obs)
-                obs, _, dones, _ = wrapped.step(action)
+                action = policy(actor_obs).clamp(-1.0, 1.0)
+                obs, _, term, trunc, _ = env.step(action)
+                actor_obs = obs["policy"] if isinstance(obs, dict) else obs
+                dones = term | trunc
 
             root = u.robot.data.root_pos_w.torch
             below = float(u._below_prev[0]) * soil

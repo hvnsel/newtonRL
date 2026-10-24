@@ -666,6 +666,17 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # stability knob. Lower it if the machine chatters on the bed.
     proxy_mass_scale: float = 10.0
 
+    # How the rigid entry's wheels and drums are presented to the MPM solve.
+    # "lagged" feeds back the previous pass's forces, so a body under a steady
+    # load is always supported one step late; "staggered" alternates the two
+    # solves within the step. The machine sinks the full 25 cm of the bed and
+    # rests on the floor while standing still, on soil that now carries its own
+    # weight -- 492 kg at 1.62 m/s2 is 6.5 kPa under a wheel against roughly
+    # 60 kPa of bearing capacity, so it should settle about a centimetre.
+    # Strengthening the soil fourfold moved it by 2 mm, which puts it in the
+    # coupling rather than the material.
+    proxy_mode: str = "staggered"
+
     # The soil_* fields are plain numbers on this cfg; the solver reads an
     # MPMParticleMaterialCfg on the spawner. __post_init__ calls this, and the
     # env re-runs __post_init__ before spawning, so a field set at any point
@@ -883,7 +894,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                         source=RIGID_ENTRY,
                         destination=MPM_ENTRY,
                         bodies=[self.soil_contact_regex],
-                        mode="lagged",
+                        mode=self.proxy_mode,
                         mass_scale=self.proxy_mass_scale,
                         collision_pipeline=None,
                     )

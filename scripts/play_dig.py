@@ -60,6 +60,10 @@ def _parse(argv):
                    help="model file inside the run; default is the highest-numbered")
     # Not --headless: AppLauncher guards that name as a SimulationApp config key.
     p.add_argument("--no_window", action="store_true", help="skip the viewer")
+    p.add_argument("--park", action="store_true",
+                   help="no policy: wheels commanded to zero, arm stowed clear "
+                        "of the ground. Isolates whether the machine sinks on "
+                        "its own or digs itself in with its wheels")
     p.add_argument("--trace", default="dig_trace.csv", help="per-step CSV")
     p.add_argument("--frames", default=None,
                    help="directory for PNGs, if the env can render to an array. "
@@ -242,8 +246,12 @@ def main(argv=None) -> int:
     args = _parse(argv)
     torch.manual_seed(0)
 
-    ckpt = _resolve_checkpoint(args.run, args.checkpoint)
-    print(f"[play] checkpoint {ckpt}")
+    ckpt = None
+    if args.park:
+        print("[play] parked: zero wheel command, arm stowed, no policy")
+    else:
+        ckpt = _resolve_checkpoint(args.run, args.checkpoint)
+        print(f"[play] checkpoint {ckpt}")
 
     from luna_hifi_tasks.excavator.excavator_cfg import usd_status
     problem = usd_status()
@@ -277,7 +285,17 @@ def main(argv=None) -> int:
     with launch_simulation(env_cfg, args):
         env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array" if frame_dir else None)
         u = env.unwrapped
-        policy, in_dim = _load_policy(str(u.device), ckpt)
+        if args.park:
+            # [forward, yaw, boom, drum, shroud]. Boom at -1 is the stow angle,
+            # not 0: zero is mid-range, which would drive the arm down into the
+            # bed and plant the drums, which is the opposite of a static test.
+            # The wheels are a velocity drive, so 0 commands them to hold still
+            # rather than to freewheel.
+            parked = torch.zeros(u.num_envs, 5, device=u.device)
+            parked[:, 2] = -1.0
+            policy, in_dim = (lambda _obs: parked), None
+        else:
+            policy, in_dim = _load_policy(str(u.device), ckpt)
 
         dt = u.step_dt
         steps = int(args.seconds / dt)
@@ -320,7 +338,7 @@ def main(argv=None) -> int:
         rows: list[dict] = []
         obs, _ = env.reset()
         actor_obs = obs["policy"] if isinstance(obs, dict) else obs
-        if actor_obs.shape[-1] != in_dim:
+        if in_dim is not None and actor_obs.shape[-1] != in_dim:
             raise SystemExit(
                 f"the checkpoint's actor takes {in_dim} inputs and this env's "
                 f"actor group is {actor_obs.shape[-1]} wide. The observation "

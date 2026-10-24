@@ -278,6 +278,32 @@ def main(argv=None) -> int:
         soil = u.cfg.soil_density
         print(f"[play] {steps} steps of {dt:.4f}s, {u.cfg.bed_particles_per_env} particles/env")
 
+        def scalar(name: str, default: float = 0.0) -> float:
+            """env attribute for env 0, or `default` where it does not exist.
+
+            A checkpoint is worth replaying against the env it was trained on,
+            not against whatever the reward has become since, so this script
+            reads whatever that revision happens to expose instead of pinning
+            the working tree to one. _cut_total_kg and _escaped arrived with
+            the gate on the hole; _removed_kg and _payload_kg one commit
+            earlier; none of them exist in the runs before that.
+            """
+            buf = getattr(u, name, None)
+            if buf is None:
+                return default
+            try:
+                return float(buf[0])
+            except (TypeError, IndexError):
+                return default
+
+        missing = [n for n in ("_removed_kg", "_payload_kg", "_cut_total_kg",
+                               "_escaped", "_particle_max_m", "_shape_done",
+                               "_below_prev")
+                   if getattr(u, n, None) is None]
+        if missing:
+            print(f"[play] this env revision has no {', '.join(missing)}; "
+                  f"those columns are derived or zero")
+
         rows: list[dict] = []
         obs, _ = env.reset()
         actor_obs = obs["policy"] if isinstance(obs, dict) else obs
@@ -298,18 +324,21 @@ def main(argv=None) -> int:
                 dones = term | trunc
 
             root = u.robot.data.root_pos_w.torch
-            below = float(u._below_prev[0]) * soil
+            below = scalar("_below_prev") * soil
+            removal = scalar("_removed_kg")
             rows.append({
                 "t": round(i * dt, 4),
-                "removal_kg": round(float(u._removed_kg[0]), 3),
-                "payload_kg": round(float(u._payload_kg[0]), 3),
-                "cut_total_kg": round(float(u._cut_total_kg[0]), 3),
+                "removal_kg": round(removal, 3),
+                "payload_kg": round(scalar("_payload_kg"), 3),
+                # Derived when the env predates the field, so one trace format
+                # covers every revision of the reward.
+                "cut_total_kg": round(scalar("_cut_total_kg", removal + below), 3),
                 "below_kg": round(below, 3),
                 "advance_mps": round(float(u.robot.data.root_lin_vel_b.torch[0, 0]), 4),
                 "chassis_z": round(float(root[0, 2] - u.scene.env_origins[0, 2]), 4),
-                "particle_max_m": round(float(u._particle_max_m[0]), 2),
-                "shape_done": int(u._shape_done[0]),
-                "escaped": int(u._escaped[0]),
+                "particle_max_m": round(scalar("_particle_max_m"), 2),
+                "shape_done": int(scalar("_shape_done")),
+                "escaped": int(scalar("_escaped")),
             })
 
             if frame_dir is not None:
@@ -331,7 +360,8 @@ def main(argv=None) -> int:
 
             if bool(dones.any()):
                 print(f"[play] t={i*dt:5.2f}s episode ended "
-                      f"(shape_done={int(u._shape_done[0])}, escaped={int(u._escaped[0])})")
+                      f"(shape_done={int(scalar('_shape_done'))}, "
+                      f"escaped={int(scalar('_escaped'))})")
 
         with open(args.trace, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=list(rows[0]))
@@ -344,8 +374,21 @@ def main(argv=None) -> int:
             print("[play] no frames written")
 
         last = rows[-1]
-        print(f"[play] end: removal {last['removal_kg']} kg, payload {last['payload_kg']} kg, "
-              f"hole {last['below_kg']} kg, particle_max {last['particle_max_m']} m")
+        peak = max(r["payload_kg"] for r in rows)
+        print(f"[play] end: removal {last['removal_kg']} kg, payload {last['payload_kg']} kg "
+              f"(peak {peak:.2f}), hole {last['below_kg']} kg, "
+              f"particle_max {last['particle_max_m']} m")
+        # The one line that says which of the four behaviours this is.
+        rem, pay = last["removal_kg"], peak
+        if rem < 1.0:
+            verdict = "the work area was barely touched"
+        elif pay < 0.1 * rem:
+            verdict = "the layer is being pushed aside, not loaded"
+        elif pay > 1.1 * rem:
+            verdict = "more soil is held than the work area gave up above the plane"
+        else:
+            verdict = f"loading {pay / rem:.2f} of what it cut"
+        print(f"[play] {verdict}")
         env.close()
     return 0
 

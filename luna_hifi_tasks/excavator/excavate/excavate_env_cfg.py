@@ -535,9 +535,16 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     w_depth = 100.0                      # per cut_volume_ref brought to target
     # Matched to w_depth: they are the reward and the penalty for the same
     # surface, and leaving this behind would make overcutting nearly free.
-    w_overcut = 100.0                    # per cut_volume_ref taken below it
+    # 2x w_depth, not matched to it: going below the plane costs twice what
+    # coming down to it earns, because another pass can always take more and
+    # nothing can put soil back. Also what stops overcutting from paying for
+    # itself -- the policy dug past the plane to pack its drums, and at 100
+    # the fill it bought was worth more than the overcut it cost.
+    w_overcut = 200.0                    # per cut_volume_ref taken below it
     w_spill = 20.0                       # asymmetry on top of a negative fill
-    w_success = 20.0
+    # 40, which is what the double-paid 20 was actually worth all along. Made
+    # explicit now that success pays once.
+    w_success = 40.0
     # Charged once on _failed(), never on a timeout, a finished shape or a
     # full drum. A fresh policy's per-step penalties come to about 33 over a
     # full episode.

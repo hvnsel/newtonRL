@@ -109,6 +109,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # several times what the pair can hold, so the drums filling is
         # recorded for the log and does not end the pass.
         self._shape_done = torch.zeros(E, dtype=torch.bool, device=dev)
+        # True only on the step the shape is first met, so success pays once.
+        self._shape_newly_done = torch.zeros(E, dtype=torch.bool, device=dev)
         self._drum_full = torch.zeros(E, dtype=torch.bool, device=dev)
         # Set in _get_dones, which runs before _get_rewards in the same step.
         self._failed_now = torch.zeros(E, dtype=torch.bool, device=dev)
@@ -491,7 +493,16 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # downward variation of whatever it is given, and takes the lagged
         # reading, which moves on sustained loss and not on the particles
         # crossing the bore boundary each step.
-        fill_delta = R.fill_delta_reward(self._fill_kg, self._fill_prev_kg)
+        # Clamped to the target load per drum, so the telescoped sum tops out at
+        # w_fill. Uncapped it paid for every kilogram the drums ended up
+        # holding: at iteration 198 that was 172 kg against a pair that carries
+        # about 52 kg at normal packing, so the policy was burying the drums and
+        # compacting them to half of solid, and had to dig below the plane to do
+        # it. Capping pays for filling, not for packing.
+        cap = c.target_load_kg
+        fill_delta = R.fill_delta_reward(
+            self._fill_kg.clamp(max=cap), self._fill_prev_kg.clamp(max=cap)
+        )
         spill_delta = R.fill_delta_reward(self._spill_filt, self._spill_filt_prev)
         fill_frac = self._fill_kg / c.target_load_kg
         if c.fill_success_mode == "all":
@@ -505,9 +516,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # Shape achieved: the ground matches the commanded plane both ways,
         # after at least one step.
         residual = above + cut["below_volume"]
+        was_done = self._shape_done
         self._shape_done = (
             residual <= c.shape_success_fraction * c.cut_volume_ref
         ) & ~self._cut_fresh
+        self._shape_newly_done = self._shape_done & ~was_done
         depth_delta = R.progress_delta(self._above_prev, above, self._cut_fresh)
         # depth pays on the reduction in soil above the plane, overcut
         # charges on the growth of the hole below it. Both are signed deltas
@@ -538,7 +551,13 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._last_terms = {
             "fill": c.w_fill * fill_delta / load_ref,
             "depth": c.w_depth * depth_delta / c.cut_volume_ref,
-            "success": c.w_success * self._shape_done.float(),
+            # Once per episode, on the step the shape is first met. _get_dones
+            # runs before _get_rewards, so the flag set here is only seen by the
+            # termination on the following step -- and the reward for that step
+            # paid it a second time. Navigate's goal bonus had the same shape.
+            # A transition latch rather than the termination itself, so it is
+            # still paid once when terminate_early is off and nothing ends.
+            "success": c.w_success * self._shape_newly_done.float(),
             # Every other penalty is per-step, so ending an episode early
             # avoids the rest of them. This is the one-time charge that makes
             # tipping over cost more than the stream it escapes.
@@ -690,6 +709,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._lead[env_ids] = 0
         self._cut_fresh[env_ids] = True
         self._shape_done[env_ids] = False
+        self._shape_newly_done[env_ids] = False
         self._drum_full[env_ids] = False
         self._failed_now[env_ids] = False
         self._off_bed[env_ids] = False

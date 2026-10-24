@@ -58,10 +58,26 @@ from ..mdp.observations import (
 RIGID_ENTRY = "rover" # Entry name for the rigid body in the coupler
 MPM_ENTRY = "soil" # Entry name for the MPM object in the coupler
 
-# Particle spacing, and the margin the coupler inflates colliders by. 
-
+# Heightmap cell: what the bed grid, the terrain scans and the commanded cut
+# depth are quantised to. Also the particle spacing, via MPM_VOXEL_SIZE and
+# particles_per_cell below.
 VOXEL_SIZE = 0.04
 MPM_COLLIDER_MARGIN = 0.5 * VOXEL_SIZE
+
+# The MPM solver's background grid, which is a different thing and wants to be
+# COARSER than the particle spacing. MPMSolverCfg.voxel_size is documented as
+# "Size of the MPM grid voxels [m]" and nothing else -- it does not set
+# particle spacing, which comes from MPMGridCfg's lattice, and it does not set
+# the collider margin, which is MPM_COLLIDER_MARGIN above. Newton's own
+# default is 0.1 m.
+#
+# At 0.04 it equalled the particle spacing, which is what starved every cell
+# to a single particle and let the bed collapse under its own weight. 0.08
+# with particles_per_cell 2.0 puts 8 particles in each solver cell while the
+# spawn lattice stays at 4 cm: the same 50,750 particles as before, the same
+# 0.0857 kg each, so nothing downstream that counts kilograms changes. The
+# grid itself drops to an eighth of the cells.
+MPM_VOXEL_SIZE = 0.08
 # Particles per cell PER AXIS: the spawn lattice is ceil(ppc * extent / voxel)
 # on each axis, so 2 is 8 particles per cell in 3D, which is what MPM wants.
 #
@@ -132,7 +148,7 @@ SOIL_CFG = MPMObjectCfg(
         # Placeholder bounds for the MPM grid. these will be overwritten in __post_init__
         lower=(-1.0, -1.0, MPM_COLLIDER_MARGIN), 
         upper=(1.0, 1.0, MPM_COLLIDER_MARGIN + 0.25),
-        voxel_size=VOXEL_SIZE,
+        voxel_size=MPM_VOXEL_SIZE,
         particles_per_cell=MPM_PARTICLES_PER_CELL,
         particle_placement="cell_center",
         jitter=0.0,
@@ -308,6 +324,8 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # at 0.03, 2.7 at 0.05; granular material arches below about four. Particle
     # count goes as the inverse cube.
     voxel_size: float = VOXEL_SIZE
+    # The solver grid, deliberately coarser than the particle spacing.
+    mpm_voxel_size: float = MPM_VOXEL_SIZE
     particles_per_cell: float = MPM_PARTICLES_PER_CELL
     spawn_on_bed: bool = True
 
@@ -732,14 +750,14 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         self.bed_grid_nx = int(math.ceil((length + 2.0 * hm) / self.voxel_size))
         self.bed_grid_ny = int(math.ceil((width + 2.0 * hm) / self.voxel_size))
         self.bed_particles_per_env = particles_per_env(
-            lower, upper, self.voxel_size, self.particles_per_cell
+            lower, upper, self.mpm_voxel_size, self.particles_per_cell
         )
         spawn = self.scene.soil.spawn
         self.apply_soil_material()
 
         spawn.lower = lower
         spawn.upper = upper
-        spawn.voxel_size = self.voxel_size
+        spawn.voxel_size = self.mpm_voxel_size
         spawn.particles_per_cell = self.particles_per_cell
 
         slab = self.scene.mpm_ground
@@ -791,7 +809,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         upper = max(lower >> 3, self.grid_upper_min)
         print(
             f"[excavate] bed {length:.1f} x {width:.1f} x {self.bed_depth:.2f} m at "
-            f"{self.voxel_size:.3f} m voxel -> {self.bed_particles_per_env} particles/env "
+            f"{self.voxel_size:.3f} m heightmap / {self.mpm_voxel_size:.3f} m solver grid "
+            f"({self.particles_per_cell**3:.0f} particles/cell) "
+            f"-> {self.bed_particles_per_env} particles/env "
             f"x {self.max_num_envs} max envs = {total_particles} particles"
         )
         print(
@@ -826,9 +846,10 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                     CouplerEntryCfg(
                         name=MPM_ENTRY,
                         solver_cfg=MPMSolverCfg(
-                            # Sets both the particle spacing and the margin
-                            # the coupler inflates colliders by.
-                            voxel_size=self.voxel_size,
+                            # The solver's background grid only. Particle
+                            # spacing comes from the spawn lattice and the
+                            # collider margin from MPM_COLLIDER_MARGIN.
+                            voxel_size=self.mpm_voxel_size,
                             grid_type="sparse",
                             grid_padding=0,
                             strain_basis="P0",

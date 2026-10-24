@@ -564,6 +564,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # carries about 52, so 0.50 is inside what the hardware does and leaves
     # room for the stragglers at the end of a pass costing capture.
     capture_min_fraction: float = 0.50
+    # Distance from its env origin at which a particle counts as thrown clear
+    # and ends the episode. The bed reaches 3.4 m and envs are 9 m apart.
+    particle_escape_m: float = 15.0
     # Matched to w_removal: they are the reward and the penalty for the same
     # surface, and leaving this behind would make overcutting nearly free.
     # 2x w_removal, not matched to it: going below the plane costs twice what

@@ -116,6 +116,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._failed_now = torch.zeros(E, dtype=torch.bool, device=dev)
         # Which failures were the machine running out of bed, for the log.
         self._off_bed = torch.zeros(E, dtype=torch.bool, device=dev)
+        # Which failures were a particle thrown clear of the env, for the log.
+        self._escaped = torch.zeros(E, dtype=torch.bool, device=dev)
         # Furthest any particle got from its env origin this episode. The MPM
         # grid's point mask drops non-finite positions but nothing else, so a
         # particle flung to a large finite position is still packed into the
@@ -147,6 +149,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # The balance itself, in kilograms, for the log. Declared here because
         # a reset can flush the log before the first reward step has run.
         self._removed_kg = torch.zeros(E, device=dev)
+        self._cut_total_kg = torch.zeros(E, device=dev)
         self._payload_kg = torch.zeros(E, device=dev)
         # Which drum leads, 0 front and 1 rear, latched against the commanded
         # drive so it does not flip while the machine is near a standstill.
@@ -531,13 +534,26 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         #   that burying and compacting them buys nothing -- an earlier
         #   uncapped version paid for 172 kg in a pair that carries about 52,
         #   which it reached by digging below the plane.
-        # unheld: the gap between the two, both ways. Displacing the layer
-        #   leaves payload at zero and cancels the removal payment; packing
-        #   the drums past what was cut is charged for the excess.
+        # unheld: the gap between removal and payload, both ways. Displacing
+        #   the layer leaves payload at zero and cancels the removal payment;
+        #   holding more than the work area gave up above the plane is charged
+        #   for the excess, which is what prices soil taken from under the
+        #   plane -- at iteration 38 the drums held 20.2 kg against a removal
+        #   of 16.2 with overcut at -17.9, the machine digging down rather
+        #   than along.
+        #   Deliberately not measured against cut_total below: counting the
+        #   hole on this side of the balance lets the payload match it and
+        #   cancels the charge, which scores digging down at +22.9 where
+        #   removal scores it at -1.4. scripts/balance_check.py holds both.
+        # cut_total: every kilogram the work area gave up, hole included. Only
+        #   the success gate reads it, where adding the hole can only make the
+        #   requirement harder to meet.
         removal = ((self._above_init - above) * c.soil_density).clamp_min(0.0)
+        cut_total = removal + cut["below_volume"] * c.soil_density
         payload = self._fill_kg.clamp(max=cap).sum(dim=-1)
         unheld = (removal - payload).abs()
         self._removed_kg = removal
+        self._cut_total_kg = cut_total
         self._payload_kg = payload
         removal_delta = torch.where(
             self._cut_fresh, torch.zeros_like(removal),
@@ -557,7 +573,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         was_done = self._shape_done
         self._shape_done = (
             (residual <= c.shape_success_fraction * c.cut_volume_ref)
-            & (payload >= c.capture_min_fraction * removal)
+            & (payload >= c.capture_min_fraction * cut_total)
             & ~self._cut_fresh
         )
         self._shape_newly_done = self._shape_done & ~was_done
@@ -660,7 +676,19 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         lo = xy.new_tensor([c.bed_x[0] + c.bed_margin_x, c.bed_y[0] + c.bed_margin_y])
         hi = xy.new_tensor([c.bed_x[1] - c.bed_margin_x, c.bed_y[1] - c.bed_margin_y])
         self._off_bed = ((xy < lo) | (xy > hi)).any(dim=-1)
-        return bad | self._off_bed
+        # A particle thrown clear of its own env. The MPM grid's point mask
+        # drops only non-finite positions, so a finite escapee is still packed
+        # into the index grid and the NanoVDB tree has to span out to it --
+        # the documented cause of the rebuild failures, against which no
+        # capacity can be provisioned. It ran at 3.5 m for the whole of two
+        # earlier runs and reached 107 m at iteration 38 of the one that dug
+        # below the plane, so it tracks the drum being buried and spun rather
+        # than being sim noise. The bed reaches 3.4 m from the origin and envs
+        # sit 9 m apart, so 15 m is past anything legitimate and far below the
+        # scale that breaks the tree. Ending the episode both protects the
+        # grid and prices the configuration that throws the soil.
+        self._escaped = self._particle_max_m > c.particle_escape_m
+        return bad | self._off_bed | self._escaped
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
@@ -688,8 +716,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # a reward by a weight and a volume reference.
         exits["Episode/removed_kg"] = float(self._removed_kg[env_ids].mean())
         exits["Episode/payload_kg"] = float(self._payload_kg[env_ids].mean())
+        exits["Episode/cut_total_kg"] = float(self._cut_total_kg[env_ids].mean())
         exits["Episode/failed"] = float(self._failed_now[env_ids].float().mean())
         exits["Episode/off_bed"] = float(self._off_bed[env_ids].float().mean())
+        exits["Episode/escaped"] = float(self._escaped[env_ids].float().mean())
         exits["Episode/particle_max_m"] = float(self._particle_max_m[env_ids].max())
         super()._reset_idx(env_ids)
 
@@ -760,6 +790,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._drum_full[env_ids] = False
         self._failed_now[env_ids] = False
         self._off_bed[env_ids] = False
+        self._escaped[env_ids] = False
         self._particle_max_m[env_ids] = 0.0
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0

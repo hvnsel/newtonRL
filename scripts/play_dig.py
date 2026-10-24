@@ -62,7 +62,13 @@ def _parse(argv):
     p.add_argument("--no_window", action="store_true", help="skip the viewer")
     p.add_argument("--trace", default="dig_trace.csv", help="per-step CSV")
     p.add_argument("--frames", default=None,
-                   help="directory for PNGs, if the env can render to an array")
+                   help="directory for PNGs, if the env can render to an array. "
+                        "The Newton backend hands back nothing, so prefer --dump")
+    p.add_argument("--dump", default="dig_bed.npz",
+                   help="save the soil heightmap per frame here; "
+                        "scripts/render_dig.py turns it into a video")
+    p.add_argument("--dump_every", type=int, default=4,
+                   help="steps between saved frames; 4 is 6.25 fps of sim time")
     add_launcher_args(p)
     p.set_defaults(device=None, visualizer=["newton_gl"])
     args, hydra_args = setup_preset_cli(p, argv)
@@ -304,6 +310,13 @@ def main(argv=None) -> int:
             print(f"[play] this env revision has no {', '.join(missing)}; "
                   f"those columns are derived or zero")
 
+        # The soil surface itself, which is what a renderer would have been
+        # asked to draw. (E, ny, nx) in env-local coordinates, one cell per
+        # voxel, recomputed every step by the reward. Saving it costs nothing
+        # and is not subject to whether this backend can hand back pixels.
+        beds: list = []
+        poses: list = []
+
         rows: list[dict] = []
         obs, _ = env.reset()
         actor_obs = obs["policy"] if isinstance(obs, dict) else obs
@@ -341,6 +354,21 @@ def main(argv=None) -> int:
                 "escaped": int(scalar("_escaped")),
             })
 
+            if args.dump and i % max(1, args.dump_every) == 0:
+                grid = getattr(u, "_bed_grid", None)
+                if grid is not None:
+                    beds.append(grid[0].detach().float().cpu().numpy().copy())
+                    origin = u.scene.env_origins[0]
+                    poses.append([
+                        float(root[0, 0] - origin[0]),
+                        float(root[0, 1] - origin[1]),
+                        float(root[0, 2] - origin[2]),
+                        float(u._base_yaw()[0]) if hasattr(u, "_base_yaw") else 0.0,
+                        float(i * dt),
+                        removal,
+                        scalar("_payload_kg"),
+                    ])
+
             if frame_dir is not None:
                 try:
                     img = env.render()
@@ -362,6 +390,26 @@ def main(argv=None) -> int:
                 print(f"[play] t={i*dt:5.2f}s episode ended "
                       f"(shape_done={int(scalar('_shape_done'))}, "
                       f"escaped={int(scalar('_escaped'))})")
+
+        if args.dump and beds:
+            import numpy as np
+
+            work = getattr(u, "_work_mask", None)
+            np.savez_compressed(
+                args.dump,
+                bed=np.stack(beds).astype("float32"),
+                pose=np.asarray(poses, dtype="float32"),
+                work_mask=(work[0].detach().cpu().numpy() if work is not None
+                           else np.zeros(beds[0].shape, dtype=bool)),
+                voxel=float(u.cfg.voxel_size),
+                lower=np.asarray(u.cfg.bed_grid_lower, dtype="float32"),
+                bed_x=np.asarray(u.cfg.bed_x, dtype="float32"),
+                bed_y=np.asarray(u.cfg.bed_y, dtype="float32"),
+                cut_ref_kg=float(u.cfg.cut_volume_ref * soil),
+                drum_capacity_kg=float(2.0 * u.cfg.target_load_kg),
+            )
+            print(f"[play] wrote {len(beds)} heightmap frames to {args.dump}")
+            print(f"[play] render with: python3 scripts/render_dig.py {args.dump}")
 
         with open(args.trace, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=list(rows[0]))

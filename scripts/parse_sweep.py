@@ -37,7 +37,8 @@ def parse(path: pathlib.Path) -> dict | None:
     text = path.read_text(errors="replace")
     if "=== result ===" not in text:
         return None
-    m = re.search(r"cut([0-9.]+)_drive([0-9.]+)", path.name)
+    # .stem, not .name: [0-9.]+ would otherwise swallow the dot before "log"
+    m = re.search(r"cut([0-9.]+)_drive([0-9.]+)", path.stem)
     if not m:
         return None
     cut, drive = float(m.group(1)), float(m.group(2))

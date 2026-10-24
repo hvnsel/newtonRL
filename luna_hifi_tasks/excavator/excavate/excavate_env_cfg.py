@@ -243,7 +243,12 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # The machine spawns at the origin facing +x. With spawn_on_bed the wheels
     # rest on the bed surface and both drums start over soil: the front one
     # meets fresh regolith as it drives, the rear trails through the trench.
-    bed_x: tuple[float, float] = (-3.0, 5.0)
+    # 5.8 m, down from 8.0. The machine spans +-1.81 m at the dig angle and
+    # stands on the bed, spawn jitter is +-0.55, and the work area now reaches
+    # 0.9 m rather than 2.3, so the chassis origin stays inside
+    # [-0.55, 1.45]. With bed_margin_x at 1.81 that needs -2.36 and 3.26.
+    # Worth doing because throughput goes as 1/particles-per-env.
+    bed_x: tuple[float, float] = (-2.4, 3.4)
     bed_y: tuple[float, float] = (-1.0, 1.0)
     bed_depth: float = 0.25
     # Retaining plates outside each bed face. A few voxels is enough; the
@@ -440,13 +445,25 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # --- cut command ---
     # The planner hands down a target plane. Here it is sampled per episode: a
     # depth below the surface the drum meets, plus a gradient.
-    cut_depth_range: tuple[float, float] = (0.04, 0.12)
+    # One voxel, fixed. Particles sit one per cell at cell centres, so the
+    # surface resolves to voxel_size and a thinner cut is not representable:
+    # at 0.04 m a 1.5 cm command is 0.38 of a cell. Measured, one pass clears
+    # about 40% of a layer over a 2.76 m2 area, patchily -- the mass divided
+    # by the area reads as 1.6 cm but no such surface exists. Commanding the
+    # layer makes every cell's outcome binary, which the heightmap can see,
+    # depth_error can measure and shape_done can judge.
+    cut_depth_range: tuple[float, float] = (0.04, 0.04)
 
     # Rise over run the planner may command, about 17 degrees. Where the
     # machine stalls is learned inside this bound.
-    cut_gradient_max: float = 0.30
+    # Zero: a plane cannot be tilted within one voxel of thickness. At 0.30
+    # over the old 2.3 m area the target dropped 0.69 m into a 0.25 m bed and
+    # the floor clamp flattened whatever was left, so half the episodes were
+    # commanding a wedge the machine cannot cut into ground that is not there.
+    # Ramps come from the planner stepping successive flat bites.
+    cut_gradient_max: float = 0.0
     # Fraction of episodes with a non-zero gradient; the rest are flat cuts.
-    cut_ramp_fraction: float = 0.5
+    cut_ramp_fraction: float = 0.0
     # Lateral gradient, as a fraction of cut_gradient_max. The planner aligns
     # the approach pose with the ramp, leaving a small residual the policy
     # answers with yaw.
@@ -455,13 +472,24 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # The ground this cut is responsible for, anchored where the drum first
     # meets soil and extending forward along the approach heading. Fixed in the
     # world for the episode, and progress is measured over it.
-    work_area_length: float = 2.0            # m ahead of the anchor
+    # 0.60 ahead plus 0.30 behind is 0.90 m, which with the 1.2 m swath is
+    # 1.08 m2: one voxel layer off it is 65 kg, and the drum is throughput
+    # limited at 4 to 7 kg/s regardless of depth or speed, so that is about
+    # 13 s of cutting inside a 20 s episode. At 2.0 m the commanded layer was
+    # 166 kg, three to four passes, and could never be finished in one.
+    work_area_length: float = 0.60           # m ahead of the anchor
     work_area_behind: float = 0.3            # m behind it
     work_area_width: float = 1.2             # m, a little over the 1.0 m swath
 
     # Residual volume, as a fraction of cut_volume_ref, at or below which the
     # commanded shape counts as achieved and the episode ends.
-    shape_success_fraction: float = 0.10
+    # 0.30 of the 675 cells in the layer, so 202 may survive. The target is
+    # one voxel down and a cell is either cleared or not, so there is no
+    # vertical near-miss and the tolerance is entirely about coverage. The
+    # first sweep clears the bulk cheaply and the stragglers cost
+    # disproportionate time, so 0.10 would never have fired at all. Tighten
+    # it as a curriculum once the policy holds this.
+    shape_success_fraction: float = 0.30
 
     # --- load sensor ---
     # What the policy reads in place of the particle count: a boom-torque

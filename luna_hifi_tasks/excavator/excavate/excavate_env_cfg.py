@@ -62,7 +62,24 @@ MPM_ENTRY = "soil" # Entry name for the MPM object in the coupler
 
 VOXEL_SIZE = 0.04
 MPM_COLLIDER_MARGIN = 0.5 * VOXEL_SIZE
-MPM_PARTICLES_PER_CELL = 1.0 # should be set higher for more accurate simulations
+# Particles per cell PER AXIS: the spawn lattice is ceil(ppc * extent / voxel)
+# on each axis, so 2 is 8 particles per cell in 3D, which is what MPM wants.
+#
+# It was 1. One particle per cell leaves the deformation gradient
+# under-determined -- the background grid carries modes no particle resists --
+# so the material loses volume under any load including its own weight. A
+# replay measured the bed falling 25.05 -> 13.33 cm, a factor of 1.88, over
+# soil the machine never approached, while the greatest vertical stress in a
+# 25 cm bed at lunar gravity is 2430 * 0.25 = 608 Pa against 500 Pa of
+# cohesion at 40 degrees of friction, which cannot fail. The machine was not
+# sinking into the soil; the soil was collapsing underneath it. Bearing
+# capacity says 492 kg at 1.62 m/s2 is 6.5 kPa under a wheel against ~60 kPa
+# of capacity, a factor of nine, so it should settle about a centimetre.
+#
+# cell_center placement with jitter 0.0 compounds it: every particle crosses a
+# cell boundary on the same step, so the cell-crossing error is coherent
+# rather than averaging out.
+MPM_PARTICLES_PER_CELL = 2.0
 MPM_VISUAL_COLOR = (0.62, 0.55, 0.45)
 
 # The bed extent lives on the env cfg as bed_x / bed_y / bed_depth
@@ -304,7 +321,13 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # Sparse-grid active cells per particle, as absolute totals over all envs.
     # Overrunning them is an illegal access: a CUDA 700 storm, or 0xC0000374 on
     # Windows. A cell is tens of bytes, so 2^20 of them is under 100 MB.
-    grid_cap_multiplier: float = 8.0
+    # Active voxels allocated per particle. 8 was right when a cell held one
+    # particle; at 8 particles per cell the same soil occupies an eighth as
+    # many cells, so leaving this at 8 would allocate eight times the grid for
+    # the same bed and walk straight back into the memory wall. 1.0 keeps the
+    # allocation where it is now -- 2^19 active at one env -- for 7.4x the
+    # particles.
+    grid_cap_multiplier: float = 1.0
 
     # Which bodies are coupled to the soil. Each brings every one of its
     # geoms; the drums are 38 apiece.

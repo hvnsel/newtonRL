@@ -176,8 +176,10 @@ class Site:
     def trim(self, patch, succeeded: bool = True) -> float:
         """Apply one trim. Returns the seconds it cost.
 
-        A failed trim costs the same time and moves no soil, which is how
-        trim_success enters a plan's duration.
+        A failed trim costs the same time and moves no soil. The baselines
+        never pass succeeded=False -- they plan the ideal schedule -- so
+        trim_success enters only through `expected_clock`. Pass it explicitly
+        when replaying a plan against sampled outcomes.
         """
         cost = self.cycle_seconds(patch)
         self.clock += cost
@@ -193,12 +195,31 @@ class Site:
     def done(self) -> bool:
         return not self.pending()
 
+    @property
+    def landed(self) -> int:
+        """Trims that actually moved soil, per the log."""
+        return sum(1 for _, ok, _ in self.log if ok)
+
+    def expected_clock(self) -> float:
+        """Clock corrected for the dig policy's success rate.
+
+        `self.clock` is the perfect-execution duration: the baselines below
+        assume every trim lands, because a search cannot plan around a coin
+        flip it has not flipped yet. A failed trim costs a full cycle and
+        moves nothing, so clearing one voxel costs 1/trim_success cycles in
+        expectation and the whole schedule stretches by that factor. At the
+        measured 0.5 this doubles every duration, which is large enough that
+        quoting the raw clock would be misleading.
+        """
+        return self.clock / max(self.cfg.trim_success, 1e-9)
+
     def summary(self) -> str:
         c = self.cfg
         left = len(self.pending())
-        moved = self.trims * c.trim_mass * c.trim_success
+        moved = self.landed * c.trim_mass          # what the log says moved
         return (
-            f"{self.trims:4d} trims  {self.clock/60:6.1f} min  "
+            f"{self.trims:4d} trims  {self.clock/60:6.1f} min ideal  "
+            f"{self.expected_clock()/60:6.1f} min at p={c.trim_success:.2f}  "
             f"{left:4d} patches left  {moved/c.soil_density:5.2f} m3 moved  "
             f"{c.trim_seconds*self.trims/max(self.clock,1e-9):4.0%} productive"
         )

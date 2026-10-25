@@ -310,6 +310,56 @@ def _find_coupled_solver():
     return None
 
 
+def _attitude(u) -> None:
+    """Commanded vs achieved arm angles, and the machine's actual attitude.
+
+    The parked run that prompted this showed the four wheels 344 mm apart in z,
+    front pair clear of the soil and rear pair on the bed floor: the machine was
+    not sinking, it was pitched nose-up and standing on its rear wheels. The
+    cause is in the same table -- the two arms end 620 mm apart in z at the same
+    commanded stow angle, front boom up 30.2 deg and rear boom down 18.2 deg.
+    excavator.py builds the rear assembly with _arm_assembly("rear", math.pi,
+    ...), a 180 deg yaw, and its own joint-sign note says positive pitches the
+    boom DOWN while documenting the yaw only for the drums.
+
+    So print the joint angles beside the body heights instead of inferring the
+    convention from geometry.
+    """
+    try:
+        import numpy as np
+
+        d = u.robot.data
+        names = list(getattr(d, "joint_names", []) or [])
+        q = d.joint_pos.torch[0].detach().cpu().numpy()
+        tgt = None
+        for attr in ("joint_pos_target", "joint_pos_target_w"):
+            t = getattr(d, attr, None)
+            if t is not None:
+                tgt = t.torch[0].detach().cpu().numpy()
+                break
+        print("[attitude] arm and shroud joints, commanded vs achieved:")
+        for i, n in enumerate(names):
+            if not ("arm" in n or "shroud" in n):
+                continue
+            c = f"{tgt[i]:+8.4f}" if tgt is not None and i < len(tgt) else "       ?"
+            print(f"[attitude]   {n:14s} q={q[i]:+8.4f} rad ({np.degrees(q[i]):+7.2f} deg)"
+                  f"  target={c}")
+
+        bl = list(getattr(u.robot.data, "body_names", []) or [])
+        bz = d.body_pos_w.torch[0, :, 2].detach().cpu().numpy()
+        want = [i for i, n in enumerate(bl) if "wheel" in n or "drum" in n]
+        if want:
+            print("[attitude] body heights (world z):")
+            for i in want:
+                print(f"[attitude]   {bl[i]:22s} z={bz[i]:+8.4f}")
+            wz = [bz[i] for i in want if "wheel" in bl[i]]
+            if len(wz) >= 2:
+                print(f"[attitude]   wheel z spread {1000 * (max(wz) - min(wz)):.0f} mm "
+                      f"-- a level machine on flat soil should be a few mm")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[attitude] unavailable: {exc!r}")
+
+
 def _probe(u) -> None:
     """Report where the soil's reaction is lost on its way to the machine.
 
@@ -979,6 +1029,7 @@ def main(argv=None) -> int:
                       f"escaped={int(scalar('_escaped'))})")
 
         if args.probe:
+            _attitude(u)
             if reset_steps:
                 since = steps - 1 - reset_steps[-1]
                 print(

@@ -100,6 +100,12 @@ def _parse(argv):
                         "rails, which is the configuration that sinks")
     p.add_argument("--rails", dest="rails", action="store_true", default=None,
                    help="wheels on rigid rails at grade (the cfg default)")
+    p.add_argument("--limp", action="store_true",
+                   help="zero every actuator gain, so NOTHING is driven. --park "
+                        "still commands all four controllers (wheels braked to "
+                        "zero velocity, arm held at stow on stiffness 2500, "
+                        "drums and shrouds held), which is not the same as "
+                        "dropping an unpowered machine on the soil")
     p.add_argument("--probe", action="store_true",
                    help="after stepping, report whether the soil's reaction "
                         "actually reaches the machine's bodies")
@@ -914,6 +920,13 @@ def main(argv=None) -> int:
         env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array" if frame_dir else None)
         u = env.unwrapped
         if args.park:
+            # NOTE: this is not an unactuated machine. Every one of these four
+            # controllers is live and holding a setpoint -- the wheels are a
+            # velocity drive commanded to 0, so they are BRAKED rather than
+            # free to roll, and the arm actuator holds ~46 kg of drum and
+            # shroud on a 0.76 m lever at stiffness 2500, about 48 N.m of
+            # reaction into the chassis per arm. Use --limp for gravity and
+            # contact only.
             # [forward, yaw, boom, drum, shroud]. Boom at -1 is the stow angle,
             # not 0: zero is mid-range, which would drive the arm down into the
             # bed and plant the drums, which is the opposite of a static test.
@@ -924,6 +937,24 @@ def main(argv=None) -> int:
             policy, in_dim = (lambda _obs: parked), None
         else:
             policy, in_dim = _load_policy(str(u.device), ckpt)
+
+        if args.limp:
+            # Gains to zero on every joint, so the only forces on the machine
+            # are gravity and contact. --park commands a setpoint on all four
+            # controllers and they hold it; this removes them. The arms will
+            # fall under their own weight, which is what an unpowered machine
+            # does and is the point of the test.
+            try:
+                import torch as _t
+
+                nj = u.robot.data.joint_pos.torch.shape[1]
+                z = _t.zeros((u.num_envs, nj), device=u.device)
+                u.robot.write_joint_stiffness_to_sim(z)
+                u.robot.write_joint_damping_to_sim(z)
+                print(f"[play] LIMP: stiffness and damping zeroed on {nj} joints. "
+                      f"nothing is driven; arms will fall under gravity")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[play] --limp failed, actuators are STILL driven: {exc!r}")
 
         dt = u.step_dt
         steps = int(args.seconds / dt)

@@ -100,6 +100,12 @@ def _parse(argv):
                         "rails, which is the configuration that sinks")
     p.add_argument("--rails", dest="rails", action="store_true", default=None,
                    help="wheels on rigid rails at grade (the cfg default)")
+    p.add_argument("--device", default=None,
+                   help="override the sim device, e.g. cuda:1. This box has two "
+                        "3090s and a crashed run can leave cuda:0 fully "
+                        "allocated, which shows up as 'CUDA error 2: out of "
+                        "memory' followed by a storm of illegal-access errors "
+                        "from the failed allocation -- not a solver bug")
     p.add_argument("--probe", action="store_true",
                    help="after stepping, report whether the soil's reaction "
                         "actually reaches the machine's bodies")
@@ -823,6 +829,9 @@ def main(argv=None) -> int:
             )
         ]
 
+    if args.device:
+        env_cfg.sim.device = args.device
+        print(f"[play] sim device set to {args.device}")
     args.device = env_cfg.sim.device
     env_cfg.validate()
 

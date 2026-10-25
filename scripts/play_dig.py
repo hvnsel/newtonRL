@@ -1087,8 +1087,13 @@ def main(argv=None) -> int:
                            else np.zeros(beds[0].shape, dtype=bool)),
                 body_pos=(np.stack(bodies).astype("float32") if bodies
                           else np.zeros((0, 0, 3), dtype="float32")),
+                # Plain unicode, NOT dtype=object. An object array is pickled
+                # into the npz, and a pickle written by the venv's numpy 2.x
+                # cannot be read by the system numpy 1.x -- it fails with
+                # "No module named 'numpy._core'", which makes the dump
+                # unreadable by exactly the interpreter the renderers run under.
                 body_names=np.asarray(
-                    list(getattr(u.robot.data, "body_names", []) or []), dtype=object
+                    list(getattr(u.robot.data, "body_names", []) or []), dtype="U64"
                 ),
                 wheel_radius=_wheel_radius(),
                 voxel=float(u.cfg.voxel_size),

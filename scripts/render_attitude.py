@@ -33,7 +33,18 @@ def load(path: Path):
             "the commit that records it; older dumps only hold the heightmap and "
             "the chassis pose, neither of which shows attitude."
         )
-    names = [str(n) for n in d["body_names"]]
+    try:
+        names = [str(n) for n in d["body_names"]]
+    except Exception as exc:  # noqa: BLE001
+        sys.exit(
+            f"could not read body_names from {path}: {exc!r}\n"
+            "An older dump stored them as a pickled object array, which numpy "
+            "1.x cannot read when numpy 2.x wrote it. The body positions "
+            "themselves are fine -- re-run this script with the venv "
+            "interpreter, which has the matching numpy:\n"
+            "  ~/IsaacLab/.venv/bin/python scripts/render_attitude.py "
+            f"{path} out.gif"
+        )
     return d["body_pos"], names, d, float(d["wheel_radius"]) if "wheel_radius" in d else 0.30
 
 

@@ -468,6 +468,26 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     soil_friction: float = 0.84              # tan(40 deg)
     soil_cohesion: float = 500.0             # yield_stress, Pa
     soil_yield_pressure: float = 1.0e12      # Pa, compression cap
+    # Elastic stiffness. Newton registers this with a default of 1.0e15 and
+    # nothing here overrode it, nor does any of Newton's own MPM examples,
+    # which is why their two-way example sinks its boxes through half a metre
+    # of sand the same way this bed sinks the machine.
+    #
+    # 1e15 Pa is not a material, it is "effectively rigid", and it is a
+    # billion times stiffer than lunar regolith at 10-100 MPa. Two things
+    # follow, either of which is fatal. The elastic strain for any soil-scale
+    # pressure is unrepresentable: at a bulk modulus of 8.3e14 the geostatic
+    # 2430 Pa at this bed's base is a volumetric strain of 2.9e-12 and the
+    # 6500 Pa under a wheel is 7.8e-12, against a float32 epsilon of 1.2e-7,
+    # and particle_elastic_strain is stored as a float32 mat33. And the
+    # rheology solve runs on compliance = 1/E = 1e-15, which leaves the
+    # constraint system badly conditioned -- the "slowed convergence" Newton
+    # 1.7.0's changelog names, and the reason it added a majorize option to
+    # bound the spherical/deviatoric coupling.
+    #
+    # 1e8 is the stiff end of measured regolith. Soil pressures then land at
+    # volumetric strains near 1e-5, comfortably inside float32.
+    soil_young_modulus: float = 1.0e8        # Pa
     # Maximum solid fraction the material may occupy of a grid node's FREE
     # volume, where free means the node minus whatever a collider occupies:
     #
@@ -787,6 +807,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             "friction": self.soil_friction,
             "yield_stress": self.soil_cohesion,
             "yield_pressure": self.soil_yield_pressure,
+            "young_modulus": self.soil_young_modulus,
         }
         for name, value in values.items():
             if not hasattr(mat, name):
@@ -809,6 +830,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                 ("soil_friction", "friction", self.soil_friction),
                 ("soil_cohesion", "yield_stress", self.soil_cohesion),
                 ("soil_yield_pressure", "yield_pressure", self.soil_yield_pressure),
+                ("soil_young_modulus", "young_modulus", self.soil_young_modulus),
             )
             if getattr(mat, m) != v
         ]

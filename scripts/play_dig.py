@@ -79,6 +79,11 @@ def _parse(argv):
                         "contact chord sits at about 7 solver cells under "
                         "every load and material tried, so this is the knob "
                         "that should move the sinkage if that is what sets it")
+    p.add_argument("--young", type=float, default=None,
+                   help="override soil_young_modulus [Pa]. Newton defaults it "
+                        "to 1e15, which puts soil-scale elastic strains below "
+                        "float32 resolution and leaves the rheology solve "
+                        "ill-conditioned")
     p.add_argument("--cohesion", type=float, default=None,
                    help="override soil_cohesion (yield_stress) in Pa. The "
                         "measured capacity scales with gravity, which means "
@@ -433,6 +438,10 @@ def main(argv=None) -> int:
     if args.mpm_voxel is not None:
         env_cfg.mpm_voxel_size = args.mpm_voxel
         print(f"[play] mpm_voxel_size set to {args.mpm_voxel} m")
+
+    if args.young is not None:
+        env_cfg.soil_young_modulus = args.young
+        print(f"[play] soil_young_modulus set to {args.young:g} Pa")
 
     if args.cohesion is not None:
         env_cfg.soil_cohesion = args.cohesion

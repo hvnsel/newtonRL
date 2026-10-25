@@ -911,7 +911,18 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                         bodies=[self.soil_contact_regex],
                         mode=self.proxy_mode,
                         mass_scale=self.proxy_mass_scale,
-                        collision_pipeline=None,
+                        # The default is a factory giving each proxy its own
+                        # pipeline; None instead "passes shared outer contacts
+                        # to the destination", and the outer one is built for
+                        # the rigid entry. Parked, with the wheels commanded to
+                        # zero and the arm stowed, the machine falls through
+                        # the whole 25 cm bed onto the floor and never finds
+                        # equilibrium, while the drums still scoop soil -- the
+                        # MPM solve resolves its own colliders at grid level
+                        # regardless of this. Wheels getting no contact and
+                        # drums still loading is what a missing proxy pipeline
+                        # would look like. Back to the default.
+                        collision_pipeline=NewtonCollisionPipelineCfg(),
                     )
                 ],
                 iterations=1,

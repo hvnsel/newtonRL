@@ -398,6 +398,57 @@ def _probe(u) -> None:
         except Exception as exc:                           # noqa: BLE001
             print(f"[probe]   collider_body_index unavailable: {exc!r}")
 
+        # --- the soil's own stress state -------------------------------
+        # particle_elastic_strain is the elastic deformation gradient, identity
+        # at rest, so eps = sym(F) - I and sigma follows from linear
+        # elasticity. The question this answers: does the bed carry the
+        # geostatic pressure of its own weight, rho*g*depth? If it does, the
+        # stress field works and the failure is at the yield surface. If the
+        # pressure reads near zero, the material never develops stress at all
+        # and no yield parameter could matter.
+        try:
+            st = coupled.entry_state(name, "current")
+            F = st.mpm.particle_elastic_strain.numpy()
+            q = st.particle_q.numpy()
+            E = solver.model.mpm.young_modulus.numpy()
+            nu = solver.model.mpm.poisson_ratio.numpy()
+            mu = solver.model.mpm.friction.numpy()
+            ys = solver.model.mpm.yield_stress.numpy()
+
+            eps = 0.5 * (F + np.transpose(F, (0, 2, 1))) - np.eye(3)
+            tr = np.trace(eps, axis1=1, axis2=2)
+            lam = (E * nu) / ((1 + nu) * (1 - 2 * nu))
+            two_g = E / (1 + nu)
+            sig = two_g[:, None, None] * eps + (lam * tr)[:, None, None] * np.eye(3)
+            trs = np.trace(sig, axis1=1, axis2=2)
+            pres = -trs / 3.0
+            dev = sig + (pres)[:, None, None] * np.eye(3)
+            tau = np.sqrt(np.sum(dev * dev, axis=(1, 2)))
+            limit = ys + (mu / np.sqrt(1.5)) * np.clip(pres, 0.0, None)
+
+            z = q[:, 2]
+            top = float(np.percentile(z, 99.5))
+            print(f"[probe]   soil stress over {z.shape[0]} particles, "
+                  f"surface at z={top:.3f}")
+            print(f"[probe]     {'depth':>8s} {'n':>7s} {'pressure':>12s} "
+                  f"{'geostatic':>11s} {'tau':>10s} {'tau/yield':>10s}")
+            rho = u.cfg.soil_density
+            g = abs(float(u.cfg.sim.gravity[2]))
+            for lo, hi in ((0.00, 0.05), (0.05, 0.10), (0.10, 0.15),
+                           (0.15, 0.20), (0.20, 0.30)):
+                m = (z > top - hi) & (z <= top - lo)
+                if m.sum() == 0:
+                    continue
+                d = 0.5 * (lo + hi)
+                ratio = tau[m] / np.maximum(limit[m], 1e-9)
+                print(f"[probe]     {d*100:6.1f}cm {int(m.sum()):7d} "
+                      f"{pres[m].mean():10.1f}Pa {rho*g*d:9.1f}Pa "
+                      f"{tau[m].mean():8.1f}Pa {ratio.mean():10.3f}")
+            print(f"[probe]   pressure/geostatic tells you whether the bed "
+                  f"carries its own weight; tau/yield whether it is at failure")
+        except Exception as exc:                           # noqa: BLE001
+            print(f"[probe]   soil stress unavailable: {exc!r}")
+
         try:
             import newton
 

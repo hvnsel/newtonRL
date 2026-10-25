@@ -692,6 +692,34 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # rest of the configuration was tuned against.
     proxy_mode: str = "lagged"
 
+    # Proxy relaxation passes per coupled step: the fixed-point loop that
+    # reconciles the force the soil puts on a wheel with how far that wheel
+    # has moved into it. The two are mutually dependent and neither solver can
+    # answer alone, so the step has to iterate until they agree.
+    #
+    # It was 1, which does not iterate at all: the rigid side solves using the
+    # force left over from the previous step, MPM solves using the resulting
+    # motion, and the step ends without checking that they are consistent. For
+    # a drum slicing through soil that stale force is a small relative error.
+    # For a body at rest it is fatal, because equilibrium is exact and the
+    # lagged force is always slightly too small -- always, never too large,
+    # since gravity is constant and the correction always arrives late. A
+    # small one-signed deficit per step over 600 steps is the 25 cm the
+    # machine sinks, and the curve decelerating as it falls is that deficit
+    # shrinking with velocity while never finding the balance point.
+    #
+    # Corroboration that one pass is not the intent: CouplerProxyMappingCfg
+    # carries proxy_relaxation, proxy_relaxation_mode with an "aitken" option,
+    # and min/max bounds for it. Aitken relaxation is a convergence
+    # accelerator for partitioned fixed-point coupling and does nothing
+    # whatsoever at a single pass. CouplerAdmmCfg, the sibling, defaults to 5.
+    # And proxy_mass_scale was at 10, ten times the wheels' real inertia,
+    # which is the textbook way to damp a staggered coupling that is not
+    # converging -- a symptom suppressed rather than a cause fixed.
+    #
+    # Each pass re-runs both solvers, so this multiplies step cost directly.
+    coupler_iterations: int = 4
+
     # The soil_* fields are plain numbers on this cfg; the solver reads an
     # MPMParticleMaterialCfg on the spawner. __post_init__ calls this, and the
     # env re-runs __post_init__ before spawning, so a field set at any point
@@ -925,7 +953,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                         collision_pipeline=NewtonCollisionPipelineCfg(),
                     )
                 ],
-                iterations=1,
+                iterations=self.coupler_iterations,
             ),
             collision_cfg=NewtonCollisionPipelineCfg(soft_contact_max=0),
             num_substeps=1,

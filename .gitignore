@@ -20,3 +20,16 @@ docs/**/*.lot
 # Isaac Lab run output if launched from here
 logs/
 outputs/
+
+# Diagnostic output. play_dig.py, render_dig.py and mpm_minimal_probe.py all
+# default their --trace, --dump and --json paths to the working directory, so a
+# session's worth of parked runs leaves a few dozen of these in the repo root.
+# They are regenerable, and leaving them untracked blocks `git pull --rebase`
+# on a dirty tree, which has already cost a rebuild loop.
+dig_*.csv
+dig_*.npz
+dig_*.gif
+dig_*.png
+goal_trace.csv
+goals.png
+setpoint.png

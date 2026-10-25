@@ -518,6 +518,18 @@ def main(argv=None) -> int:
         env_cfg.soil_cohesion = args.cohesion
         print(f"[play] soil_cohesion set to {args.cohesion} Pa")
 
+    if args.park or args.probe:
+        # A reset respawns the machine in the air and re-lays the bed, so any
+        # measurement taken after one describes a fresh scene rather than a
+        # loaded one. Hold the episode open past the run instead: a parked run
+        # has nothing to learn from a reset anyway, and the probe below reads
+        # solver state that only means something under load.
+        want = args.seconds + 2.0
+        if env_cfg.episode_length_s < want:
+            print(f"[play] episode_length_s {env_cfg.episode_length_s} -> {want} "
+                  f"so no reset lands inside the run")
+            env_cfg.episode_length_s = want
+
     if args.rails is not None:
         env_cfg.wheel_rails = args.rails
         # soil_contact_regex follows wheel_rails in __post_init__, so clearing
@@ -570,6 +582,7 @@ def main(argv=None) -> int:
 
         dt = u.step_dt
         steps = int(args.seconds / dt)
+        reset_steps: list[int] = []
         soil = u.cfg.soil_density
         print(f"[play] {steps} steps of {dt:.4f}s, {u.cfg.bed_particles_per_env} particles/env")
 
@@ -676,11 +689,22 @@ def main(argv=None) -> int:
                         frames_written += 1
 
             if bool(dones.any()):
+                reset_steps.append(i)
                 print(f"[play] t={i*dt:5.2f}s episode ended "
                       f"(shape_done={int(scalar('_shape_done'))}, "
                       f"escaped={int(scalar('_escaped'))})")
 
         if args.probe:
+            if reset_steps:
+                since = steps - 1 - reset_steps[-1]
+                print(
+                    f"\n[probe] WARNING: the episode reset {since} step(s) before "
+                    f"this probe (t={reset_steps[-1]*dt:.2f}s). The machine was "
+                    f"respawned clear of the bed and the soil was re-laid, so the "
+                    f"impulses and the stress state below describe a fresh scene, "
+                    f"not a loaded one. Read chassis_z from the trace instead, and "
+                    f"re-run with a longer episode for a probe that means something."
+                )
             _probe(u)
 
         if args.dump and beds:

@@ -441,7 +441,30 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # so 1800 was compacted regolith, not surface. Friction angle is 30-50 deg,
     # and cohesion 0.1-1 kPa -- 0 Pa is dry sand, and a cohesionless soil also
     # cannot hold the bed's faces, which is what the retaining plates are for.
-    soil_density: float = 1500.0
+    # DELIBERATE FUDGE, not a regolith value. Real surface regolith is about
+    # 1500 kg/m3 and that is what luna_hifi_tasks/planner/site.py still
+    # models, because the planner describes the real machine on the real Moon.
+    #
+    # Measured in this solver, at lunar gravity, the bed's bearing capacity is
+    # 1.71 kPa where c*Nc + 0.5*gamma*B*Ngamma predicts 64 kPa, and the
+    # machine needs 6.5 kPa to sit on the surface rather than sinking 22 cm.
+    # The whole of that 1.71 kPa is the self-weight term: halving gravity
+    # changed the capacity by 1.90 against a gravity ratio of 2.00, and
+    # raising yield_stress tenfold, from 500 to 5000 Pa, moved the sinkage
+    # 22.6 cm to 22.1 cm. The cohesion term that should supply the
+    # gravity-independent 37.8 kPa does nothing, which contradicts the solver
+    # source: shear_yield is s_max + 0.686*p with s_max taken straight from
+    # yield_stress, hardening is off so its multiplier is 1, and
+    # young_modulus defaults to 1e15 so this is not elastic settlement.
+    #
+    # Capacity scales with gamma = density * gravity, and gravity is not
+    # negotiable, so density is the only lever that works. 4x puts the
+    # capacity at 6.85 kPa and the machine 9 mm into the bed instead of
+    # 226 mm. This buys a trainable environment while the material model is
+    # still wrong, and every number it produces is suspect until that is
+    # fixed: the drum calibration in workstation/dig_sweep.sh above all, which
+    # is cutting resistance through a material four times as heavy.
+    soil_density: float = 6000.0
     soil_friction: float = 0.84              # tan(40 deg)
     soil_cohesion: float = 500.0             # yield_stress, Pa
     soil_yield_pressure: float = 1.0e12      # Pa, compression cap
@@ -583,6 +606,14 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # weighing, modelled as a first-order lag, noise proportional to the
     # reading, and a calibration bias held for the episode. The exact figure
     # stays on the critic as drum_fill_mass.
+    # Derived in __post_init__ from the bore volume, so it tracks
+    # soil_density. Everything the task is scored on is a mass -- the trim,
+    # the payload, removal, unheld, load_ref -- so they all scale together
+    # with density and the task stays volumetrically identical. Leaving this
+    # at a fixed 40 kg while the soil got four times heavier would instead
+    # have made one trim five drum-loads instead of one.
+    # 40 kg at 1500 kg/m3, which is 0.52 of a drum's swept volume.
+    target_load_bore_fraction: float = 40.0 / (BORE_VOLUME * 1500.0)
     target_load_kg: float = 40.0
     fill_sensor_tau: float = 0.3             # s
     # spill reads its own, much slower filter. The load sensor's 0.3 s is
@@ -766,6 +797,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                 )
             setattr(mat, name, value)
         self.drum_capacity_kg = BORE_VOLUME * self.soil_density
+        self.target_load_kg = self.target_load_bore_fraction * self.drum_capacity_kg
 
     def soil_material_mismatch(self) -> str | None:
         """Which soil_* fields no longer match the material, if any."""

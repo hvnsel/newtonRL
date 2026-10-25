@@ -1370,9 +1370,30 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             # The bed was not collapsing volumetrically -- it
                             # was falling through its own floor as a block.
                             #
-                            # S2 is in collider_rebuild_safe (pic*, Q1, S2, S3)
+                            # Q1 rather than S2, because S2 cannot be built on
+                            # a rebuildable sparse grid here. S2 is quadratic
+                            # serendipity: its nodes sit on the 8 vertices AND
+                            # the 12 edge midpoints, so
+                            # NanogridSpaceTopology.__init__ takes the
+                            # need_edge_indices branch (EDGE_NODE_COUNT > 0) and
+                            # calls _get_topology_edge_grid, which ends in
+                            # _build_rebuildable_incidence_grid(..., 12, ...) and
+                            # wp.Volume.allocate_by_voxels failing with
+                            # "Failed to create volume" after an out-of-memory in
+                            # volume_builder.cu rebuild_count_points. pic27 never
+                            # took that path at all, because a PointBasisSpace
+                            # has no grid topology to build.
+                            #
+                            # Q1 is trilinear: EDGE_NODE_COUNT is 0, so no edge
+                            # grid is built and the failing call never happens.
+                            # It is also the better choice for the original
+                            # purpose -- activation_distance is 0.5/degree *
+                            # voxel, so Q1 gives 0.040 m against S2's 0.020 m,
+                            # twice the contact band, where pic27 gives 0.
+                            #
+                            # Q1 is in collider_rebuild_safe (pic*, Q1, S2, S3)
                             # so the rebuildable sparse grid is unaffected.
-                            collider_basis="S2",
+                            collider_basis="Q1",
                             collider_velocity_mode="forward",
                             # Left at "auto" (which resolves to "gs" for a Q1
                             # velocity basis). A ("cr", "gs") Krylov warm start

@@ -68,6 +68,12 @@ def _parse(argv):
     p.add_argument("--frames", default=None,
                    help="directory for PNGs, if the env can render to an array. "
                         "The Newton backend hands back nothing, so prefer --dump")
+    p.add_argument("--bed_depth", type=float, default=None,
+                   help="override bed depth [m]. The sinkage has been 74-92 "
+                        "percent of the bed depth in every run regardless of "
+                        "material, so if the machine is resting on the floor "
+                        "through the soil rather than floating on it, this "
+                        "moves and nothing else does")
     p.add_argument("--mpm_voxel", type=float, default=None,
                    help="override the MPM solver grid [m]. The equilibrium "
                         "contact chord sits at about 7 solver cells under "
@@ -419,6 +425,10 @@ def main(argv=None) -> int:
 
     env_cfg, _ = resolve_task_config(args.task, "")
     env_cfg.scene.num_envs = args.num_envs
+
+    if args.bed_depth is not None:
+        env_cfg.bed_depth = args.bed_depth
+        print(f"[play] bed_depth set to {args.bed_depth} m")
 
     if args.mpm_voxel is not None:
         env_cfg.mpm_voxel_size = args.mpm_voxel

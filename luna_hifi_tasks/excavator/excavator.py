@@ -724,10 +724,28 @@ def write_mjcf(directory: str | None = None) -> str:
     """Write the MJCF to disk and return its path. Idempotent.
 
     Called by the offline USD conversion step.
+
+    The default directory carries the username. Without it the path is
+    /tmp/luna_hifi_assets for everyone on the machine, the first user to run
+    this owns it, and every other user gets PermissionError on the open --
+    makedirs(exist_ok=True) succeeds against the existing directory and gives
+    no hint that the problem is ownership.
     """
-    directory = directory or os.path.join(tempfile.gettempdir(), "luna_hifi_assets")
+    if directory is None:
+        import getpass
+
+        try:
+            who = getpass.getuser()
+        except Exception:  # noqa: BLE001
+            who = str(os.getuid()) if hasattr(os, "getuid") else "user"
+        directory = os.path.join(tempfile.gettempdir(), f"luna_hifi_assets-{who}")
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, "excavator.xml")
+    if os.path.exists(path) and not os.access(path, os.W_OK):
+        raise PermissionError(
+            f"{path} exists and is not writable by this user. Pass a directory "
+            f"explicitly: write_mjcf('/some/path/you/own')"
+        )
     with open(path, "w") as fh:
         fh.write(EXCAVATOR_MJCF.strip() + "\n")
     return path

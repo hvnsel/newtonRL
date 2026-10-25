@@ -397,15 +397,19 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # Which bodies are coupled to the soil. Each brings every one of its
     # geoms; the drums are 38 apiece.
     #
-    # Drums and shrouds only. The wheels ride rigid rails instead, because the
-    # soil carries no footing load -- DRUM_CONTACT_BODIES_REGEX records what
-    # was ruled out. SOIL_CONTACT_BODIES_REGEX is the wheels-on-soil set and
-    # is still the right one to set this to when retesting the soil itself.
-    soil_contact_regex: str = DRUM_CONTACT_BODIES_REGEX
+    # None follows wheel_rails, which is what you want: the cutting end alone
+    # when the wheels have rails to ride, every soil-contacting body when they
+    # do not. Set it to a regex only to override that pairing deliberately.
+    soil_contact_regex: str | None = None
 
-    # Rails under the wheel tracks, tops flush with the soil surface. False
-    # parks them below the floor, which puts the wheels back on soil and
-    # reproduces the sinking.
+    # Rails under the wheel tracks, tops flush with the soil surface, carrying
+    # the wheels at grade because the soil will not.
+    #
+    # False parks them below the floor and -- through soil_contact_regex above
+    # -- puts the wheels back in the soil coupling, which is the configuration
+    # that sinks. That is the one switch: the two settings are paired on
+    # purpose, because rails off with the wheels still uncoupled would leave
+    # them resting on nothing and drop the machine to the bed floor at once.
     wheel_rails: bool = True
 
     # How far outboard of the cutting end a rail's inner face starts.
@@ -1010,6 +1014,20 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         # drift reward term, not the geometry, is what keeps the machine
         # straight, and a pressure-sinkage wheel model is the version that
         # would survive a heading change.
+        if self.soil_contact_regex is None:
+            self.soil_contact_regex = (
+                DRUM_CONTACT_BODIES_REGEX
+                if self.wheel_rails
+                else SOIL_CONTACT_BODIES_REGEX
+            )
+        elif not self.wheel_rails and "wheel" not in self.soil_contact_regex:
+            raise ValueError(
+                "wheel_rails is False and soil_contact_regex does not couple the "
+                "wheels, so they would rest on nothing and the machine would drop "
+                "to the bed floor. Leave soil_contact_regex at None to have it "
+                "follow wheel_rails, or name the wheels in it explicitly."
+            )
+
         cut_half_y = ROTOR_HALF_LEN + SHROUD_END_T
         rail_inner = cut_half_y + self.wheel_rail_clearance
         # Two margins in from the wall's inner face, so the rail's own
@@ -1081,7 +1099,13 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                 f"drum swath +/-{ROTOR_HALF_LEN:.3f}, margin {margin:.3f}"
             )
         else:
-            print("[excavate]   wheels on soil (no rails): expect the machine to sink")
+            print(
+                "[excavate]   wheels on soil (no rails): expect the machine to sink"
+            )
+        print(
+            f"[excavate]   soil coupling: "
+            f"{'drums and shrouds' if self.wheel_rails else 'wheels, drums and shrouds'}"
+        )
         print(
             f"[excavate]   {self.grid_cap_multiplier:.0f} cells/particle, "
             f"{1 << self.grid_leaf_shift} cells/leaf, "

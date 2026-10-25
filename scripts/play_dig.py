@@ -380,8 +380,14 @@ def _probe(u) -> None:
                 np.add.at(count, bodies[good], 1)
                 print("[probe]   net impulse per body (N.s), +z holds it up:")
                 for b in range(flags.shape[0]):
-                    if count[b] == 0:
-                        continue
+                    # Every body, including n=0. Hiding the empty rows is what
+                    # made this table unreadable: with bodies 0-3 dropped, the
+                    # four that remained looked like "the four wheels, two of
+                    # them starved", when 0-3 were the stowed drums and shrouds
+                    # and 4-7 were the wheels. Local indices here are the MPM
+                    # entry's compacted ModelView, i.e. sorted global ids over
+                    # the bodies that entry owns plus the proxies -- not global
+                    # body indices, and not the order anything else prints.
                     tag = "PROXY" if (flags[b] & proxy) else "kinematic"
                     print(f"[probe]     body {b:2d} {tag:9s} n={count[b]:6d}  "
                           f"net=({net[b][0]:+8.3f},{net[b][1]:+8.3f},{net[b][2]:+9.3f})")
@@ -396,12 +402,159 @@ def _probe(u) -> None:
         except Exception as exc:                           # noqa: BLE001
             print(f"[probe]   collect_collider_impulses failed: {exc!r}")
 
+        # --- who is body b, and is it even in the race -----------------
+        #
+        # Three things make the per-body node count unreadable on its own,
+        # and this block measures all three.
+        #
+        # 1. These body indices are LOCAL to the MPM entry's compacted
+        #    ModelView, not the articulation's. SolverCoupled builds that
+        #    view from sorted(global ids) over the bodies the entry owns
+        #    plus the proxy bodies (solver_coupled.py _ordered_world_subset
+        #    returns sorted(indices) for a single world), so local 0 is just
+        #    the lowest global id in that set and nothing about it lines up
+        #    with u.robot.body_names. body_label survives the compaction;
+        #    print it instead of inferring the order from the MJCF.
+        #
+        # 2. Attribution is winner-take-all, not a sum. ONE mesh is built
+        #    per BODY -- implicit_mpm_model.py _create_body_collider_mesh
+        #    merges every COLLIDE_PARTICLES shape of a body into a single
+        #    wp.Mesh -- and collision_sdf (rasterized_collisions.py:265-278)
+        #    keeps only the collider with the smallest sdf at each node. So
+        #    n is "nodes this body WON", and a body loses a node to any
+        #    other body that is nearer. The 119 geoms do not compete; the
+        #    13 bodies do.
+        #
+        # 3. The comparison is on sdf = distance - thickness
+        #    (rasterized_collisions.py:220), and thickness is the per-SHAPE
+        #    shape_margin. The bed slab and the retaining plates are spawned
+        #    with contact_margin = MPM_COLLIDER_MARGIN = 0.02; the excavator
+        #    comes from a USD with no margin authored, so its geoms get
+        #    ShapeConfig.margin = 0.0. A body with the larger margin is
+        #    inflated and wins nodes it is not nearest to, and its
+        #    activation band reaches margin + activation instead of
+        #    activation. If the machine reads 0.000 and the slab 0.020, a
+        #    wheel resting on the slab cannot win a node over its own
+        #    contact patch, and that is the 1-vs-345 split.
         try:
+            import newton
+
             cbi = solver.collider_body_index.numpy()
             print(f"[probe]   collider_body_index {cbi.shape[0]} entries, "
                   f"{int((cbi >= 0).sum())} map to a body")
+
+            mdl = solver.model
+            flags = mdl.body_flags.numpy()
+            nb = int(flags.shape[0])
+            proxy = int(newton.BodyFlags.PROXY)
+            kinflag = int(newton.BodyFlags.KINEMATIC)
+
+            labels = ["?"] * nb
+            for attr in ("body_label", "body_key"):
+                raw = getattr(mdl, attr, None)
+                if raw is not None and len(raw) >= nb:
+                    labels = [str(raw[b]) for b in range(nb)]
+                    print(f"[probe]   body names from model.{attr}")
+                    break
+            else:
+                print("[probe]   no body_label/body_key on the view")
+
+            margin = mdl.shape_margin.numpy()
+            sflags = mdl.shape_flags.numpy()
+            scale = mdl.shape_scale.numpy()
+            sxf = mdl.shape_transform.numpy()
+            bshapes = getattr(mdl, "body_shapes", {}) or {}
+            collide = int(newton.ShapeFlags.COLLIDE_PARTICLES)
+
+            vox = float(solver._mpm_model.voxel_size)
+            try:
+                deg = int(solver._scratchpad.collider_position_field.degree)
+            except Exception:                              # noqa: BLE001
+                deg = -1
+            act = 0.0 if deg == 0 else (0.5 / deg) * vox
+            print(f"[probe]   voxel {vox:.3f} m, collider basis "
+                  f"{getattr(solver, 'collider_basis', '?')} degree {deg}, "
+                  f"activation {act:.4f} m (a pic* basis is degree 0 -> 0.0, "
+                  f"so the machine gets no band and only margin counts)")
+
+            bpos = None
+            try:
+                bq = state.body_q.numpy()
+                if bq.shape[0] == nb:
+                    bpos = bq[:, :3]
+            except Exception:                              # noqa: BLE001
+                pass
+
+            # Per-body bounding radius in body-local coords, over the shapes
+            # that actually became collider geometry. Loose over-bound:
+            # |shape offset| + largest half-extent.
+            radius = np.zeros(nb)
+            ngeom = np.zeros(nb, dtype=int)
+            shape_ids = {}
+            for b in range(nb):
+                sl = [int(s) for s in bshapes.get(b, ())
+                      if sflags[int(s)] & collide]
+                shape_ids[b] = sl
+                ngeom[b] = len(sl)
+                for s in sl:
+                    off = float(np.linalg.norm(sxf[s][:3]))
+                    radius[b] = max(radius[b],
+                                    off + float(np.max(np.abs(scale[s]))))
+
+            print("[probe]   per-body attribution; n is nodes WON, not force:")
+            print("[probe]      b tag       geoms       margin   reach "
+                  "     n    sum|f|     |net|   maxnode        z  name")
+            reach = np.zeros(nb)
+            for b in range(nb):
+                mg = margin[shape_ids[b]] if shape_ids[b] else np.zeros(1)
+                reach[b] = float(mg.max()) + act
+                if count[b]:
+                    fb = imp_np[ok][good][bodies[good] == b]
+                    fm = np.linalg.norm(fb, axis=-1)
+                    smag, nmag = float(fm.sum()), float(
+                        np.linalg.norm(fb.sum(axis=0)))
+                    mx = float(fm.max())
+                else:
+                    smag = nmag = mx = 0.0
+                tag = ("PROXY" if flags[b] & proxy else
+                       "KINEMATIC" if flags[b] & kinflag else "plain")
+                zs = f"{bpos[b][2]:+8.4f}" if bpos is not None else "       ?"
+                print(f"[probe]     {b:2d} {tag:9s} {ngeom[b]:5d} "
+                      f"{mg.min():.3f}-{mg.max():.3f}  {reach[b]:.4f} "
+                      f"{count[b]:6d} {smag:9.3f} {nmag:9.3f} {mx:9.3f} "
+                      f"{zs}  {labels[b]}")
+            print("[probe]     n=0 is either clear of the soil (read z) or "
+                  "every node lost to a body with a longer reach")
+
+            # --- nodes lost to the argmin race -------------------------
+            # Per (loser, winner): active nodes inside the loser's own reach
+            # that were attributed to the winner. This is the number n
+            # hides. The test is against a bounding sphere rather than the
+            # mesh, so read the count as "at most this many were contested";
+            # the winner column is the part that matters.
+            if bpos is not None:
+                apos = pos.numpy()[ok][good]
+                awin = bodies[good]
+                print("[probe]   contested nodes, inside one body's reach "
+                      "but won by another:")
+                for b in range(nb):
+                    if ngeom[b] == 0:
+                        continue
+                    near = (np.linalg.norm(apos - bpos[b], axis=1)
+                            <= radius[b] + reach[b])
+                    lost = near & (awin != b)
+                    if not lost.any():
+                        continue
+                    w, c = np.unique(awin[lost], return_counts=True)
+                    top = ", ".join(
+                        f"{labels[int(wi)].rsplit('/', 1)[-1]}({int(ci)})"
+                        for wi, ci in sorted(zip(w, c), key=lambda t: -t[1])[:4]
+                    )
+                    print(f"[probe]     {labels[b].rsplit('/', 1)[-1]:24s} "
+                          f"kept {count[b]:6d}  lost {int(lost.sum()):6d}  "
+                          f"to {top}")
         except Exception as exc:                           # noqa: BLE001
-            print(f"[probe]   collider_body_index unavailable: {exc!r}")
+            print(f"[probe]   attribution breakdown failed: {exc!r}")
 
         # --- the soil's own stress state -------------------------------
         # particle_elastic_strain is the elastic deformation gradient, identity

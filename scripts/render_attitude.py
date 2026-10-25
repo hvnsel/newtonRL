@@ -19,6 +19,7 @@ Falls back to a PNG strip of evenly spaced frames when matplotlib is absent.
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -64,6 +65,34 @@ def main() -> int:
 
     print(f"{nf} frames, {len(names)} bodies")
     print(f"wheels: {[names[i] for i in wheels]}")
+
+    def ix(tag: str):
+        for i in wheels:
+            if tag in names[i]:
+                return i
+        return None
+
+    fl, fr, rl, rr = (ix("fl"), ix("fr"), ix("rl"), ix("rr"))
+
+    def attitude(f: int):
+        """yaw, pitch, roll in degrees, from the wheel positions alone."""
+        P = pos[f]
+        fwd = 0.5 * (P[fl] + P[fr]) - 0.5 * (P[rl] + P[rr])   # rear axle -> front
+        lat = 0.5 * (P[fl] + P[rl]) - 0.5 * (P[fr] + P[rr])   # right -> left
+        yaw = math.degrees(math.atan2(fwd[1], fwd[0]))
+        pitch = math.degrees(math.atan2(fwd[2], math.hypot(fwd[0], fwd[1])))
+        roll = math.degrees(math.atan2(lat[2], math.hypot(lat[0], lat[1])))
+        return yaw, pitch, roll
+
+    print()
+    print("  frame      yaw    pitch     roll   wheel z spread")
+    print("  (a parked machine with no wheel command should hold all three near 0)")
+    for f in sorted({0, nf // 8, nf // 4, nf // 2, 3 * nf // 4, nf - 1}):
+        y, pi, ro = attitude(f)
+        zs = pos[f, wheels, 2]
+        print(f"  {f:5d}  {y:+7.2f}  {pi:+7.2f}  {ro:+7.2f}   "
+              f"{1000 * (zs.max() - zs.min()):7.0f} mm")
+    print()
     for lbl, f in (("first", 0), ("last", nf - 1)):
         zs = {names[i]: pos[f, i, 2] for i in wheels}
         spread = max(zs.values()) - min(zs.values())
@@ -82,7 +111,7 @@ def main() -> int:
               f"wheel z above is the number that matters.")
         return 0
 
-    fig, (axs, axr) = plt.subplots(1, 2, figsize=(11, 4.2))
+    fig, (axs, axr, axp) = plt.subplots(1, 3, figsize=(15, 4.4))
 
     def draw(f: int) -> None:
         for ax, (hi, vi, title, hlab) in (
@@ -108,9 +137,34 @@ def main() -> int:
             ax.set_xlabel(hlab, fontsize=8)
             ax.set_ylabel("z [m]", fontsize=8)
             ax.grid(alpha=0.25, lw=0.5)
+        # Plan view. The side and rear elevations both HIDE yaw: a yawed
+        # machine shows four separated wheels in each, which reads as the
+        # wheels being in the wrong place rather than the body being turned.
+        axp.clear()
+        order = [i for i in (fl, fr, rr, rl) if i is not None]
+        if len(order) == 4:
+            poly = np.array([[pos[f, i, 0], pos[f, i, 1]] for i in order + [order[0]]])
+            axp.plot(poly[:, 0], poly[:, 1], color="#1f77b4", lw=1.6)
+        axp.scatter(pos[f, wheels, 0], pos[f, wheels, 1], s=40, color="#1f77b4", zorder=3)
+        for i in wheels:
+            axp.annotate(names[i].replace("wheel_", "").replace("_body", ""),
+                         (pos[f, i, 0], pos[f, i, 1]), fontsize=7,
+                         xytext=(4, 4), textcoords="offset points")
+        if drums:
+            axp.scatter(pos[f, drums, 0], pos[f, drums, 1], s=26, color="#d62728", zorder=3)
+        axp.set_xlim(-2.2, 2.6)
+        axp.set_ylim(-2.4, 2.4)
+        axp.set_aspect("equal")
+        axp.set_title("plan view (looking down) -- this one shows yaw", fontsize=9)
+        axp.set_xlabel("x [m]", fontsize=8)
+        axp.set_ylabel("y [m]", fontsize=8)
+        axp.grid(alpha=0.25, lw=0.5)
+
         zs = pos[f, wheels, 2]
+        y, pi, ro = attitude(f)
         axs.legend(loc="upper right", fontsize=7)
-        fig.suptitle(f"frame {f + 1}/{nf}   wheel z spread "
+        fig.suptitle(f"frame {f + 1}/{nf}    yaw {y:+.1f}   pitch {pi:+.1f}   "
+                     f"roll {ro:+.1f} deg    wheel z spread "
                      f"{1000 * (zs.max() - zs.min()):.0f} mm", fontsize=10)
 
     writer = PillowWriter(fps=12)

@@ -1277,7 +1277,44 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             tolerance=1.0e-6,
                             warmstart_mode=self.mpm_warmstart_mode,
                             velocity_basis="Q1",
-                            collider_basis="pic27",
+                            # S2, not pic27, because pic27 switches the
+                            # contact activation band off entirely.
+                            #
+                            # rasterized_collisions.py gates contact on
+                            #   bc_active = sdf < activation_distance * voxel_size
+                            # with
+                            #   activation_distance = 0.0 if degree == 0
+                            #                         else 0.5 / degree
+                            # and pic27 resolves to a PointBasisSpace, whose
+                            # ORDER is 0. So the band is exactly zero and a
+                            # particle generates no contact impulse until its
+                            # CENTRE is strictly inside the collider. S2 gives
+                            # 0.5/2 * 0.08 = 0.020 m; Q1 gives 0.040 m. pic27
+                            # is the only choice that gives none.
+                            #
+                            # Particle centres sit half a spacing above the bed
+                            # floor, which at 0.04 m spacing is 0.020 m, so with
+                            # no band the bed free-falls that whole distance
+                            # before anything resists it. The arithmetic closes
+                            # on the measurement to 0.1%: free fall of 0.020 m
+                            # at g = 1.62 reaches 0.25456 m/s, one step at
+                            # dt = 0.01 travels a further 2.546 mm, total
+                            # 22.546 mm -- against 22.520 mm measured on the
+                            # bed-alone test. It also explains why the dt sweep
+                            # looked rate-free: a geometric gap plus one step
+                            # predicts a ratio of 1.216 across an 8x dt range,
+                            # measured 1.176.
+                            #
+                            # And it explains the sinkage the right way round.
+                            # mean|dz| / settlement measured 1.016, where
+                            # uniform compaction over a fixed base gives
+                            # exactly 0.500 and bodily translation gives 1.000.
+                            # The bed was not collapsing volumetrically -- it
+                            # was falling through its own floor as a block.
+                            #
+                            # S2 is in collider_rebuild_safe (pic*, Q1, S2, S3)
+                            # so the rebuildable sparse grid is unaffected.
+                            collider_basis="S2",
                             collider_velocity_mode="forward",
                             # Left at "auto" (which resolves to "gs" for a Q1
                             # velocity basis). A ("cr", "gs") Krylov warm start

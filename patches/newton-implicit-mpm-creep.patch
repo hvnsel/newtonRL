@@ -1,0 +1,116 @@
+diff -ruN a/implicit_mpm/rheology_solver_kernels.py b/implicit_mpm/rheology_solver_kernels.py
+--- a/implicit_mpm/rheology_solver_kernels.py	2026-10-25 08:38:21.889150735 +0000
++++ b/implicit_mpm/rheology_solver_kernels.py	2026-10-25 08:38:21.912577431 +0000
+@@ -14,10 +14,28 @@
+ _SLIDING_NEWTON_TOL = wp.constant(1.0e-7)
+ """Tolerance for the Newton method to solve for the sliding velocity"""
+ 
+-_INCLUDE_LEFTOVER_STRAIN = wp.constant(False)
++_INCLUDE_LEFTOVER_STRAIN = wp.constant(True)
+ """Whether to include leftover strain (due to not fully-converged implicit solve) in the elastic strain.
+ 
+-More accurate, but less stable for stiff materials. Development toggle for experimentation."""
++MUST be True for the scheme to be consistent. The kinematic identity
++dt * B v = d_eps_e + d_eps_p holds exactly, by definition of the elastic/plastic
++decomposition, independently of how well the implicit system was solved. With
++this flag False the difference between the plastic strain the solve converged to
++and the one the flow rule actually wants -- i.e. the constitutive residual of the
++final iterate -- is excluded from the elastic strain and silently absorbed into
++the plastic strain, which is irreversible. The material then has no memory of the
++compression it underwent, so it offers no extra resistance on the next step and
++an under-converged step becomes a permanent position error instead of a bounded,
++self-correcting stress error. That is a one-way ratchet: a body resting on the
++material creeps at a rate set by the solver residual rather than by the
++constitutive law, and never recovers.
++
++With this flag True the leftover enters eps_e and may be inadmissible (outside
++the yield set K). That is correct and is handled on the next step as a standard
++elastic predictor followed by the return map (solve_flow_rule / project_stress).
++The original objection -- "less stable for stiff materials" -- is a symptom of
++the same defect: a material stiff enough that the leftover is large is a material
++whose elastic branch the solve is failing to resolve."""
+ 
+ _USE_CAM_CLAY = wp.constant(False)
+ """Use Modified Cam-Clay flow rule instead of the piecewise-linear anisotropic one. Development toggle for experimentation."""
+diff -ruN a/implicit_mpm/solve_rheology.py b/implicit_mpm/solve_rheology.py
+--- a/implicit_mpm/solve_rheology.py	2026-10-25 08:38:21.889195236 +0000
++++ b/implicit_mpm/solve_rheology.py	2026-10-25 08:38:47.747218781 +0000
+@@ -5,6 +5,7 @@
+ 
+ import gc
+ import math
++import warnings
+ from collections.abc import Sequence
+ from dataclasses import dataclass
+ from typing import Any
+@@ -1870,6 +1871,17 @@
+                     f"{rheology_solver.name} terminated after {iteration_and_condition.numpy()[0]} iterations with residuals {res_l2}, {res_linf}"
+                 )
+ 
++            rheology_solver.last_iteration_count = int(iteration_and_condition.numpy()[0])
++            rheology_solver.last_residual = _nonlinear_solver_result_norms(
++                rheology_solver.eval_residual().numpy(),
++                l2_tolerance_scale
++                if rheology_solver.rheology.strain_environment_offsets is None
++                else l2_tolerance_scale.numpy(),
++            )
++            rheology_solver.last_converged = bool(
++                rheology_solver.last_residual[0] < tolerance and rheology_solver.last_residual[1] < tolerance
++            )
++
+         iteration_and_condition.release()
+     else:
+         solve_granularity = rheology_solver.solve_granularity
+@@ -1879,7 +1891,25 @@
+             else l2_tolerance_scale.numpy()
+         )
+ 
+-        for batch in range(max_iterations // solve_granularity):
++        n_batches = max_iterations // solve_granularity
++        if n_batches < 1:
++            raise ValueError(
++                f"max_iterations={max_iterations} is below the {rheology_solver.name} "
++                f"solve_granularity={solve_granularity}: max_iterations // solve_granularity "
++                f"== 0, so NO rheology or contact iterations would run at all and the step "
++                f"would advance on the warm start alone. Use a multiple of {solve_granularity}."
++            )
++        if max_iterations % solve_granularity:
++            warnings.warn(
++                f"max_iterations={max_iterations} is not a multiple of the "
++                f"{rheology_solver.name} solve_granularity={solve_granularity}; "
++                f"{max_iterations % solve_granularity} iterations will be dropped.",
++                stacklevel=2,
++            )
++
++        converged = False
++        res_l2 = res_linf = float("inf")
++        for batch in range(n_batches):
+             for _k in range(solve_granularity):
+                 contact_solver.solve()
+                 rheology_solver.solve()
+@@ -1892,8 +1922,25 @@
+                     f"{rheology_solver.name} iteration #{(batch + 1) * solve_granularity} \t res(l2)={res_l2}, res(linf)={res_linf}"
+                 )
+             if res_l2 < tolerance and res_linf < tolerance:
++                converged = True
+                 break
+ 
++        # Make non-convergence observable. Without this a solve that exits at the
++        # iteration cap is indistinguishable from a converged one from outside,
++        # and the unresolved strain is delivered to the caller as motion.
++        rheology_solver.last_iteration_count = (batch + 1) * solve_granularity
++        rheology_solver.last_residual = (res_l2, res_linf)
++        rheology_solver.last_converged = converged
++        if not converged:
++            warnings.warn(
++                f"{rheology_solver.name} did NOT converge: res(l2)={res_l2:.3e}, "
++                f"res(linf)={res_linf:.3e} > tolerance={tolerance:.3e} after "
++                f"{max_iterations} iterations. The residual is a per-step strain, so it "
++                f"leaks into the configuration at a rate of about "
++                f"res(linf) * H_domain / dt.",
++                stacklevel=2,
++            )
++
+     return solve_graph
+ 
+ 

@@ -481,7 +481,14 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # "smoothed" are rejected outright with a rebuildable sparse grid.
     #
     # Set here rather than overridden: Hydra reads a bare none as null.
-    mpm_warmstart_mode: str = "none"
+    # "none" zeroes stress_field every step (solver_implicit_mpm.py:
+    # `elif not self._stress_warmstart: scratch.stress_field.dof_values.zero_()`)
+    # while the collider impulse_field is warm-started unconditionally. So the
+    # contact dual variable is converged and the SOIL dual variable is
+    # cold-started at 100 Hz -- the worst possible initial guess for a static
+    # field whose answer is identical every step, and the structural reason the
+    # harvested force reads correct while the bulk does not.
+    mpm_warmstart_mode: str = "particles"
 
     # Early termination has to be off with separate_worlds off: a masked
     # reset cannot clear grid-backed warm starts on a shared grid, so the
@@ -580,13 +587,34 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # against 5.14 for a frictionless cohesive soil. The friction term was
     # contributing nothing.
     #
-    # This bed spawns at a solid fraction of 0.893 -- 8 particles of 5.71e-5
-    # m3 in a 0.08 m node -- so anything at or below that is incompressible
-    # from the first step. 0.90 leaves 0.7% of a node of slack: the bed is
-    # spawned at its critical packing and resists further compaction, which is
-    # what a dense regolith bed does. 0.95 would allow 5.7% of compaction
-    # first if this proves too stiff.
-    soil_critical_fraction: float = 0.90
+    # Everything above this line is wrong, and is kept only so the mistake is
+    # legible. Two errors, in opposite directions.
+    #
+    # The arithmetic: this bed does NOT spawn at a solid fraction of 0.893.
+    # particles_per_env lays out ceil(2*5.8/0.08) x ceil(2*2.0/0.08) x
+    # ceil(2*0.25/0.08) = 145 x 50 x 7 = 50,750, so the spacing is
+    # ANISOTROPIC -- 0.04 x 0.04 x 0.035714 -- and a particle occupies
+    # 2.9/50,750 = 5.7143e-5 m3, which is what gives the 0.34286 kg the run
+    # prints. That is 8.96 particles per 0.08 m node, not 8, and a packing
+    # fraction of exactly 1.000000. The offset is
+    # max(critical_fraction*(node_volume - collider_volume) - particle_volume,
+    # 0), which at fraction 1.0 is max(-0.1*V - 0.9*V_collider, 0) = 0 for
+    # every node. So this knob has been INERT at 0.90 exactly as it was at
+    # 0.0, which is why the sweep showed no change -- not because the
+    # mechanism was saturated.
+    #
+    # The direction: the term is not an incompressibility constraint. Its own
+    # docstring is "Fraction for particles under which the yield surface
+    # collapses", and rheology_solver_kernels.py gates
+    # `yield_params[1] = 0.0  # disable cohesion if offset > 0 (not compact)`
+    # on it. It is a LOOSENESS detector that removes cohesion where the
+    # material has dilated. It cannot generate confining pressure and it never
+    # could; confining pressure comes from the elastic volumetric branch.
+    # So 0.90 does not stiffen the bed -- it arms a term that, wherever soil
+    # does loosen enough to fire it, deletes the 500 Pa of cohesion.
+    #
+    # Back to Newton's default, which switches the term off outright.
+    soil_critical_fraction: float = 0.0
 
     # Derived in __post_init__ and read off the cfg.
     bed_top: float = 0.0
@@ -1157,13 +1185,54 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             critical_fraction=self.soil_critical_fraction,
                             strain_basis="P0",
                             transfer_scheme="apic",
-                            max_iterations=24,
-                            tolerance=1.0e-4,
+                            # The rheology solve is a projected Gauss-Seidel
+                            # relaxation of the dual (Delassus) system
+                            # W sigma + b in N_K, W = C + dt^2 B M^-1 B^T.
+                            # A GS sweep transports information exactly one
+                            # cell, so equilibrating a load path across a bed
+                            # L/h = 5.8/0.08 = 72 cells wide needs >= 72
+                            # sweeps; the elastic CFL c*dt/h = 16 cells/step
+                            # is a second, independent floor. 24 is below
+                            # both. It is also below _GaussSeidelSolver's
+                            # solve_granularity of 25, and the host (non-CUDA
+                            # -graph) loop is `range(max_iterations //
+                            # solve_granularity)`, so on that path 24 runs
+                            # ZERO sweeps. Newton's own default is 250; keep
+                            # this a multiple of 25.
+                            max_iterations=250,
+                            # ABSOLUTE tolerance on a DIMENSIONLESS per-step
+                            # strain: evaluate_strain_residual measures
+                            # |D . dsigma| = |tau_new - tau| and
+                            # update_condition compares it to tolerance^2 with
+                            # no reference to any load or stress scale, while
+                            # strain_delta_form carries dt so B v is a strain
+                            # increment over one step. The elastic strain that
+                            # has to hold this machine up is rho*g*H/K =
+                            # 2430/8.33e7 = 2.9e-5, i.e. 3.4x BELOW the old
+                            # 1e-4 floor: the entire physical signal sat under
+                            # the convergence threshold. Unresolved strain
+                            # leaks into the configuration at eps_res*H/dt, so
+                            # 1e-4 licensed 1e-4*0.25/0.01 = 2.5 mm/s of creep
+                            # by construction -- against a measured 2.58 mm/s.
+                            tolerance=1.0e-6,
                             warmstart_mode=self.mpm_warmstart_mode,
                             velocity_basis="Q1",
                             collider_basis="pic27",
                             collider_velocity_mode="forward",
-                            solver="auto",
+                            # "auto" + velocity_basis Q1 resolves to plain
+                            # "gs" (solver_implicit_mpm.py _resolve_solver_spec
+                            # resolve_auto), i.e. a pure smoother with no
+                            # global stage. The second term of W is a discrete
+                            # Laplacian-type operator with cond ~ (L/h)^2, and
+                            # block-GS damps its longest-wavelength mode -- the
+                            # load path from wheel to floor slab -- at only
+                            # 1 - O((h/L)^2) per sweep. A Krylov stage used as
+                            # a warm start supplies that transport in
+                            # O(sqrt(cond)) steps instead of O(cond), and is
+                            # legal with contacts: solve_rheology only raises
+                            # for a SOLE linear solver, and accepts the form
+                            # [linear, ][jacobi, ]<final>.
+                            solver=("cr", "gs"),
                             separate_worlds=self.mpm_separate_worlds,
                             # Must be False on a coupled entry.
                             project_outside_colliders=False,

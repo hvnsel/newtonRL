@@ -435,7 +435,40 @@ def _probe(u) -> None:
                   f"max {np.abs(dev_from_I).max():.4f}  "
                   f"(a resting bed at E={E.mean():.1g} Pa should be ~1e-5)")
 
-            eps = 0.5 * (F + np.transpose(F, (0, 2, 1))) - np.eye(3)
+            # particle_stress is the solver's OWN yield-projected Cauchy
+            # stress in Pa (registered as "mpm:particle_stress", written from
+            # project_stress). Read it: it is the operative stress and it is on
+            # the force path. Everything derived from F below is a diagnostic.
+            try:
+                sg = st.mpm.particle_stress.numpy()
+                pp = -np.trace(sg, axis1=1, axis2=2) / 3.0
+                dv = sg + pp[:, None, None] * np.eye(3)
+                tt = np.sqrt(0.5 * np.einsum("nij,nij->n", dv, dv))
+                print(f"[probe]   particle_stress: p mean {pp.mean():.1f}Pa "
+                      f"p50 {np.percentile(pp, 50):.1f}Pa "
+                      f"p99 {np.percentile(pp, 99):.1f}Pa  "
+                      f"sqrt(J2) mean {tt.mean():.1f}Pa "
+                      f"(expect p ~ rho*g*depth, 243..2430 Pa)")
+            except Exception as exc:                       # noqa: BLE001
+                print(f"[probe]   particle_stress unavailable: {exc!r}")
+
+            # DO NOT use sym(F) - I. F is the elastic DEFORMATION GRADIENT and
+            # it carries accumulated rigid rotation: the particle update adds
+            # skew = 0.5*dt*(L - L^T) to the strain increment, so F = R(I + e)
+            # with |e| ~ 1e-5 and R an accumulated rotation of tens of degrees
+            # after a churning bed. Symmetrising a rotation by angle th about
+            # ANY axis n gives sym(R) - I = (cos th - 1)(I - n (x) n), an
+            # axisymmetric *compressive* strain whose probe-derived invariants
+            # are tau/p = (sqrt(6)/3)*G/K = 0.37684 and
+            # tau/yield = that * sqrt(1.5)/friction = 0.549451 -- independent
+            # of th, of the axis, of depth and of load. That is exactly the
+            # "7 MPa, flat with depth, tau/yield pinned at 0.549" artifact, and
+            # max|F - I| -> 2 is the geometric cap of a rotation, not strain.
+            # The solver itself is rotation-correct: strain_rhs SVDs F and
+            # takes U log(Sigma) U^T, discarding R. Do the same here.
+            Fu, Fs, _Fv = np.linalg.svd(F)
+            eps = np.einsum("nik,nk,njk->nij", Fu,
+                            np.log(np.maximum(Fs, 1e-12)), Fu)
             tr = np.trace(eps, axis1=1, axis2=2)
             lam = (E * nu) / ((1 + nu) * (1 - 2 * nu))
             two_g = E / (1 + nu)

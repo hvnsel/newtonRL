@@ -68,6 +68,12 @@ def _parse(argv):
     p.add_argument("--frames", default=None,
                    help="directory for PNGs, if the env can render to an array. "
                         "The Newton backend hands back nothing, so prefer --dump")
+    p.add_argument("--gravity_scale", type=float, default=1.0,
+                   help="scale gravity, for the load-scaling test. Halving it "
+                        "halves the machine's weight; cohesion does not scale "
+                        "with it, so a strength-limited sinkage falls roughly "
+                        "in proportion while a geometry-limited one does not "
+                        "move")
     p.add_argument("--probe", action="store_true",
                    help="after stepping, report whether the soil's reaction "
                         "actually reaches the machine's bodies")
@@ -403,6 +409,11 @@ def main(argv=None) -> int:
 
     env_cfg, _ = resolve_task_config(args.task, "")
     env_cfg.scene.num_envs = args.num_envs
+
+    if args.gravity_scale != 1.0:
+        g = tuple(float(c) * args.gravity_scale for c in env_cfg.sim.gravity)
+        env_cfg.sim.gravity = g
+        print(f"[play] gravity scaled by {args.gravity_scale}: {g}")
 
     if not args.no_window:
         # dig_demo.py's block, unchanged.

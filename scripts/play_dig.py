@@ -310,6 +310,17 @@ def _find_coupled_solver():
     return None
 
 
+def _wheel_radius() -> float:
+    """WHEEL_RADIUS, read lazily so this script keeps working if the geometry
+    module moves. 0.30 is the value it has had throughout."""
+    try:
+        from luna_hifi_tasks.excavator.excavator import WHEEL_RADIUS  # noqa: PLC0415
+
+        return float(WHEEL_RADIUS)
+    except Exception:  # noqa: BLE001
+        return 0.30
+
+
 def _attitude(u) -> None:
     """Commanded vs achieved arm angles, and the machine's actual attitude.
 
@@ -917,6 +928,7 @@ def main(argv=None) -> int:
         dt = u.step_dt
         steps = int(args.seconds / dt)
         reset_steps: list[int] = []
+        bodies: list = []
         import time as _time
 
         t_start = _time.perf_counter()
@@ -999,6 +1011,16 @@ def main(argv=None) -> int:
                 if grid is not None:
                     beds.append(grid[0].detach().float().cpu().numpy().copy())
                     origin = u.scene.env_origins[0]
+                    # Every body's world position, so the machine's ATTITUDE is
+                    # recoverable afterwards. The chassis pose alone cannot show
+                    # a pitch, and the heightmap is a plan view, so neither of
+                    # the things already dumped could show the machine tipping --
+                    # which is what it has been doing all along.
+                    try:
+                        bp = u.robot.data.body_pos_w.torch[0].detach().cpu().numpy()
+                        bodies.append((bp - origin.detach().cpu().numpy()).copy())
+                    except Exception:  # noqa: BLE001
+                        pass
                     poses.append([
                         float(root[0, 0] - origin[0]),
                         float(root[0, 1] - origin[1]),
@@ -1063,6 +1085,12 @@ def main(argv=None) -> int:
                 pose=np.asarray(poses, dtype="float32"),
                 work_mask=(work[0].detach().cpu().numpy() if work is not None
                            else np.zeros(beds[0].shape, dtype=bool)),
+                body_pos=(np.stack(bodies).astype("float32") if bodies
+                          else np.zeros((0, 0, 3), dtype="float32")),
+                body_names=np.asarray(
+                    list(getattr(u.robot.data, "body_names", []) or []), dtype=object
+                ),
+                wheel_radius=_wheel_radius(),
                 voxel=float(u.cfg.voxel_size),
                 lower=np.asarray(u.cfg.bed_grid_lower, dtype="float32"),
                 bed_x=np.asarray(u.cfg.bed_x, dtype="float32"),

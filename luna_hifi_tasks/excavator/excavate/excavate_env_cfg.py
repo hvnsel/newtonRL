@@ -1183,38 +1183,67 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             grid_type="sparse",
                             grid_padding=0,
                             critical_fraction=self.soil_critical_fraction,
-                            # Back to P0 after measuring Q1d, which detonates.
+                            # pic8: a PARTICLE strain basis, chosen on
+                            # measurement. Bed alone under gravity, 2 s, no
+                            # rigid body:
                             #
-                            # The reasoning for Q1d still stands as far as it
-                            # goes: P0 stress on Q1 velocity is single-point
-                            # reduced integration of the trilinear hex, 24
-                            # velocity DOFs against 6 strain DOFs per cell, and
-                            # the assembled operator carries 55/63/79/101/117/
-                            # 149 spurious non-rigid zero-energy modes on
-                            # 5x5x3 .. 16x16x3 slabs against exactly 0 for Q1d
-                            # and pic8. Those modes deform the material while
-                            # generating no stress.
+                            #  basis  settle mm   mean KE J/kg  slope    R2   sxx/szz
+                            #   P0        33.64      7.830e-08  0.379  0.476   +0.004
+                            #   Q1d    -2419.05      7.300e-01  0.012  0.002  exploded
+                            #   Q1d    -8562.44      1.287e+00  0.000  0.015  exploded (250 it)
+                            #   pic8      22.52      7.829e-14  0.681  0.640   +0.637
                             #
-                            # But the bed-alone test says Q1d is not usable
-                            # here. Against P0's 33.6 mm of settlement and a
-                            # mean particle kinetic energy of 7.83e-08 J/kg,
-                            # Q1d sent the surface from 0.220 to 2.639 m --
-                            # upward, 2.4 m -- with mean particle displacement
-                            # 523 mm and KE 7.30e-01 J/kg, seven orders of
-                            # magnitude more energy. The bed disintegrated.
-                            # That is energy injection, not a stability fix.
+                            # sxx/szz is the number that matters. A bed in a
+                            # walled box cannot expand laterally, so it must
+                            # develop K0 = 0.429 (elastic, zero lateral strain)
+                            # or 0.357 (Jaky at phi = atan(0.84) = 40.0 deg).
+                            # Under P0 it is +0.004, mixed sign, no trend --
+                            # there is no confining pressure at all, and since
+                            # Drucker-Prager strength is cohesion + friction*p,
+                            # that leaves friction*p at 65-410 Pa against 500 Pa
+                            # of cohesion. The soil was a ~500 Pa cohesive mud
+                            # with a bearing capacity of Nc*c = 2.57 kPa,
+                            # against 2.85-6.5 kPa under a wheel. Under pic8 the
+                            # middle bins read 0.427 and 0.347, straddling the
+                            # requirement, and friction*p reaches 1026-1258 Pa
+                            # -- the frictional half of the law finally carries
+                            # the material. Mean particle kinetic energy falls
+                            # six orders of magnitude, so the bed is at rest
+                            # rather than creeping.
                             #
-                            # Two candidates, neither yet tested, both cheap in
-                            # scripts/mpm_minimal_probe.py: that run used the
-                            # probe's own default of 24 iterations while Q1d
-                            # carries 8x the dual DOFs, so it may simply be
-                            # starved where P0 was not; and Q1d activates the
+                            # Why P0 fails: P0 stress on Q1 velocity is
+                            # single-point reduced integration of the trilinear
+                            # hex, 24 velocity DOFs against 6 strain DOFs per
+                            # cell. The assembled operator carries 55/63/79/
+                            # 101/117/149 spurious non-rigid zero-energy modes
+                            # on 5x5x3 .. 16x16x3 slabs; pic8 and Q1d measure 0.
+                            # Those modes deform the soil while generating no
+                            # stress, which is how a bed compacts without
+                            # developing pressure.
+                            #
+                            # Why not Q1d, which also has 0 modes: it detonates
+                            # -- the surface launches 2.4 m upward at 24
+                            # iterations and 8.6 m at 250, so more solving
+                            # injects more energy and starvation is ruled out.
+                            # It is the only basis here that activates the
                             # nodes_per_element > 1 eigenbasis rotation branch
-                            # at solver_implicit_mpm.py:3380, which is dead
-                            # code under P0 and therefore unexercised. Until
-                            # one of those is settled, P0's wrong-but-bounded
-                            # equilibrium beats Q1d's explosion.
-                            strain_basis="P0",
+                            # (solver_implicit_mpm.py:3380, and the
+                            # rotate_matrix_rows / rotate_vectors /
+                            # inverse_rotate_vectors kernels appear in its log
+                            # and nowhere else), which is dead code under P0 and
+                            # so unexercised upstream. Treat that as an upstream
+                            # bug, not a tuning problem.
+                            #
+                            # Not a complete fix: 22.5 mm of settlement is still
+                            # ~8000x the 0.0028 mm a 1-D elastic bed at E=1e8
+                            # should give, and the slope ratio is 0.681 rather
+                            # than 1.0. But the bed is quiet, confined, and
+                            # frictional, which P0's never was.
+                            #
+                            # pic* is in strain_rebuild_safe, so the rebuildable
+                            # sparse grid and the particle warm start are
+                            # unaffected.
+                            strain_basis="pic8",
                             transfer_scheme="apic",
                             # The rheology solve is a projected Gauss-Seidel
                             # relaxation of the dual (Delassus) system

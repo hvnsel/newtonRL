@@ -819,30 +819,80 @@ def test_basis(cfg: Cfg):
     print("  such a mode, it is huge, flat with depth, AND consistent with a correct")
     print("  harvested force. Refining the voxel does NOT cure an inf-sup failure, which")
     print("  is exactly what voxel 0.08 -> 0.04 showed.")
+    # Each pair runs in its OWN PROCESS. An unsupported or broken pair raises
+    # CUDA error 700 (illegal memory access), which poisons the CUDA context
+    # and takes the interpreter with it -- a try/except here cannot survive
+    # that, and the first bad pair used to destroy the whole table.
+    import os
+    import subprocess
+    import tempfile
+
+    print("  each pair in its own process: a bad pair raises CUDA 700, which is")
+    print("  unrecoverable in-process and would otherwise kill the whole sweep.")
     out = []
     for sb in ("P0", "P1d", "Q1d", "Q1"):
         for vb in ("Q1", "B2"):
-            c = Cfg(**{**cfg.__dict__, "strain_basis": sb, "velocity_basis": vb})
-            try:
-                rig = Rig(c, with_box=True)
-                rig.run(c.seconds, sample_every=1.0)
-                prof = rig.stress_profile()
-                fit = prof["fit"] or {}
-                row = dict(
-                    strain_basis=sb,
-                    velocity_basis=vb,
-                    sink_mm=(rig.box_z0 - rig.z) * 1e3,
-                    slope_ratio=fit.get("slope_ratio"),
-                    r2=fit.get("r2"),
-                    p_mid=prof["rows"][len(prof["rows"]) // 2]["solver"]["p"] if prof["rows"] else None,
-                    f_sand=rig.log[-1]["f_sand"],
-                )
-            except Exception as e:  # unsupported pair
-                row = dict(strain_basis=sb, velocity_basis=vb, error=repr(e)[:160])
-            out.append(row)
-            print(f"  {sb:>4}/{vb:<3} {row}")
+            with tempfile.TemporaryDirectory() as td:
+                jf = os.path.join(td, "row.json")
+                argv = [
+                    sys.executable, os.path.abspath(__file__), "basis1",
+                    "--strain-basis", sb, "--velocity-basis", vb,
+                    "--seconds", str(cfg.seconds), "--dt", str(cfg.dt),
+                    "--voxel", str(cfg.voxel_size), "--ppc", str(cfg.particles_per_cell),
+                    "--max-iterations", str(cfg.max_iterations),
+                    "--tolerance", str(cfg.tolerance),
+                    "--density", str(cfg.density), "--young", str(cfg.young_modulus),
+                    "--bearing-kpa", str(cfg.target_bearing_kpa),
+                    "--bed", str(cfg.bed_x), str(cfg.bed_y), str(cfg.bed_z),
+                    "--wall-mu", str(cfg.wall_mu),
+                    "--collider-basis", cfg.collider_basis,
+                    "--critical-fraction", str(cfg.critical_fraction),
+                    "--json", jf,
+                ]
+                proc = subprocess.run(argv, capture_output=True, text=True, timeout=1800)
+                row = None
+                if os.path.exists(jf):
+                    try:
+                        with open(jf) as fh:
+                            row = json.load(fh).get("basis1")
+                    except Exception:
+                        row = None
+                if not isinstance(row, dict):
+                    tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+                    cuda = [t for t in tail if "CUDA error" in t]
+                    why = cuda[0][:120] if cuda else (tail[-1][:120] if tail else "no output")
+                    row = dict(strain_basis=sb, velocity_basis=vb,
+                               error=f"rc={proc.returncode}: {why}")
+                out.append(row)
+                print(f"  {sb:>4}/{vb:<3} {row}")
+    print()
+    print("  slope_ratio is the number that matters: 1.0 means the bed carries its")
+    print("  own weight with sigma_zz = rho*g*z. P0/Q1 measured 0.379.")
     print()
     return out
+
+
+def test_basis1(cfg: Cfg):
+    """One basis pair, so the parent can run it in its own process.
+
+    test_basis spawns this; run it directly with --strain-basis/--velocity-basis
+    to check a single pair by hand.
+    """
+    rig = Rig(cfg, with_box=True)
+    rig.run(cfg.seconds, sample_every=1.0)
+    prof = rig.stress_profile()
+    fit = prof["fit"] or {}
+    row = dict(
+        strain_basis=cfg.strain_basis,
+        velocity_basis=cfg.velocity_basis,
+        sink_mm=(rig.box_z0 - rig.z) * 1e3,
+        slope_ratio=fit.get("slope_ratio"),
+        r2=fit.get("r2"),
+        p_mid=prof["rows"][len(prof["rows"]) // 2]["solver"]["p"] if prof["rows"] else None,
+        f_sand=rig.log[-1]["f_sand"],
+    )
+    print(f"  {cfg.strain_basis:>4}/{cfg.velocity_basis:<3} {row}")
+    return row
 
 
 def test_project(cfg: Cfg):
@@ -891,6 +941,7 @@ TESTS = {
     "hold": test_hold,
     "iters": test_iters,
     "basis": test_basis,
+    "basis1": test_basis1,
     "project": test_project,
 }
 

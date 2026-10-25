@@ -1177,38 +1177,49 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         # union is SOIL_CONTACT_BODIES_REGEX, so nothing is mapped twice. A
         # soil_contact_regex somebody has overridden stays one mapping,
         # because its body set is not ours to split.
-        def _soil_proxy(bodies: str, mass_scale: float) -> CouplerProxyMappingCfg:
+        def _soil_proxy(bodies: str, mass_scale: float, pipeline) -> CouplerProxyMappingCfg:
             return CouplerProxyMappingCfg(
                 source=RIGID_ENTRY,
                 destination=MPM_ENTRY,
                 bodies=[bodies],
                 mode=self.proxy_mode,
                 mass_scale=mass_scale,
-                # The default is a factory giving each proxy its own pipeline;
-                # None instead "passes shared outer contacts to the
-                # destination", and the outer one is built for the rigid
-                # entry. Parked, with the wheels commanded to zero and the arm
-                # stowed, the machine falls through the whole 25 cm bed onto
-                # the floor and never finds equilibrium, while the drums still
-                # scoop soil -- the MPM solve resolves its own colliders at
-                # grid level regardless of this. Wheels getting no contact and
-                # drums still loading is what a missing proxy pipeline would
-                # look like. Back to the default.
-                collision_pipeline=NewtonCollisionPipelineCfg(),
+                collision_pipeline=pipeline,
             )
+
+        # Exactly one mapping per direction may carry the pipeline.
+        # _build_proxy_collision_configs keys _ProxyCollisionConfig by
+        # (source, destination) and rejects a second mapping in the same pair
+        # whose factory is not the *same object*
+        # ("Proxy collision_pipeline and collide_interval must match for all
+        # proxies from 'rover' to 'soil'"), and isaaclab_contrib wraps each cfg
+        # in its own functools.partial, so two cfgs can never pass that test
+        # however identical their contents. The one config it does build is
+        # looked up per direction, not per mapping, so it serves both.
+        #
+        # It has to be a pipeline and not None. The default is a factory giving
+        # the proxies their own; None instead "passes shared outer contacts to
+        # the destination", and the outer one is built for the rigid entry.
+        # Parked, with the wheels commanded to zero and the arm stowed, the
+        # machine falls through the whole 25 cm bed onto the floor and never
+        # finds equilibrium, while the drums still scoop soil -- the MPM solve
+        # resolves its own colliders at grid level regardless of this. Wheels
+        # getting no contact and drums still loading is what a missing proxy
+        # pipeline looks like.
+        pipeline = NewtonCollisionPipelineCfg()
 
         if self.soil_contact_regex == SOIL_CONTACT_BODIES_REGEX:
             proxy_mappings = [
-                _soil_proxy(WHEEL_CONTACT_BODIES_REGEX, self.wheel_proxy_mass_scale),
-                _soil_proxy(DRUM_CONTACT_BODIES_REGEX, self.drum_proxy_mass_scale),
+                _soil_proxy(WHEEL_CONTACT_BODIES_REGEX, self.wheel_proxy_mass_scale, pipeline),
+                _soil_proxy(DRUM_CONTACT_BODIES_REGEX, self.drum_proxy_mass_scale, None),
             ]
         elif self.soil_contact_regex == DRUM_CONTACT_BODIES_REGEX:
             proxy_mappings = [
-                _soil_proxy(DRUM_CONTACT_BODIES_REGEX, self.drum_proxy_mass_scale),
+                _soil_proxy(DRUM_CONTACT_BODIES_REGEX, self.drum_proxy_mass_scale, pipeline),
             ]
         else:
             proxy_mappings = [
-                _soil_proxy(self.soil_contact_regex, self.wheel_proxy_mass_scale),
+                _soil_proxy(self.soil_contact_regex, self.wheel_proxy_mass_scale, pipeline),
             ]
 
         self.sim.physics = NewtonCfg(

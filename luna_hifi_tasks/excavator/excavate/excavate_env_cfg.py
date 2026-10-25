@@ -1271,16 +1271,37 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             #   30%            -> max 16      -> 27.2%
                             #   42% (a 106 mm rut in a 250 mm bed) -> 40.9%
                             #
-                            # 16 loses nothing anywhere in that sweep. 27 has
-                            # more margin but is untested as a STRAIN basis --
-                            # c03acc2 only ruled pic27 out for collider_basis --
-                            # and the Q1d detonation came from taking exactly
-                            # that kind of unexercised path.
+                            # 16 loses nothing anywhere in that sweep, and was
+                            # tried: it raises CUDA error 700, an illegal memory
+                            # access, during the run. So the cap cannot simply be
+                            # raised. warp fem's
+                            # UnstructuredPointTopology.element_node_index
+                            # (space/point_basis_space.py) passes
+                            # node_index_in_elt straight to the quadrature with
+                            # no check against the cell's actual point count,
+                            # while element_node_count caps at
+                            # min(N, point_count). Any kernel that iterates to
+                            # MAX_NODES_PER_ELEMENT rather than to
+                            # element_node_count therefore indexes past the
+                            # cell's particle list, and raising N from 8 to 16
+                            # widens that window. That is the third crash found
+                            # in a code path the default configuration never
+                            # exercises, after the colour-buffer overflow on any
+                            # pic* strain basis and Q1d's eigenbasis rotation
+                            # branch.
+                            #
+                            # So 8 it is, and the truncation is a known cost
+                            # rather than something fixed. It is zero at spawn
+                            # and stays zero below ~5% compaction; it only bites
+                            # where the soil compacts hard, under the footing.
+                            # The way out is to stop the bed compacting 42%,
+                            # which is the bed-depth and voxel-size question, not
+                            # a larger cap.
                             #
                             # pic* is in strain_rebuild_safe, so the rebuildable
                             # sparse grid and the particle warm start are
                             # unaffected.
-                            strain_basis="pic16",
+                            strain_basis="pic8",
                             transfer_scheme="apic",
                             # The rheology solve is a projected Gauss-Seidel
                             # relaxation of the dual (Delassus) system

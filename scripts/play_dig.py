@@ -917,6 +917,10 @@ def main(argv=None) -> int:
         dt = u.step_dt
         steps = int(args.seconds / dt)
         reset_steps: list[int] = []
+        import time as _time
+
+        t_start = _time.perf_counter()
+        t_mark = t_start
         soil = u.cfg.soil_density
         print(f"[play] {steps} steps of {dt:.4f}s, {u.cfg.bed_particles_per_env} particles/env")
 
@@ -1022,6 +1026,13 @@ def main(argv=None) -> int:
                         Image.fromarray(img).save(frame_dir / f"{i:05d}.png")
                         frames_written += 1
 
+            if (i + 1) % 100 == 0:
+                now = _time.perf_counter()
+                sps = 100.0 / max(now - t_mark, 1e-9)
+                t_mark = now
+                print(f"[play] step {i + 1}/{steps}  {sps:6.2f} env-steps/s  "
+                      f"eta {(steps - i - 1) / max(sps, 1e-9):6.0f}s", flush=True)
+
             if bool(dones.any()):
                 reset_steps.append(i)
                 print(f"[play] t={i*dt:5.2f}s episode ended "
@@ -1071,6 +1082,24 @@ def main(argv=None) -> int:
             print(f"[play] wrote {frames_written} PNGs to {args.frames}")
         elif not frames_off:
             print("[play] no frames written")
+
+        wall = _time.perf_counter() - t_start
+        sps = steps / max(wall, 1e-9)
+        print(f"[play] {steps} steps in {wall:.1f}s = {sps:.2f} env-steps/s "
+              f"at {u.num_envs} env(s), {sps * dt:.2f}x realtime")
+        # What that means for training, which is the number that decides whether
+        # the current solver settings are affordable at all.
+        for n_env in (16, 64):
+            # One grid is shared across envs, so per-env-step cost falls with
+            # env count; this scales only the per-env work and is therefore
+            # pessimistic, which is the right direction for a budget.
+            eps_steps = int(26.0 / dt)
+            iters = 400
+            total = eps_steps * iters * n_env
+            hrs = total / max(sps * n_env, 1e-9) / 3600.0
+            print(f"[play]   at {n_env:3d} envs: {iters} iterations x {eps_steps} "
+                  f"steps = {total / 1e6:.1f}M env-steps, ~{hrs:.1f} h "
+                  f"(pessimistic: assumes no per-env speedup)")
 
         last = rows[-1]
         peak = max(r["payload_kg"] for r in rows)

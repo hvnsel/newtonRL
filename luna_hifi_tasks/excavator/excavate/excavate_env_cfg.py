@@ -1332,7 +1332,25 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             # leaks into the configuration at eps_res*H/dt, so
                             # 1e-4 licensed 1e-4*0.25/0.01 = 2.5 mm/s of creep
                             # by construction -- against a measured 2.58 mm/s.
-                            tolerance=1.0e-6,
+                            # 1e-5, which is the loosest value that still
+                            # resolves the answer. The residual is a
+                            # DIMENSIONLESS per-step strain compared against an
+                            # absolute threshold, and the elastic strain that
+                            # has to hold this machine up is rho*g*H/K =
+                            # 2430/8.333e7 = 2.92e-5. So:
+                            #   1e-4: 0.29x the signal -- ABOVE it, the solver
+                            #         converges by its own test while the whole
+                            #         answer sits under the floor
+                            #   1e-5: 2.92x below it   -- resolves it
+                            #   1e-6: 29.2x below it   -- resolves it and then
+                            #         keeps paying for precision nothing reads
+                            # At 1e-4 the solve was measured terminating after 6
+                            # of the 25 sweeps the graph path offers; at 1e-6 the
+                            # count is unknown against a cap of 250, so the
+                            # worst case is 40x the rheology work per step. That
+                            # cost is real -- a parked 24 s run takes minutes --
+                            # and training cannot afford it.
+                            tolerance=1.0e-5,
                             warmstart_mode=self.mpm_warmstart_mode,
                             velocity_basis="Q1",
                             # S2, not pic27, because pic27 switches the

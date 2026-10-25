@@ -1183,39 +1183,38 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             grid_type="sparse",
                             grid_padding=0,
                             critical_fraction=self.soil_critical_fraction,
-                            # P0 (piecewise-constant stress) on Q1 (trilinear
-                            # velocity) is single-point reduced integration of
-                            # the trilinear hex: 24 velocity DOFs against 6
-                            # strain DOFs per cell, so the discrete strain
-                            # operator has a kernel of at least 12 modes per
-                            # cell beyond the rigid motions. Measured on the
-                            # operator this code actually assembles: 55, 63,
-                            # 79, 101, 117 and 149 spurious non-rigid
-                            # zero-energy modes on 5x5x3 .. 16x16x3 slabs, and
-                            # exactly 0 for Q1d and pic8. Those are velocity
-                            # fields that deform the soil while generating no
-                            # stress -- textbook Flanagan-Belytschko
-                            # hourglassing -- so the material can compact along
-                            # them with nothing to resist it.
+                            # Back to P0 after measuring Q1d, which detonates.
                             #
-                            # This was deprioritised on the grounds that its
-                            # plastic limit load is only 13% below exact, i.e.
-                            # it could not account for a 24x bearing deficit.
-                            # That was answering the wrong question: the
-                            # minimal probe shows the bed settles 33.6 mm with
-                            # no rigid body present against 0.0028 mm of
-                            # elastic settlement, reaches that state
-                            # dt-independently (112.8/104.2/97.7/95.9 mm over
-                            # an 8x dt range) and equilibrates there with the
-                            # vertical stress at 0.379 of rho*g*z. So the
-                            # discrete equilibrium is itself wrong rather than
-                            # unconverged, and a 14% volumetric collapse along
-                            # an unresisted mode is the shape of that.
+                            # The reasoning for Q1d still stands as far as it
+                            # goes: P0 stress on Q1 velocity is single-point
+                            # reduced integration of the trilinear hex, 24
+                            # velocity DOFs against 6 strain DOFs per cell, and
+                            # the assembled operator carries 55/63/79/101/117/
+                            # 149 spurious non-rigid zero-energy modes on
+                            # 5x5x3 .. 16x16x3 slabs against exactly 0 for Q1d
+                            # and pic8. Those modes deform the material while
+                            # generating no stress.
                             #
-                            # Q1d is rebuild-safe, so the sparse grid and the
-                            # particle warm start are unaffected. Costs ~8x the
-                            # dual DOFs.
-                            strain_basis="Q1d",
+                            # But the bed-alone test says Q1d is not usable
+                            # here. Against P0's 33.6 mm of settlement and a
+                            # mean particle kinetic energy of 7.83e-08 J/kg,
+                            # Q1d sent the surface from 0.220 to 2.639 m --
+                            # upward, 2.4 m -- with mean particle displacement
+                            # 523 mm and KE 7.30e-01 J/kg, seven orders of
+                            # magnitude more energy. The bed disintegrated.
+                            # That is energy injection, not a stability fix.
+                            #
+                            # Two candidates, neither yet tested, both cheap in
+                            # scripts/mpm_minimal_probe.py: that run used the
+                            # probe's own default of 24 iterations while Q1d
+                            # carries 8x the dual DOFs, so it may simply be
+                            # starved where P0 was not; and Q1d activates the
+                            # nodes_per_element > 1 eigenbasis rotation branch
+                            # at solver_implicit_mpm.py:3380, which is dead
+                            # code under P0 and therefore unexercised. Until
+                            # one of those is settled, P0's wrong-but-bounded
+                            # equilibrium beats Q1d's explosion.
+                            strain_basis="P0",
                             transfer_scheme="apic",
                             # The rheology solve is a projected Gauss-Seidel
                             # relaxation of the dual (Delassus) system

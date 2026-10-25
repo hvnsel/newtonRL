@@ -739,6 +739,52 @@ def _probe(u) -> None:
                       f"(these have no strain node at all -- the pic8 cap in "
                       f"warp fem point_basis_space.py:124 -- and are carrying "
                       f"and resisting nothing)")
+
+                # Pressure UNDER the loaded wheels against pressure away from
+                # them, at the same depth. This decides whether the frictional
+                # half of Drucker-Prager does anything at all. Strength is
+                # cohesion + friction*p, so if p beneath a loaded footing is no
+                # higher than the geostatic p elsewhere, friction contributes
+                # nothing and the soil can only carry its unconfined
+                # compressive strength: 500/(1/sqrt(3) - 0.84/3) = 1682 Pa.
+                # A wheel at 399 N held by that alone needs 0.237 m2, which is
+                # 30 cm of sinkage. Measured 23 cm, where it ran out of bed.
+                # Terzaghi with confinement gives 151 kPa at 1 cm, a factor of
+                # 90, and Apollo measured 1-3 cm of rut.
+                try:
+                    bp = u.robot.data.body_pos_w.torch[0].detach().cpu().numpy()
+                    bn = list(getattr(u.robot.data, "body_names", []) or [])
+                    org = u.scene.env_origins[0].detach().cpu().numpy()
+                    top = float(np.quantile(q[:, 2], 0.995))
+                    dep = top - q[:, 2]
+                    wi = [k for k, n in enumerate(bn) if "wheel" in n]
+                    low = [k for k in wi if (bp[k][2] - org[2]) < top + 0.20]
+                    if low:
+                        near = np.zeros(q.shape[0], dtype=bool)
+                        for k in low:
+                            c = bp[k][:2] - org[:2]
+                            near |= np.hypot(q[:, 0] - c[0], q[:, 1] - c[1]) < 0.35
+                        print("[probe]   pressure UNDER the loaded wheels vs away, "
+                              "same depth:")
+                        print(f"[probe]     loaded: "
+                              f"{[bn[k].replace('_body', '') for k in low]}")
+                        print(f"[probe]     {'band':>11} {'n near':>7} {'p near':>11} "
+                              f"{'n far':>7} {'p far':>11} {'ratio':>6}")
+                        for lo, hi in ((0.0, 0.10), (0.10, 0.20), (0.20, 0.40)):
+                            m = (dep >= lo) & (dep < hi)
+                            a, b = m & near, m & ~near
+                            if a.sum() < 20 or b.sum() < 20:
+                                continue
+                            pa, pb = float(pp[a].mean()), float(pp[b].mean())
+                            print(f"[probe]     {lo:.2f}-{hi:.2f}m {int(a.sum()):7d} "
+                                  f"{pa:10.1f}Pa {int(b.sum()):7d} {pb:10.1f}Pa "
+                                  f"{pa / max(pb, 1e-9):6.2f}")
+                        print("[probe]     ratio ~1 means the load raises no extra "
+                              "confining pressure, so")
+                        print("[probe]     friction*p adds nothing and cohesion alone "
+                              "carries the wheel")
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[probe]   under-wheel pressure unavailable: {exc!r}")
             except Exception as exc:                       # noqa: BLE001
                 print(f"[probe]   particle_stress unavailable: {exc!r}")
 

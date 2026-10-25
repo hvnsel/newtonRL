@@ -46,6 +46,35 @@ SOIL_CONTACT_BODIES_REGEX = (
     r".*(wheel_.._body|drum_(front|rear)_body|shroud_(front|rear)_body)"
 )
 
+# The cutting end alone: rotors and shrouds, no wheels.
+#
+# The implicit MPM soil develops no footing bearing capacity. A parked machine
+# -- wheels commanded to zero, arm stowed, drums never touching soil -- sinks
+# until it rests on the bed floor, and that is not a configuration problem:
+# the proxy feedback is right (the harvested wheel impulses sum to 820 N
+# against a weight of 797 N), and it survives every material parameter, every
+# proxy mode, particles per cell, grid resolution and bed depth. The same
+# failure reproduces in the upstream two-way coupling example on its own
+# published parameters, where the sand carries a 7x to 17x margin on paper.
+#
+# So the wheels come out of the soil coupling and ride rigid rails instead,
+# which the excavate scene places under each track. Wheel-terrain interaction
+# is then rigid contact and carries no sinkage; the soil the drums cut is
+# still MPM, which is the part the dig policy is learning.
+#
+# The rails are placed clear of the cut rather than merely alongside it. The
+# rotor ends at ROTOR_HALF_LEN = 0.475 and a tyre's inboard edge begins at
+# exactly the same y, but the shroud end plates close the pockets 12 mm
+# further out, so the cutting end reaches 0.487 and genuinely overlaps the
+# wheel band: what keeps the two apart on the machine is separation in x, as
+# noted where the arms are laid out. A rail has no x separation to rely on, so
+# the excavate cfg pulls its inner face outboard of 0.487 by more than two
+# collider margins and scripts/rail_check.py asserts the gap.
+DRUM_CONTACT_BODIES_REGEX = (
+    r"/World/envs/env_.*/Excavator/Geometry/chassis/"
+    r".*(drum_(front|rear)_body|shroud_(front|rear)_body)"
+)
+
 # Wheels rest on z = 0 with the chassis origin one wheel radius up; the extra
 # 2 cm keeps the solver off an initial interpenetration.
 SPAWN_Z = CHASSIS_Z + 0.02

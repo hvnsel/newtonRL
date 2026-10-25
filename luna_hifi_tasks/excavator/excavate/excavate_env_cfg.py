@@ -35,10 +35,14 @@ from ..excavator import (
     MAST_TOP_Z,
     ROTOR_HALF_LEN,
     ROTOR_TIP_R,
+    SHROUD_END_T,
     SHROUD_OUT_R,
     SHROUD_RANGE,
+    WHEEL_HALF_W,
+    WHEEL_Y,
 )
 from ..excavator_cfg import (
+    DRUM_CONTACT_BODIES_REGEX,
     EXCAVATOR_CFG,
     EXCAVATOR_PRIM_REGEX,
     LUNAR_GRAVITY,
@@ -219,6 +223,47 @@ def _bed_wall(name: str) -> RigidObjectCfg:
     )
 
 
+def _wheel_rail(name: str) -> RigidObjectCfg:
+    """Hidden kinematic rail carrying one wheel track at grade.
+
+    The soil develops no bearing capacity under the wheels -- see
+    DRUM_CONTACT_BODIES_REGEX for what was ruled out -- so the wheels are
+    taken out of the soil coupling and given something rigid to ride on. A
+    rail runs the length of the bed under one track with its top flush with
+    the soil surface, and it is named on the rover's coupler entry and on no
+    other: the MPM entry sees only the bodies listed on it, so the soil passes
+    straight through the rail and keeps its full extent while the wheels ride
+    on it.
+
+    The consequence to be honest about: wheel-terrain interaction becomes
+    rigid contact with no sinkage and no motion resistance. The soil the
+    drums cut is unaffected, which is what the dig policy is learning.
+
+    Sized and placed in __post_init__. Set wheel_rails False to park them
+    below the floor and put the wheels back on soil.
+    """
+    return RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/WheelRail" + name,
+        init_state=RigidObjectCfg.InitialStateCfg(),
+        spawn=sim_utils.CuboidCfg(
+            size=(1.0, 1.0, 1.0),
+            rigid_props=UsdPhysicsRigidBodyCfg(
+                rigid_body_enabled=True, kinematic_enabled=True
+            ),
+            collision_props=NewtonCollisionPropertiesCfg(
+                collision_enabled=True,
+                contact_margin=MPM_COLLIDER_MARGIN,
+                contact_gap=0.0,
+            ),
+            # The traction the wheels would have had on regolith.
+            physics_material=RigidBodyMaterialBaseCfg(
+                static_friction=1.0, dynamic_friction=0.9
+            ),
+            visible=False,
+        ),
+    )
+
+
 @configclass
 class ExcavateSceneCfg(InteractiveSceneCfg):
     ground = AssetBaseCfg(
@@ -237,6 +282,8 @@ class ExcavateSceneCfg(InteractiveSceneCfg):
     bed_wall_xhi: RigidObjectCfg = _bed_wall("Xhi")
     bed_wall_ylo: RigidObjectCfg = _bed_wall("Ylo")
     bed_wall_yhi: RigidObjectCfg = _bed_wall("Yhi")
+    wheel_rail_ylo: RigidObjectCfg = _wheel_rail("Ylo")
+    wheel_rail_yhi: RigidObjectCfg = _wheel_rail("Yhi")
     soil: MPMObjectCfg = SOIL_CFG
 
 # ---------------------------------------------------------------------------
@@ -349,7 +396,31 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
     # Which bodies are coupled to the soil. Each brings every one of its
     # geoms; the drums are 38 apiece.
-    soil_contact_regex: str = SOIL_CONTACT_BODIES_REGEX
+    #
+    # Drums and shrouds only. The wheels ride rigid rails instead, because the
+    # soil carries no footing load -- DRUM_CONTACT_BODIES_REGEX records what
+    # was ruled out. SOIL_CONTACT_BODIES_REGEX is the wheels-on-soil set and
+    # is still the right one to set this to when retesting the soil itself.
+    soil_contact_regex: str = DRUM_CONTACT_BODIES_REGEX
+
+    # Rails under the wheel tracks, tops flush with the soil surface. False
+    # parks them below the floor, which puts the wheels back on soil and
+    # reproduces the sinking.
+    wheel_rails: bool = True
+
+    # How far outboard of the cutting end a rail's inner face starts.
+    #
+    # The rotor ends at ROTOR_HALF_LEN = 0.475 but the shroud end plates close
+    # the pockets past it, so the real axial extent is 0.487 -- 12 mm inside
+    # the tyre's inboard edge at 0.475. The cutting end and the wheels already
+    # overlap in y; what keeps them apart is separation in x, which is the
+    # machine's own design and is noted as such in excavator.py. A rail runs
+    # the length of the bed and so has no x separation to rely on, and that
+    # makes this clearance the only thing stopping a drum from grinding into
+    # one. It must exceed two collider margins, one on each face: at
+    # MPM_COLLIDER_MARGIN 0.02 that is 0.04, and scripts/rail_check.py
+    # asserts it rather than trusting the arithmetic here.
+    wheel_rail_clearance: float = 0.06
 
     # Rigid-solver buffers, per env, fixed size. Overrunning one is an illegal
     # memory access: a CUDA 700 storm, or 0xC0000374 on Windows.
@@ -925,6 +996,55 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             wall.spawn.collision_props.contact_margin = margin
             wall.init_state.pos = (0.0, 0.0, -10.0) if parked else pos
 
+        # Rails under the wheel tracks. They run the full bed length, stand
+        # on the floor slab and their tops finish flush with the soil surface,
+        # so a wheel rides at exactly grade; the spawn height already clears
+        # that surface by 2 cm, which becomes the wheel settling onto the rail
+        # rather than starting interpenetrated.
+        #
+        # The inner face is set by how far the cutting end reaches and the
+        # outer face is taken out to the bed wall. A tyre spans 0.475 to 0.675
+        # and bears on whatever part of that is over rail; the width beyond it
+        # is there so a wheel drifting outboard stays carried. Drifting inboard
+        # it runs off after 72 mm, and that is the limit of the approach: the
+        # drift reward term, not the geometry, is what keeps the machine
+        # straight, and a pressure-sinkage wheel model is the version that
+        # would survive a heading change.
+        cut_half_y = ROTOR_HALF_LEN + SHROUD_END_T
+        rail_inner = cut_half_y + self.wheel_rail_clearance
+        # Two margins in from the wall's inner face, so the rail's own
+        # margin does not sit tangent to it.
+        rail_outer = self.bed_y[1] - 2.0 * margin
+        if self.wheel_rails and rail_inner - margin <= cut_half_y + margin:
+            raise ValueError(
+                f"wheel_rail_clearance {self.wheel_rail_clearance} does not clear "
+                f"two collider margins of {margin:.3f}: the cutting end reaches "
+                f"{cut_half_y:.3f} and a rail face at {rail_inner:.3f} would be "
+                f"in contact with it at depth"
+            )
+        if self.wheel_rails and rail_inner >= rail_outer:
+            raise ValueError(
+                f"wheel_rail_clearance {self.wheel_rail_clearance} leaves no rail: "
+                f"inner face {rail_inner:.3f} is at or past the outer face "
+                f"{rail_outer:.3f}"
+            )
+        rail_w = rail_outer - rail_inner
+        rail_cy = 0.5 * (rail_inner + rail_outer)
+        railed = self.wheel_rails
+        for rail, sign in (
+            (self.scene.wheel_rail_ylo, -1.0),
+            (self.scene.wheel_rail_yhi, 1.0),
+        ):
+            rail.spawn.size = (
+                (length, rail_w, self.bed_top) if railed else (0.01, 0.01, 0.01)
+            )
+            rail.spawn.collision_props.contact_margin = margin
+            rail.init_state.pos = (
+                (cx, sign * rail_cy, 0.5 * self.bed_top)
+                if railed
+                else (0.0, 0.0, -10.0)
+            )
+
         # Wheels rest on z = 0 in the shared asset cfg: the bed surface with
         # spawn_on_bed, the ground plane without it.
         z = SPAWN_Z + (self.bed_top if self.spawn_on_bed else 0.0)
@@ -954,6 +1074,14 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             f"[excavate] rigid solver njmax={self.rigid_njmax} "
             f"nconmax={self.rigid_nconmax}"
         )
+        if self.wheel_rails:
+            print(
+                f"[excavate]   wheels on rigid rails: top z={self.bed_top:.3f}, "
+                f"|y| {rail_inner:.3f}-{rail_outer:.3f} ({rail_w:.3f} wide); "
+                f"drum swath +/-{ROTOR_HALF_LEN:.3f}, margin {margin:.3f}"
+            )
+        else:
+            print("[excavate]   wheels on soil (no rails): expect the machine to sink")
         print(
             f"[excavate]   {self.grid_cap_multiplier:.0f} cells/particle, "
             f"{1 << self.grid_leaf_shift} cells/leaf, "
@@ -971,7 +1099,16 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             njmax=self.rigid_njmax,
                             nconmax=self.rigid_nconmax,
                         ),
-                        bodies=[EXCAVATOR_PRIM_REGEX],
+                        # The rails belong to the rover's own solver and to
+                        # no other: they are deliberately absent from the MPM
+                        # entry below, which sees only the bodies named on it,
+                        # so the soil passes through them and keeps its full
+                        # extent while the wheels ride on them. Two boxes, two
+                        # geoms, no meaningful cost to the contact budgets.
+                        bodies=[
+                            EXCAVATOR_PRIM_REGEX,
+                            r"/World/envs/env_.*/WheelRail.*",
+                        ],
                         include_static_shapes=True,
                         substeps=2,
                     ),

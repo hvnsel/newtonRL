@@ -68,6 +68,11 @@ def _parse(argv):
     p.add_argument("--frames", default=None,
                    help="directory for PNGs, if the env can render to an array. "
                         "The Newton backend hands back nothing, so prefer --dump")
+    p.add_argument("--cohesion", type=float, default=None,
+                   help="override soil_cohesion (yield_stress) in Pa. The "
+                        "measured capacity scales with gravity, which means "
+                        "the cohesion term is contributing nothing; raising "
+                        "it tests whether it is connected at all")
     p.add_argument("--gravity_scale", type=float, default=1.0,
                    help="scale gravity, for the load-scaling test. Halving it "
                         "halves the machine's weight; cohesion does not scale "
@@ -409,6 +414,10 @@ def main(argv=None) -> int:
 
     env_cfg, _ = resolve_task_config(args.task, "")
     env_cfg.scene.num_envs = args.num_envs
+
+    if args.cohesion is not None:
+        env_cfg.soil_cohesion = args.cohesion
+        print(f"[play] soil_cohesion set to {args.cohesion} Pa")
 
     if args.gravity_scale != 1.0:
         g = tuple(float(c) * args.gravity_scale for c in env_cfg.sim.gravity)

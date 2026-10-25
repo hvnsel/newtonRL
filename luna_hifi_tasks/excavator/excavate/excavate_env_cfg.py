@@ -1183,7 +1183,39 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             grid_type="sparse",
                             grid_padding=0,
                             critical_fraction=self.soil_critical_fraction,
-                            strain_basis="P0",
+                            # P0 (piecewise-constant stress) on Q1 (trilinear
+                            # velocity) is single-point reduced integration of
+                            # the trilinear hex: 24 velocity DOFs against 6
+                            # strain DOFs per cell, so the discrete strain
+                            # operator has a kernel of at least 12 modes per
+                            # cell beyond the rigid motions. Measured on the
+                            # operator this code actually assembles: 55, 63,
+                            # 79, 101, 117 and 149 spurious non-rigid
+                            # zero-energy modes on 5x5x3 .. 16x16x3 slabs, and
+                            # exactly 0 for Q1d and pic8. Those are velocity
+                            # fields that deform the soil while generating no
+                            # stress -- textbook Flanagan-Belytschko
+                            # hourglassing -- so the material can compact along
+                            # them with nothing to resist it.
+                            #
+                            # This was deprioritised on the grounds that its
+                            # plastic limit load is only 13% below exact, i.e.
+                            # it could not account for a 24x bearing deficit.
+                            # That was answering the wrong question: the
+                            # minimal probe shows the bed settles 33.6 mm with
+                            # no rigid body present against 0.0028 mm of
+                            # elastic settlement, reaches that state
+                            # dt-independently (112.8/104.2/97.7/95.9 mm over
+                            # an 8x dt range) and equilibrates there with the
+                            # vertical stress at 0.379 of rho*g*z. So the
+                            # discrete equilibrium is itself wrong rather than
+                            # unconverged, and a 14% volumetric collapse along
+                            # an unresisted mode is the shape of that.
+                            #
+                            # Q1d is rebuild-safe, so the sparse grid and the
+                            # particle warm start are unaffected. Costs ~8x the
+                            # dual DOFs.
+                            strain_basis="Q1d",
                             transfer_scheme="apic",
                             # The rheology solve is a projected Gauss-Seidel
                             # relaxation of the dual (Delassus) system
@@ -1219,20 +1251,19 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             velocity_basis="Q1",
                             collider_basis="pic27",
                             collider_velocity_mode="forward",
-                            # "auto" + velocity_basis Q1 resolves to plain
-                            # "gs" (solver_implicit_mpm.py _resolve_solver_spec
-                            # resolve_auto), i.e. a pure smoother with no
-                            # global stage. The second term of W is a discrete
-                            # Laplacian-type operator with cond ~ (L/h)^2, and
-                            # block-GS damps its longest-wavelength mode -- the
-                            # load path from wheel to floor slab -- at only
-                            # 1 - O((h/L)^2) per sweep. A Krylov stage used as
-                            # a warm start supplies that transport in
-                            # O(sqrt(cond)) steps instead of O(cond), and is
-                            # legal with contacts: solve_rheology only raises
-                            # for a SOLE linear solver, and accepts the form
-                            # [linear, ][jacobi, ]<final>.
-                            solver=("cr", "gs"),
+                            # Left at "auto" (which resolves to "gs" for a Q1
+                            # velocity basis). A ("cr", "gs") Krylov warm start
+                            # was briefly set here on the theory that plain
+                            # Gauss-Seidel could not transport the load path
+                            # across a bed 72 cells wide inside the iteration
+                            # budget. Measured instead: the solve reports
+                            # "Gauss-Seidel terminated after 6 iterations with
+                            # residuals 1.22e-05, 5.46e-05" -- it converges to
+                            # its own tolerance in 6 of the 25 sweeps the graph
+                            # path offers, so there is no transport deficit to
+                            # fix and the extra stage was cost and an untested
+                            # code path for nothing.
+                            solver="auto",
                             separate_worlds=self.mpm_separate_worlds,
                             # Must be False on a coupled entry.
                             project_outside_colliders=False,

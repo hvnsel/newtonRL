@@ -326,9 +326,41 @@ def _probe(u) -> None:
             mag = np.linalg.norm(imp_np, axis=-1)
             print(f"[probe]   collider impulse entries {ids_np.shape[0]}, "
                   f"valid ids {int((ids_np >= 0).sum())}")
-            print(f"[probe]   total |impulse| {mag.sum():.4f} N.s   "
-                  f"max {(mag.max() if mag.size else 0.0):.4f}   "
-                  f"(supporting 797 N over a 0.01 s step is ~8 N.s)")
+            print(f"[probe]   sum of |impulse| {mag.sum():.4f} N.s "
+                  f"(magnitudes, not net)")
+
+            # Net per body. A sum of magnitudes says nothing: impulses are
+            # vectors, most of these belong to the ground slab carrying the
+            # bed, and around a single wheel they partly cancel. What holds
+            # the machine up is the net +z on the eight proxy bodies.
+            try:
+                import newton
+
+                cbi = solver.collider_body_index.numpy()
+                flags = solver.model.body_flags.numpy()
+                proxy = int(newton.BodyFlags.PROXY)
+                net = np.zeros((flags.shape[0], 3))
+                count = np.zeros(flags.shape[0], dtype=int)
+                ok = (ids_np >= 0) & (ids_np < cbi.shape[0])
+                bodies = cbi[ids_np[ok]]
+                good = bodies >= 0
+                np.add.at(net, bodies[good], imp_np[ok][good])
+                np.add.at(count, bodies[good], 1)
+                print("[probe]   net impulse per body (N.s), +z holds it up:")
+                for b in range(flags.shape[0]):
+                    if count[b] == 0:
+                        continue
+                    tag = "PROXY" if (flags[b] & proxy) else "kinematic"
+                    print(f"[probe]     body {b:2d} {tag:9s} n={count[b]:6d}  "
+                          f"net=({net[b][0]:+8.3f},{net[b][1]:+8.3f},{net[b][2]:+9.3f})")
+                pm = (flags & proxy) != 0
+                zp = net[pm][:, 2].sum()
+                print(f"[probe]   proxy bodies net +z: {zp:+.3f} N.s")
+                for dt_ in (0.01, 0.04):
+                    print(f"[probe]     as force at dt={dt_}: {zp / dt_:+9.1f} N "
+                          f"(weight is 797 N)")
+            except Exception as exc:                       # noqa: BLE001
+                print(f"[probe]   per-body breakdown failed: {exc!r}")
         except Exception as exc:                           # noqa: BLE001
             print(f"[probe]   collect_collider_impulses failed: {exc!r}")
 

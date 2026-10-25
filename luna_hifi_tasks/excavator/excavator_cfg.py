@@ -46,6 +46,14 @@ SOIL_CONTACT_BODIES_REGEX = (
     r".*(wheel_.._body|drum_(front|rear)_body|shroud_(front|rear)_body)"
 )
 
+# The running gear alone. Wheels carry the machine and the drums do not, so the
+# two want different effective masses presented to the MPM solve and therefore
+# separate proxy mappings. See wheel_proxy_mass_scale in excavate_env_cfg.
+WHEEL_CONTACT_BODIES_REGEX = (
+    r"/World/envs/env_.*/Excavator/Geometry/chassis/"
+    r".*(wheel_.._body)"
+)
+
 # The cutting end alone: rotors and shrouds, no wheels.
 #
 # The implicit MPM soil develops no footing bearing capacity. A parked machine

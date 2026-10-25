@@ -100,6 +100,12 @@ def _parse(argv):
                         "rails, which is the configuration that sinks")
     p.add_argument("--rails", dest="rails", action="store_true", default=None,
                    help="wheels on rigid rails at grade (the cfg default)")
+    p.add_argument("--wheel_mass_scale", type=float, default=None,
+                   help="the effective mass each wheel presents to the MPM "
+                        "solve, as a multiple of its 14.1 kg free-body mass. "
+                        "The wheel carries about 123 kg of the machine, so the "
+                        "default is 8.7; 1.0 hands the soil a free wheel and "
+                        "is why it sank")
     p.add_argument("--limp", action="store_true",
                    help="zero every actuator gain, so NOTHING is driven. --park "
                         "still commands all four controllers (wheels braked to "
@@ -891,7 +897,6 @@ def main(argv=None) -> int:
     # scripts/run_task.py has carried this since ed539c6; this script never did.
     if hasattr(env_cfg, "max_num_envs"):
         env_cfg.max_num_envs = args.num_envs
-        env_cfg.__post_init__()
 
     if args.bed_depth is not None:
         env_cfg.bed_depth = args.bed_depth
@@ -930,6 +935,22 @@ def main(argv=None) -> int:
             f"[play] wheel_rails set to {args.rails}: wheels on "
             f"{'rigid rails' if args.rails else 'soil'}"
         )
+
+    if args.wheel_mass_scale is not None:
+        env_cfg.wheel_proxy_mass_scale = args.wheel_mass_scale
+        print(
+            f"[play] wheel_proxy_mass_scale set to {args.wheel_mass_scale:g}: "
+            f"each wheel reaches the MPM solve as "
+            f"{args.wheel_mass_scale * 14.1:.0f} kg"
+        )
+
+    # Every override above feeds a derivation in __post_init__ -- the grid
+    # capacities from max_num_envs, soil_contact_regex and the proxy mappings
+    # from wheel_rails, the rail geometry from bed_depth -- so it has to run
+    # after them. It used to run immediately after max_num_envs, which left
+    # --no_rails and the rest writing fields that nothing re-read.
+    if hasattr(env_cfg, "max_num_envs"):
+        env_cfg.__post_init__()
 
     if args.gravity_scale != 1.0:
         g = tuple(float(c) * args.gravity_scale for c in env_cfg.sim.gravity)

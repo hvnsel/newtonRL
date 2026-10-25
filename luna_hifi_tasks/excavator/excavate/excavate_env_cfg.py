@@ -48,6 +48,7 @@ from ..excavator_cfg import (
     LUNAR_GRAVITY,
     SOIL_CONTACT_BODIES_REGEX,
     SPAWN_Z,
+    WHEEL_CONTACT_BODIES_REGEX,
 )
 from ..mdp.observations import (
     NAV_SCAN_CELLS,
@@ -840,21 +841,41 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     scan_range_ref = 1.0                 # m
     scan_invalid = -2.0
 
-    # Scales the wheel and drum inertia MPM sees, the lagged-feedback
-    # stability knob. Newton's default is 1.0 and the note this carried said to
-    # lower it if the machine chatters on the bed, so 10 was someone buying
-    # stability with it.
+    # The mass and inertia each wheel presents to the MPM solve.
     #
-    # Parked -- wheels commanded to zero, arm stowed, drums never touching soil
-    # -- the machine still falls 0.586 -> 0.301 m and comes to rest on the
-    # floor through 25 cm of bed. The soil carries its own weight now and
-    # bearing capacity puts 6.5 kPa under a wheel against roughly 60 kPa, so
-    # the soil is not the thing failing to hold it up. Presenting the wheels to
-    # the MPM solve at ten times their real inertia means the soil's reaction
-    # is sized against a mass ten times too large, which is a way for a static
-    # load to never find equilibrium. Back to Newton's default, and chatter is
-    # the thing to watch for.
-    proxy_mass_scale: float = 1.0
+    # Newton builds the soil side of the contact from these. In
+    # rasterized_collisions.build_rigidity_operator the body block of
+    # IJtm = M^-1 J^T is (cell_volume / body_mass) * I, and the contact solve
+    # closes the gap by iterating
+    #     delta_lambda = delta_u / (inv_mass_soil + collider_inv_mass)
+    # until the relative normal velocity is zero. A heavier body responds less
+    # to a given impulse, so the solve has to drive lambda higher to get there
+    # and the harvested reaction rises with it. A lighter body gets a smaller
+    # reaction. The note this field used to carry had that backwards -- it read
+    # a large mass as the soil being asked to hold up too much -- and set the
+    # scale to 1.0 on the strength of it.
+    #
+    # 1.0 is wrong because build_rigidity_operator reads body_mass and
+    # body_inv_inertia per body and knows nothing about the joints. A wheel
+    # bolted to a 492 kg rover is handed to the soil as a free 14.1 kg disc
+    # (WHEEL_MASS + WHEEL_GROUSERS * GROUSER_MASS), so the contact converges to
+    # the impulse that arrests a free wheel rather than the one that holds up
+    # the machine. Newton exposes mass_scale for exactly this: "scale factor
+    # applied to source effective body mass/inertia", effective as against the
+    # modelled free-body value, which the same docstring says it leaves alone.
+    #
+    # 492 kg over four wheels is 123 kg each, and 123 / 14.1 = 8.7. Parked,
+    # with two wheels in contact, the harvested impulses came to 66.6 N against
+    # 797 N of weight -- a factor of 12 short while still accelerating
+    # downward, which is the effective-mass ratio for a two-wheel stance. The
+    # tricycle environment, which does not sink, runs 10.0.
+    wheel_proxy_mass_scale: float = 8.7
+
+    # The drums hang off the arms instead of carrying the machine, so their
+    # effective mass is their own and the free-body value is already right.
+    # They get a separate proxy mapping rather than inheriting the wheel scale,
+    # which would read as excessive cutting resistance.
+    drum_proxy_mass_scale: float = 1.0
 
     # How the rigid entry's wheels and drums are presented to the MPM solve.
     # "lagged" feeds back the previous pass's forces, so a body under a steady
@@ -891,9 +912,10 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # and min/max bounds for it. Aitken relaxation is a convergence
     # accelerator for partitioned fixed-point coupling and does nothing
     # whatsoever at a single pass. CouplerAdmmCfg, the sibling, defaults to 5.
-    # And proxy_mass_scale was at 10, ten times the wheels' real inertia,
-    # which is the textbook way to damp a staggered coupling that is not
-    # converging -- a symptom suppressed rather than a cause fixed.
+    # The 10.0 proxy mass scale this note used to offer as a second suppressed
+    # symptom is not one -- see wheel_proxy_mass_scale. It is the effective
+    # mass the wheel carries through its joints, which the MPM solver cannot
+    # work out for itself and has to be told.
     #
     # Each pass re-runs both solvers, so this multiplies step cost directly.
     coupler_iterations: int = 4
@@ -1149,6 +1171,46 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             f"~{leaf * 512 * 48 / 1e6:.0f} MB of grid"
         )
 
+        # The wheels and the drums reach the MPM solve as separate proxy
+        # mappings so each can carry its own effective mass; see
+        # wheel_proxy_mass_scale. The two body sets are disjoint and their
+        # union is SOIL_CONTACT_BODIES_REGEX, so nothing is mapped twice. A
+        # soil_contact_regex somebody has overridden stays one mapping,
+        # because its body set is not ours to split.
+        def _soil_proxy(bodies: str, mass_scale: float) -> CouplerProxyMappingCfg:
+            return CouplerProxyMappingCfg(
+                source=RIGID_ENTRY,
+                destination=MPM_ENTRY,
+                bodies=[bodies],
+                mode=self.proxy_mode,
+                mass_scale=mass_scale,
+                # The default is a factory giving each proxy its own pipeline;
+                # None instead "passes shared outer contacts to the
+                # destination", and the outer one is built for the rigid
+                # entry. Parked, with the wheels commanded to zero and the arm
+                # stowed, the machine falls through the whole 25 cm bed onto
+                # the floor and never finds equilibrium, while the drums still
+                # scoop soil -- the MPM solve resolves its own colliders at
+                # grid level regardless of this. Wheels getting no contact and
+                # drums still loading is what a missing proxy pipeline would
+                # look like. Back to the default.
+                collision_pipeline=NewtonCollisionPipelineCfg(),
+            )
+
+        if self.soil_contact_regex == SOIL_CONTACT_BODIES_REGEX:
+            proxy_mappings = [
+                _soil_proxy(WHEEL_CONTACT_BODIES_REGEX, self.wheel_proxy_mass_scale),
+                _soil_proxy(DRUM_CONTACT_BODIES_REGEX, self.drum_proxy_mass_scale),
+            ]
+        elif self.soil_contact_regex == DRUM_CONTACT_BODIES_REGEX:
+            proxy_mappings = [
+                _soil_proxy(DRUM_CONTACT_BODIES_REGEX, self.drum_proxy_mass_scale),
+            ]
+        else:
+            proxy_mappings = [
+                _soil_proxy(self.soil_contact_regex, self.wheel_proxy_mass_scale),
+            ]
+
         self.sim.physics = NewtonCfg(
             solver_cfg=CouplerProxyCfg(
                 entries=[
@@ -1317,6 +1379,20 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             # solve_granularity)`, so on that path 24 runs
                             # ZERO sweeps. Newton's own default is 250; keep
                             # this a multiple of 25.
+                            #
+                            # Worth knowing about this budget: the loop that
+                            # spends it does not measure contact. _run_solver_loop
+                            # alternates contact_solver.solve() with
+                            # rheology_solver.solve(), then stops on
+                            # rheology_solver.eval_residual() alone --
+                            # evaluate_strain_residual, which reads delta_stress
+                            # over strain nodes and nothing else. The collider
+                            # impulse residual is never formed, so a contact that
+                            # is still far from equilibrium reports converged and
+                            # the loop exits. Raising max_iterations is the only
+                            # lever on it from out here; closing it properly means
+                            # adding a contact term to the stopping test, which
+                            # would be a Newton patch.
                             max_iterations=250,
                             # ABSOLUTE tolerance on a DIMENSIONLESS per-step
                             # strain: evaluate_strain_residual measures
@@ -1443,27 +1519,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                         in_place=True,
                     ),
                 ],
-                proxies=[
-                    CouplerProxyMappingCfg(
-                        source=RIGID_ENTRY,
-                        destination=MPM_ENTRY,
-                        bodies=[self.soil_contact_regex],
-                        mode=self.proxy_mode,
-                        mass_scale=self.proxy_mass_scale,
-                        # The default is a factory giving each proxy its own
-                        # pipeline; None instead "passes shared outer contacts
-                        # to the destination", and the outer one is built for
-                        # the rigid entry. Parked, with the wheels commanded to
-                        # zero and the arm stowed, the machine falls through
-                        # the whole 25 cm bed onto the floor and never finds
-                        # equilibrium, while the drums still scoop soil -- the
-                        # MPM solve resolves its own colliders at grid level
-                        # regardless of this. Wheels getting no contact and
-                        # drums still loading is what a missing proxy pipeline
-                        # would look like. Back to the default.
-                        collision_pipeline=NewtonCollisionPipelineCfg(),
-                    )
-                ],
+                proxies=proxy_mappings,
                 iterations=self.coupler_iterations,
             ),
             collision_cfg=NewtonCollisionPipelineCfg(soft_contact_max=0),

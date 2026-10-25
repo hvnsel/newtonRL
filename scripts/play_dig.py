@@ -68,6 +68,9 @@ def _parse(argv):
     p.add_argument("--frames", default=None,
                    help="directory for PNGs, if the env can render to an array. "
                         "The Newton backend hands back nothing, so prefer --dump")
+    p.add_argument("--probe", action="store_true",
+                   help="after stepping, report whether the soil's reaction "
+                        "actually reaches the machine's bodies")
     p.add_argument("--dump", default="dig_bed.npz",
                    help="save the soil heightmap per frame here; "
                         "scripts/render_dig.py turns it into a video")
@@ -242,6 +245,94 @@ def _load_policy(device: str, ckpt: Path):
     return policy, in_dim
 
 
+def _probe(u) -> None:
+    """Report where the soil's reaction is lost on its way to the machine.
+
+    SolverImplicitMPM.coupling_harvest_proxy_wrenches turns MPM collider
+    impulses into proxy-body wrenches, and _harvest_mpm_proxy_wrenches_kernel
+    drops a collider silently at any of four tests: an out-of-range collider
+    id, a collider that maps to no body, a body that is not a proxy in this
+    mapping, and a body without BodyFlags.PROXY. None of them warn. If the
+    impulses are large and the wrenches are zero, the force is being generated
+    and discarded; if the impulses are themselves zero, the wheels were never
+    registered as MPM colliders in the first place. Those have different
+    fixes, and no amount of configuration tells them apart from outside.
+    """
+    import gc
+
+    import numpy as np
+
+    coupled = None
+    for obj in gc.get_objects():
+        try:
+            if hasattr(obj, "entry_names") and hasattr(obj, "solver") and hasattr(obj, "view"):
+                names = obj.entry_names()
+                if isinstance(names, tuple) and names:
+                    coupled = obj
+                    break
+        except Exception:                                  # noqa: BLE001
+            continue
+    if coupled is None:
+        print("[probe] no coupled solver found")
+        return
+
+    print(f"[probe] coupled entries: {coupled.entry_names()}")
+    for name in coupled.entry_names():
+        try:
+            solver = coupled.solver(name)
+        except Exception as exc:                           # noqa: BLE001
+            print(f"[probe] {name}: {exc}")
+            continue
+        kind = type(solver).__name__
+        if not hasattr(solver, "collect_collider_impulses"):
+            print(f"[probe] {name}: {kind} (not MPM)")
+            continue
+
+        print(f"[probe] {name}: {kind}")
+        try:
+            state = coupled.entry_state(name, "current")
+            imp, pos, ids = solver.collect_collider_impulses(state)
+            imp_np, ids_np = imp.numpy(), ids.numpy()
+            mag = np.linalg.norm(imp_np, axis=-1)
+            print(f"[probe]   colliders reporting impulses: {ids_np.shape[0]}")
+            print(f"[probe]   valid ids: {int((ids_np >= 0).sum())}, "
+                  f"total |impulse| {mag.sum():.4f} N.s, max {mag.max() if mag.size else 0.0:.4f}")
+        except Exception as exc:                           # noqa: BLE001
+            print(f"[probe]   collect_collider_impulses failed: {exc}")
+            return
+
+        try:
+            cbi = solver.collider_body_index.numpy()
+            print(f"[probe]   collider_body_index: {cbi.shape[0]} entries, "
+                  f"{int((cbi >= 0).sum())} map to a body")
+        except Exception as exc:                           # noqa: BLE001
+            print(f"[probe]   collider_body_index unavailable: {exc}")
+
+        try:
+            import newton
+
+            view = coupled.view(name)
+            flags = getattr(view, "body_flags", None)
+            flags = flags if flags is not None else solver.model.body_flags
+            fl = flags.numpy()
+            proxy = int(newton.BodyFlags.PROXY)
+            print(f"[probe]   bodies in this view: {fl.shape[0]}, "
+                  f"flagged PROXY: {int((fl & proxy != 0).sum())}")
+        except Exception as exc:                           # noqa: BLE001
+            print(f"[probe]   body flags unavailable: {exc}")
+
+    # What actually reached the machine.
+    try:
+        import numpy as np
+
+        f = u.robot.data.body_f if hasattr(u.robot.data, "body_f") else None
+        if f is not None:
+            a = f.torch.detach().cpu().numpy() if hasattr(f, "torch") else np.asarray(f)
+            print(f"[probe] body_f on the articulation: max |f| {np.abs(a).max():.4f}")
+    except Exception as exc:                               # noqa: BLE001
+        print(f"[probe] articulation body_f unavailable: {exc}")
+
+
 def main(argv=None) -> int:
     args = _parse(argv)
     torch.manual_seed(0)
@@ -408,6 +499,9 @@ def main(argv=None) -> int:
                 print(f"[play] t={i*dt:5.2f}s episode ended "
                       f"(shape_done={int(scalar('_shape_done'))}, "
                       f"escaped={int(scalar('_escaped'))})")
+
+        if args.probe:
+            _probe(u)
 
         if args.dump and beds:
             import numpy as np

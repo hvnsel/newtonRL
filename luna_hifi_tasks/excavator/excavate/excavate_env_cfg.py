@@ -445,6 +445,30 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     soil_friction: float = 0.84              # tan(40 deg)
     soil_cohesion: float = 500.0             # yield_stress, Pa
     soil_yield_pressure: float = 1.0e12      # Pa, compression cap
+    # Maximum solid fraction the material may occupy of a grid node's FREE
+    # volume, where free means the node minus whatever a collider occupies:
+    #
+    #   slack = critical_fraction * (node_volume - collider_volume) - particle_volume
+    #
+    # clamped at zero. Pressing a wheel in shrinks the free volume, which
+    # drives the slack to zero and makes the material resist, and that is the
+    # whole mechanism by which a granular bed carries a load. At 0.0 the term
+    # is not computed at all -- solver_implicit_mpm zeroes the offset -- so
+    # the soil generates no confining pressure, and Drucker-Prager strength is
+    # cohesion + friction * pressure, which with no pressure leaves cohesion
+    # alone. Measured: the parked machine settles at 22 cm of sinkage, where
+    # its 0.46 m2 of contact patch means a bearing capacity of 1.7 kPa against
+    # the 64 kPa these parameters should give, and an effective Nc of 3.4
+    # against 5.14 for a frictionless cohesive soil. The friction term was
+    # contributing nothing.
+    #
+    # This bed spawns at a solid fraction of 0.893 -- 8 particles of 5.71e-5
+    # m3 in a 0.08 m node -- so anything at or below that is incompressible
+    # from the first step. 0.90 leaves 0.7% of a node of slack: the bed is
+    # spawned at its critical packing and resists further compaction, which is
+    # what a dense regolith bed does. 0.95 would allow 5.7% of compaction
+    # first if this proves too stiff.
+    soil_critical_fraction: float = 0.90
 
     # Derived in __post_init__ and read off the cfg.
     bed_top: float = 0.0
@@ -906,6 +930,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             voxel_size=self.mpm_voxel_size,
                             grid_type="sparse",
                             grid_padding=0,
+                            critical_fraction=self.soil_critical_fraction,
                             strain_basis="P0",
                             transfer_scheme="apic",
                             max_iterations=24,

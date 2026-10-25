@@ -435,20 +435,90 @@ def _probe(u) -> None:
                   f"max {np.abs(dev_from_I).max():.4f}  "
                   f"(a resting bed at E={E.mean():.1g} Pa should be ~1e-5)")
 
-            # particle_stress is the solver's OWN yield-projected Cauchy
-            # stress in Pa (registered as "mpm:particle_stress", written from
+            # particle_stress is the solver's OWN yield-projected stress in
+            # Pa (registered as "mpm:particle_stress", written from
             # project_stress). Read it: it is the operative stress and it is on
             # the force path. Everything derived from F below is a diagnostic.
+            #
+            # SIGN: it is COMPRESSION-POSITIVE, i.e. -sigma_Cauchy, and the
+            # attribute doc at solver_implicit_mpm.py:1222 ("Cauchy stress
+            # tensor [Pa]") is sign-wrong. Proof from source, no measurement
+            # needed. The field is dof_to_value_3d(project_stress(...)) and
+            # warp.fem SymmetricTensorMapper.value_to_dof_3d sets
+            # r[0] = trace/sqrt(6) = sqrt(1.5) * trace/3, while project_stress
+            # clamps r[0] into [-tensile_ratio*yield_pressure*sqrt(1.5),
+            # +yield_pressure*sqrt(1.5)] -- a POSITIVE upper bound named
+            # p_max, the COMPRESSIVE yield pressure. So +trace/3 is
+            # compressive pressure, and -trace/3 had the sign backwards.
+            #
+            # INVARIANTS: the mapper is orthonormal for the half-Frobenius
+            # norm (tau:tau)/2, so the solver's |r_T| is
+            # sqrt(dev:dev / 2) = sqrt(J2) exactly -- NOT ||dev||_F, which is
+            # sqrt(2) larger. And shear_yield_stress returns
+            # s + mu*(r_N - p_min) with mu = friction/sqrt(1.5) applied to
+            # r_N = sqrt(1.5)*p, so the sqrt(1.5) CANCELS and the yield
+            # surface is plain Mohr-Coulomb in the physical pressure:
+            #
+            #     sqrt(J2) <= yield_stress + friction * p
+            #
+            # Dividing friction by sqrt(1.5) and then applying it to p
+            # understates the limit by up to 19% at these pressures.
             try:
                 sg = st.mpm.particle_stress.numpy()
-                pp = -np.trace(sg, axis1=1, axis2=2) / 3.0
-                dv = sg + pp[:, None, None] * np.eye(3)
+                pp = np.trace(sg, axis1=1, axis2=2) / 3.0   # compression +
+                dv = sg - pp[:, None, None] * np.eye(3)
                 tt = np.sqrt(0.5 * np.einsum("nij,nij->n", dv, dv))
-                print(f"[probe]   particle_stress: p mean {pp.mean():.1f}Pa "
+                lim = ys + mu * np.clip(pp, 0.0, None)
+                rat = tt / np.maximum(lim, 1e-9)
+                # project_stress clamps r_N at p_min, and p_min is 0 whenever
+                # tensile_yield_ratio is 0 -- Newton's default, which this cfg
+                # never overrides. So p >= 0 is a HARD FLOOR, not a reading.
+                # Count how much of the bed sits on it and report the LOW tail
+                # of p: a p99 of the sign-flipped pressure is the low tail
+                # dressed up as the high one, which is how "p99 = 0 Pa" came
+                # to be read as "most of the bed carries no pressure".
+                npart = int(pp.shape[0])
+                floor = int((pp <= 0.0).sum())
+                print(f"[probe]   particle_stress (compression-POSITIVE): "
+                      f"p mean {pp.mean():.1f}Pa "
+                      f"p1 {np.percentile(pp, 1):.1f}Pa "
                       f"p50 {np.percentile(pp, 50):.1f}Pa "
-                      f"p99 {np.percentile(pp, 99):.1f}Pa  "
-                      f"sqrt(J2) mean {tt.mean():.1f}Pa "
+                      f"p99 {np.percentile(pp, 99):.1f}Pa "
                       f"(expect p ~ rho*g*depth, 243..2430 Pa)")
+                print(f"[probe]     sqrt(J2) mean {tt.mean():.1f}Pa, "
+                      f"yield = {ys.mean():.0f} + {mu.mean():.3f}*p, "
+                      f"tau/yield mean {rat.mean():.3f} "
+                      f"p99 {np.percentile(rat, 99):.3f}  "
+                      f"(1.0 is failure; the solver projects onto the surface, "
+                      f"so >1 is impossible and means the arithmetic is wrong)")
+                # Two different defects both land a particle at p = 0, and
+                # sqrt(J2) tells them apart:
+                #   p == 0 and sqrt(J2) > 0  -> project_stress clamped the
+                #     trace at p_min and kept the deviator. Legitimate for a
+                #     free-surface or dilating particle.
+                #   sigma == 0 identically   -> the particle has NO strain
+                #     node. strain_basis "pic8" is
+                #     PointBasisSpace(pic, max_nodes_per_element=8), and
+                #     warp fem UnstructuredPointTopology.element_node_count
+                #     (space/point_basis_space.py:124) returns
+                #     min(8, particles_in_cell) with no warning. This bed
+                #     packs exactly 8 particles into 5184 of its 7592 cells
+                #     at spawn, so the cap has ZERO headroom: ~8% of vertical
+                #     compaction drops 13.6% of the bed out of the strain
+                #     space, and the 42% compaction a 106 mm rut implies in a
+                #     250 mm bed drops 41%. A particle with no strain node
+                #     carries no stress and obeys no yield criterion.
+                dead = int(((np.abs(pp) <= 0.0) & (tt <= 0.0)).sum())
+                print(f"[probe]     p <= 0: {floor} of {npart} particles "
+                      f"= {100.0 * floor / max(npart, 1):.2f}%  "
+                      f"(the project_stress clamp at p_min=0, which is what "
+                      f"tensile_yield_ratio=0 gives, makes p >= 0 a hard "
+                      f"floor, so this is the LOW tail of p, not the high one)")
+                print(f"[probe]     sigma == 0 identically: {dead} of {npart} "
+                      f"= {100.0 * dead / max(npart, 1):.2f}%  "
+                      f"(these have no strain node at all -- the pic8 cap in "
+                      f"warp fem point_basis_space.py:124 -- and are carrying "
+                      f"and resisting nothing)")
             except Exception as exc:                       # noqa: BLE001
                 print(f"[probe]   particle_stress unavailable: {exc!r}")
 
@@ -474,10 +544,19 @@ def _probe(u) -> None:
             two_g = E / (1 + nu)
             sig = two_g[:, None, None] * eps + (lam * tr)[:, None, None] * np.eye(3)
             trs = np.trace(sig, axis1=1, axis2=2)
+            # Compression-POSITIVE, to match particle_stress above. sig here
+            # is built from the elastic law, so its trace is negative in
+            # compression and -trace/3 is the right sign for THIS tensor --
+            # the opposite of particle_stress. Two conventions in one function
+            # is what made the two readings look irreconcilable.
             pres = -trs / 3.0
-            dev = sig + (pres)[:, None, None] * np.eye(3)
-            tau = np.sqrt(np.sum(dev * dev, axis=(1, 2)))
-            limit = ys + (mu / np.sqrt(1.5)) * np.clip(pres, 0.0, None)
+            dev = sig - (trs / 3.0)[:, None, None] * np.eye(3)
+            # sqrt(J2), to match the solver's |r_T|. np.sum(dev*dev) is
+            # ||dev||_F^2 = 2*J2, so the bare sqrt of it was sqrt(2) too big.
+            tau = np.sqrt(0.5 * np.einsum("nij,nij->n", dev, dev))
+            # yield = cohesion + friction*p. No sqrt(1.5): it cancels against
+            # r_N = sqrt(1.5)*p. See the note on INVARIANTS above.
+            limit = ys + mu * np.clip(pres, 0.0, None)
 
             z = q[:, 2]
             top = float(np.percentile(z, 99.5))

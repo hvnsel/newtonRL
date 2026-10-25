@@ -1240,10 +1240,47 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             # than 1.0. But the bed is quiet, confined, and
                             # frictional, which P0's never was.
                             #
+                            # The 8 in pic8 was wrong: it is a hard cap on
+                            # nodes per cell, and this bed starts AT it.
+                            #
+                            # "picN" resolves to PointBasisSpace(pic,
+                            # max_nodes_per_element=N). The strain DOF array is
+                            # sized for every particle, but warp fem's
+                            # UnstructuredPointTopology.element_node_count
+                            # returns min(N, particles_in_cell) with no warning
+                            # or flag. A particle past the Nth in its cell has a
+                            # strain DOF that no element references: it is never
+                            # interpolated into the stress field, never
+                            # constrained by the divergence form, and never sees
+                            # the yield surface. It carries nothing and resists
+                            # nothing, while its elastic deformation gradient
+                            # still accumulates the skew part of the velocity
+                            # gradient -- pure rotation, no stretch.
+                            #
+                            # Counted on this exact lattice (145 x 50 x 7,
+                            # spacing 0.04 x 0.04 x 0.035714, binned into 0.08
+                            # solver cells), particles per cell at spawn:
+                            #   8 -> 5184 cells, 4 -> 2232, 2 -> 174, 1 -> 2
+                            # Maximum 8, against a cap of 8. ZERO headroom. Any
+                            # vertical compaction at all starts dropping
+                            # particles, and the loss lands exactly under the
+                            # footing where the soil compacts most -- which is
+                            # the soil that has to supply the confinement a
+                            # bearing mechanism needs:
+                            #    8% compaction -> max 12/cell -> 13.6% dropped
+                            #   30%            -> max 16      -> 27.2%
+                            #   42% (a 106 mm rut in a 250 mm bed) -> 40.9%
+                            #
+                            # 16 loses nothing anywhere in that sweep. 27 has
+                            # more margin but is untested as a STRAIN basis --
+                            # c03acc2 only ruled pic27 out for collider_basis --
+                            # and the Q1d detonation came from taking exactly
+                            # that kind of unexercised path.
+                            #
                             # pic* is in strain_rebuild_safe, so the rebuildable
                             # sparse grid and the particle warm start are
                             # unaffected.
-                            strain_basis="pic8",
+                            strain_basis="pic16",
                             transfer_scheme="apic",
                             # The rheology solve is a projected Gauss-Seidel
                             # relaxation of the dual (Delassus) system

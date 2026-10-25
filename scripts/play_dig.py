@@ -772,6 +772,18 @@ def main(argv=None) -> int:
 
         last = rows[-1]
         peak = max(r["payload_kg"] for r in rows)
+
+        # Sinkage, printed here rather than left in the CSV. This is the
+        # headline number of a parked run and leaving it out of the summary
+        # made several runs unreadable without a second pass over the trace.
+        z = [r["chassis_z"] for r in rows]
+        tail = z[-min(50, len(z)):]
+        rate = (tail[0] - tail[-1]) / (max(len(tail) - 1, 1) * dt)
+        print(f"[play] chassis_z {z[0]:.4f} -> {z[-1]:.4f} m, min {min(z):.4f}: "
+              f"sank {1000 * (z[0] - min(z)):.0f} mm, "
+              f"last {len(tail)} steps {1000 * (tail[0] - tail[-1]):+.1f} mm "
+              f"({1000 * rate:+.2f} mm/s, ~0 means it has settled)")
+
         print(f"[play] end: removal {last['removal_kg']} kg, payload {last['payload_kg']} kg "
               f"(peak {peak:.2f}), hole {last['below_kg']} kg, "
               f"particle_max {last['particle_max_m']} m")

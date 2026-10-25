@@ -100,12 +100,6 @@ def _parse(argv):
                         "rails, which is the configuration that sinks")
     p.add_argument("--rails", dest="rails", action="store_true", default=None,
                    help="wheels on rigid rails at grade (the cfg default)")
-    p.add_argument("--device", default=None,
-                   help="override the sim device, e.g. cuda:1. This box has two "
-                        "3090s and a crashed run can leave cuda:0 fully "
-                        "allocated, which shows up as 'CUDA error 2: out of "
-                        "memory' followed by a storm of illegal-access errors "
-                        "from the failed allocation -- not a solver bug")
     p.add_argument("--probe", action="store_true",
                    help="after stepping, report whether the soil's reaction "
                         "actually reaches the machine's bodies")
@@ -773,6 +767,19 @@ def main(argv=None) -> int:
     env_cfg, _ = resolve_task_config(args.task, "")
     env_cfg.scene.num_envs = args.num_envs
 
+    # The sparse-grid capacities are absolute totals derived from max_num_envs,
+    # NOT from scene.num_envs, so a one-environment run otherwise allocates the
+    # grid for all 104: 50,750 particles x 104 = 5.28M, active = 2^23, about
+    # 25,770 MB against a 3090's 24,576 MB. That fails as
+    # "CUDA error 2: out of memory" in wp_alloc_device_async and
+    # rebuild_count_points, followed by a storm of illegal-access errors from
+    # the failed allocation -- which reads exactly like a solver bug and is not
+    # one. __post_init__ is what derives the capacities, so it has to run again.
+    # scripts/run_task.py has carried this since ed539c6; this script never did.
+    if hasattr(env_cfg, "max_num_envs"):
+        env_cfg.max_num_envs = args.num_envs
+        env_cfg.__post_init__()
+
     if args.bed_depth is not None:
         env_cfg.bed_depth = args.bed_depth
         print(f"[play] bed_depth set to {args.bed_depth} m")
@@ -829,9 +836,12 @@ def main(argv=None) -> int:
             )
         ]
 
-    if args.device:
+    # add_launcher_args already defines --device, so this script must not. It
+    # also must not silently discard it: the line below used to overwrite
+    # args.device with the cfg's value, so passing --device did nothing.
+    if "--device" in sys.argv:
+        print(f"[play] sim device set to {args.device} (from --device)")
         env_cfg.sim.device = args.device
-        print(f"[play] sim device set to {args.device}")
     args.device = env_cfg.sim.device
     env_cfg.validate()
 

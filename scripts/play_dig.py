@@ -95,6 +95,11 @@ def _parse(argv):
                         "with it, so a strength-limited sinkage falls roughly "
                         "in proportion while a geometry-limited one does not "
                         "move")
+    p.add_argument("--no_rails", dest="rails", action="store_false", default=None,
+                   help="put the wheels back in the soil coupling and park the "
+                        "rails, which is the configuration that sinks")
+    p.add_argument("--rails", dest="rails", action="store_true", default=None,
+                   help="wheels on rigid rails at grade (the cfg default)")
     p.add_argument("--probe", action="store_true",
                    help="after stepping, report whether the soil's reaction "
                         "actually reaches the machine's bodies")
@@ -512,6 +517,16 @@ def main(argv=None) -> int:
     if args.cohesion is not None:
         env_cfg.soil_cohesion = args.cohesion
         print(f"[play] soil_cohesion set to {args.cohesion} Pa")
+
+    if args.rails is not None:
+        env_cfg.wheel_rails = args.rails
+        # soil_contact_regex follows wheel_rails in __post_init__, so clearing
+        # it here is not required -- but saying what changed is, because the
+        # whole point of the run is which surface the wheels are on.
+        print(
+            f"[play] wheel_rails set to {args.rails}: wheels on "
+            f"{'rigid rails' if args.rails else 'soil'}"
+        )
 
     if args.gravity_scale != 1.0:
         g = tuple(float(c) * args.gravity_scale for c in env_cfg.sim.gravity)

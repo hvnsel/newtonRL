@@ -1014,7 +1014,16 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         # drift reward term, not the geometry, is what keeps the machine
         # straight, and a pressure-sinkage wheel model is the version that
         # would survive a heading change.
-        if self.soil_contact_regex is None:
+        # Follow wheel_rails whenever the regex is unset or is one of the two
+        # canonical sets. Testing this against a re-run matters: the env runs
+        # __post_init__ again before spawning and the play script flips
+        # wheel_rails between the two, so deriving only from None would see
+        # its own previous answer the second time round and reject it.
+        if self.soil_contact_regex in (
+            None,
+            DRUM_CONTACT_BODIES_REGEX,
+            SOIL_CONTACT_BODIES_REGEX,
+        ):
             self.soil_contact_regex = (
                 DRUM_CONTACT_BODIES_REGEX
                 if self.wheel_rails

@@ -415,6 +415,21 @@ def _probe(u) -> None:
             mu = solver.model.mpm.friction.numpy()
             ys = solver.model.mpm.yield_stress.numpy()
 
+            # Raw field first. It is documented as the elastic deformation
+            # gradient and is filled with the identity at reset, so a resting
+            # bed should sit within ~1e-5 of I. If it does not, the derived
+            # stress below is meaningless and this is a history or warm-start
+            # variable rather than something to convert.
+            diag = np.einsum("...ii->...i", F)
+            off = F - np.eye(3) * diag[:, :, None] * 0
+            dev_from_I = F - np.eye(3)
+            print(f"[probe]   particle_elastic_strain raw: "
+                  f"diag mean {diag.mean():.6f} "
+                  f"min {diag.min():.4f} max {diag.max():.4f}")
+            print(f"[probe]     |F - I| mean {np.abs(dev_from_I).mean():.6f} "
+                  f"max {np.abs(dev_from_I).max():.4f}  "
+                  f"(a resting bed at E={E.mean():.1g} Pa should be ~1e-5)")
+
             eps = 0.5 * (F + np.transpose(F, (0, 2, 1))) - np.eye(3)
             tr = np.trace(eps, axis1=1, axis2=2)
             lam = (E * nu) / ((1 + nu) * (1 - 2 * nu))

@@ -663,8 +663,20 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     scan_invalid = -2.0
 
     # Scales the wheel and drum inertia MPM sees, the lagged-feedback
-    # stability knob. Lower it if the machine chatters on the bed.
-    proxy_mass_scale: float = 10.0
+    # stability knob. Newton's default is 1.0 and the note this carried said to
+    # lower it if the machine chatters on the bed, so 10 was someone buying
+    # stability with it.
+    #
+    # Parked -- wheels commanded to zero, arm stowed, drums never touching soil
+    # -- the machine still falls 0.586 -> 0.301 m and comes to rest on the
+    # floor through 25 cm of bed. The soil carries its own weight now and
+    # bearing capacity puts 6.5 kPa under a wheel against roughly 60 kPa, so
+    # the soil is not the thing failing to hold it up. Presenting the wheels to
+    # the MPM solve at ten times their real inertia means the soil's reaction
+    # is sized against a mass ten times too large, which is a way for a static
+    # load to never find equilibrium. Back to Newton's default, and chatter is
+    # the thing to watch for.
+    proxy_mass_scale: float = 1.0
 
     # How the rigid entry's wheels and drums are presented to the MPM solve.
     # "lagged" feeds back the previous pass's forces, so a body under a steady
@@ -675,7 +687,10 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # 60 kPa of bearing capacity, so it should settle about a centimetre.
     # Strengthening the soil fourfold moved it by 2 mm, which puts it in the
     # coupling rather than the material.
-    proxy_mode: str = "staggered"
+    # "lagged" or "staggered". Staggered was tried against the sinkage and
+    # moved it 0.309 -> 0.314, i.e. not at all, so this stays on the mode the
+    # rest of the configuration was tuned against.
+    proxy_mode: str = "lagged"
 
     # The soil_* fields are plain numbers on this cfg; the solver reads an
     # MPMParticleMaterialCfg on the spawner. __post_init__ calls this, and the

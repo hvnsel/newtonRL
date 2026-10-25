@@ -349,8 +349,13 @@ def _shroud_arc_xml(prefix: str) -> list[str]:
     ]
 
 
-def _shroud(prefix: str, joint: str) -> str:
-    """The stationary half of the drum: wall, two end plates, its own hinge."""
+def _shroud(prefix: str, joint: str, hinge_y: float = 1.0) -> str:
+    """The stationary half of the drum: wall, two end plates, its own hinge.
+
+    hinge_y is -1 on the rear assembly, which is yawed 180 degrees: see
+    _arm_assembly. The shroud has to turn the same way in the world as the arm
+    it hangs off, so it takes the same sign.
+    """
     parts = _shroud_arc_xml(prefix)
     for sign, side in ((1.0, "l"), (-1.0, "r")):
         y = sign * (ROTOR_HALF_LEN + SHROUD_END_T)
@@ -361,7 +366,7 @@ def _shroud(prefix: str, joint: str) -> str:
         )
     body_xml = "\n          ".join(parts)
     return f"""<body name="{prefix}_body" pos="{ARM_LEN:.4f} 0 0">
-          <joint name="{joint}" type="hinge" axis="0 1 0"
+          <joint name="{joint}" type="hinge" axis="0 {hinge_y:.0f} 0"
                  range="{SHROUD_RANGE[0]} {SHROUD_RANGE[1]}" armature="0.10" damping="1.5"/>
           {body_xml}
         </body>"""
@@ -483,8 +488,30 @@ def _arm_assembly(
 
     The arm is boom -> cross piece -> two legs straddling the drum. The rotor
     and the shroud are siblings, both hinged on the same axis off the arm.
+
+    A joint axis is expressed in its body's LOCAL frame, and this body carries
+    the yaw, so a local +y axis is world +y at the front and world -y at the
+    rear. For the drum that is exactly what is wanted and is why the two rotors
+    counter-rotate on one command. For the ARM it is not: the same commanded
+    angle pitched the front boom up 30.2 deg and the rear boom down 18.2 deg,
+    leaving the two drums 626 mm apart in z, hoisting 46 geoms up at one end and
+    dropping them at the other. The machine then pitched nose-up until its rear
+    wheels bottomed out on the bed floor, with both front wheels clear of the
+    soil -- which read as 100 to 200 mm of sinkage and was measured, repeatedly,
+    as a soil problem.
+
+    So the arm and the shroud take hinge_y = cos(yaw), +1 front and -1 rear,
+    which puts both world axes on +y. The rotor keeps the plain local axis. The
+    arm's range stays as written: flipping the axis redefines which direction
+    positive turns, and the range is in the joint's own coordinate, so
+    ARM_RANGE[0] still stows and ARM_RANGE[1] still digs on both ends. The
+    shroud's range is symmetric, so it is unaffected either way.
+
+    This restores the convention the joint-sign note at the bottom of this file
+    already claims: positive pitches the boom DOWN, on both arms.
     """
     x = PIVOT_X * math.cos(yaw)
+    hinge_y = math.cos(yaw)
     leg_half = 0.5 * (ARM_LEN - _LEG_X0)
     leg_cx = 0.5 * (ARM_LEN + _LEG_X0)
     legs = "\n        ".join(
@@ -495,7 +522,7 @@ def _arm_assembly(
         for sgn, tag in ((1.0, "l"), (-1.0, "r"))
     )
     return f"""<body name="arm_{side}_body" pos="{x:.4f} 0 {MAST_TOP_Z}" euler="0 0 {yaw:.6f}">
-        <joint name="{arm_joint}" type="hinge" axis="0 1 0"
+        <joint name="{arm_joint}" type="hinge" axis="0 {hinge_y:.0f} 0"
                range="{ARM_RANGE[0]} {ARM_RANGE[1]}" armature="0.10" damping="2.0"/>
         <geom name="arm_{side}_boom" type="box" pos="{0.5 * BOOM_LEN:.4f} 0 0"
               size="{0.5 * BOOM_LEN:.4f} {ARM_HALF_W} {ARM_HALF_H}"
@@ -505,7 +532,7 @@ def _arm_assembly(
               mass="{ARM_CROSS_MASS}" rgba="{ARM_RGBA}" friction="{FRAME_FRICTION}"/>
         {legs}
         {_rotor(drum_prefix, drum_joint)}
-        {_shroud(shroud_prefix, shroud_joint)}
+        {_shroud(shroud_prefix, shroud_joint, hinge_y)}
       </body>"""
 
 
@@ -606,11 +633,22 @@ EXCAVATOR_MJCF = f"""
 #               Skid steer: JOINT_WHEELS_LEFT commanded together and
 #               JOINT_WHEELS_RIGHT together; equal = straight, opposite = spin.
 #
-#   arms        positive joint angle pitches the boom DOWN toward the soil.
-#               0 is horizontal, ARM_RANGE[1] = 0.72 rad is full dig, putting
-#               the drum's lowest point ~19 cm below the ground plane.
+#   arms        positive joint angle pitches the boom DOWN toward the soil, on
+#               BOTH arms. 0 is horizontal, ARM_RANGE[1] = 0.72 rad is full dig,
+#               putting the drum's lowest point ~19 cm below the ground plane.
 #               ARM_RANGE[0] = -0.55 rad stows the drum ~66 cm up, the dump
 #               height.
+#
+#               This held only on the front arm until the hinge axis was signed.
+#               A joint axis is in its body's LOCAL frame and the rear assembly
+#               carries a 180 deg yaw, so a local +y axis is world -y there: one
+#               commanded angle pitched the front boom up 30.2 deg and the rear
+#               boom down 18.2 deg, leaving the drums 626 mm apart in z. The
+#               machine pitched nose-up until its rear wheels sat on the bed
+#               floor with both front wheels clear of the soil, which was
+#               measured as sinkage and chased through the soil model for two
+#               days. _arm_assembly now gives the arm and the shroud
+#               hinge_y = cos(yaw), so both world axes are +y.
 #
 #   drums       a joint velocity of sign DIG_DRUM_SIGN digs, the same sign on
 #               both ends. Derived from RAKE_SIGN, currently -1. The rear

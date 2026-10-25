@@ -245,6 +245,39 @@ def _load_policy(device: str, ckpt: Path):
     return policy, in_dim
 
 
+def _find_coupled_solver():
+    """The live SolverCoupled, by real type rather than by duck typing.
+
+    The first version of this walked gc for anything answering to
+    entry_names/solver/view and found a unittest.mock._Call, which answers to
+    every attribute there is. Mocks are why hasattr is not a type test.
+    """
+    try:
+        from isaaclab_contrib.coupling.coupler import NewtonCouplerManager
+
+        solver = getattr(NewtonCouplerManager, "_solver", None)
+        if solver is not None:
+            return solver
+    except Exception:                                      # noqa: BLE001
+        pass
+
+    try:
+        from newton._src.solvers.coupled.solver_coupled import SolverCoupled
+    except Exception as exc:                               # noqa: BLE001
+        print(f"[probe] cannot import SolverCoupled: {exc}")
+        return None
+
+    import gc
+
+    for obj in gc.get_objects():
+        try:
+            if isinstance(obj, SolverCoupled):
+                return obj
+        except Exception:                                  # noqa: BLE001
+            continue
+    return None
+
+
 def _probe(u) -> None:
     """Report where the soil's reaction is lost on its way to the machine.
 
@@ -252,32 +285,28 @@ def _probe(u) -> None:
     impulses into proxy-body wrenches, and _harvest_mpm_proxy_wrenches_kernel
     drops a collider silently at any of four tests: an out-of-range collider
     id, a collider that maps to no body, a body that is not a proxy in this
-    mapping, and a body without BodyFlags.PROXY. None of them warn. If the
-    impulses are large and the wrenches are zero, the force is being generated
-    and discarded; if the impulses are themselves zero, the wheels were never
-    registered as MPM colliders in the first place. Those have different
-    fixes, and no amount of configuration tells them apart from outside.
+    mapping, and a body without BodyFlags.PROXY. None of them warn. Large
+    impulses with no body force means the reaction is generated and then
+    discarded at one of those four; impulses near zero means the wheels were
+    never registered as MPM colliders at all. Different bugs, different fixes,
+    and nothing outside the process tells them apart.
     """
-    import gc
-
     import numpy as np
 
-    coupled = None
-    for obj in gc.get_objects():
-        try:
-            if hasattr(obj, "entry_names") and hasattr(obj, "solver") and hasattr(obj, "view"):
-                names = obj.entry_names()
-                if isinstance(names, tuple) and names:
-                    coupled = obj
-                    break
-        except Exception:                                  # noqa: BLE001
-            continue
+    coupled = _find_coupled_solver()
     if coupled is None:
         print("[probe] no coupled solver found")
         return
+    print(f"[probe] coupled solver: {type(coupled).__name__}")
 
-    print(f"[probe] coupled entries: {coupled.entry_names()}")
-    for name in coupled.entry_names():
+    try:
+        names = tuple(coupled.entry_names())
+    except Exception as exc:                               # noqa: BLE001
+        print(f"[probe] entry_names failed: {exc}")
+        return
+    print(f"[probe] entries: {names}")
+
+    for name in names:
         try:
             solver = coupled.solver(name)
         except Exception as exc:                           # noqa: BLE001
@@ -285,52 +314,42 @@ def _probe(u) -> None:
             continue
         kind = type(solver).__name__
         if not hasattr(solver, "collect_collider_impulses"):
-            print(f"[probe] {name}: {kind} (not MPM)")
+            print(f"[probe] {name}: {kind}")
             continue
+        print(f"[probe] {name}: {kind}  <- MPM")
 
-        print(f"[probe] {name}: {kind}")
         try:
             state = coupled.entry_state(name, "current")
             imp, pos, ids = solver.collect_collider_impulses(state)
-            imp_np, ids_np = imp.numpy(), ids.numpy()
+            imp_np = imp.numpy()
+            ids_np = ids.numpy()
             mag = np.linalg.norm(imp_np, axis=-1)
-            print(f"[probe]   colliders reporting impulses: {ids_np.shape[0]}")
-            print(f"[probe]   valid ids: {int((ids_np >= 0).sum())}, "
-                  f"total |impulse| {mag.sum():.4f} N.s, max {mag.max() if mag.size else 0.0:.4f}")
+            print(f"[probe]   collider impulse entries {ids_np.shape[0]}, "
+                  f"valid ids {int((ids_np >= 0).sum())}")
+            print(f"[probe]   total |impulse| {mag.sum():.4f} N.s   "
+                  f"max {(mag.max() if mag.size else 0.0):.4f}   "
+                  f"(supporting 797 N over a 0.01 s step is ~8 N.s)")
         except Exception as exc:                           # noqa: BLE001
-            print(f"[probe]   collect_collider_impulses failed: {exc}")
-            return
+            print(f"[probe]   collect_collider_impulses failed: {exc!r}")
 
         try:
             cbi = solver.collider_body_index.numpy()
-            print(f"[probe]   collider_body_index: {cbi.shape[0]} entries, "
+            print(f"[probe]   collider_body_index {cbi.shape[0]} entries, "
                   f"{int((cbi >= 0).sum())} map to a body")
         except Exception as exc:                           # noqa: BLE001
-            print(f"[probe]   collider_body_index unavailable: {exc}")
+            print(f"[probe]   collider_body_index unavailable: {exc!r}")
 
         try:
             import newton
 
-            view = coupled.view(name)
-            flags = getattr(view, "body_flags", None)
-            flags = flags if flags is not None else solver.model.body_flags
-            fl = flags.numpy()
+            flags = solver.model.body_flags.numpy()
             proxy = int(newton.BodyFlags.PROXY)
-            print(f"[probe]   bodies in this view: {fl.shape[0]}, "
-                  f"flagged PROXY: {int((fl & proxy != 0).sum())}")
+            kin = int(newton.BodyFlags.KINEMATIC)
+            print(f"[probe]   bodies {flags.shape[0]}, "
+                  f"PROXY {int((flags & proxy != 0).sum())}, "
+                  f"KINEMATIC {int((flags & kin != 0).sum())}")
         except Exception as exc:                           # noqa: BLE001
-            print(f"[probe]   body flags unavailable: {exc}")
-
-    # What actually reached the machine.
-    try:
-        import numpy as np
-
-        f = u.robot.data.body_f if hasattr(u.robot.data, "body_f") else None
-        if f is not None:
-            a = f.torch.detach().cpu().numpy() if hasattr(f, "torch") else np.asarray(f)
-            print(f"[probe] body_f on the articulation: max |f| {np.abs(a).max():.4f}")
-    except Exception as exc:                               # noqa: BLE001
-        print(f"[probe] articulation body_f unavailable: {exc}")
+            print(f"[probe]   body flags unavailable: {exc!r}")
 
 
 def main(argv=None) -> int:

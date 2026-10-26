@@ -115,6 +115,22 @@ def _parse(argv):
                         "mass scale 8.7 that is 0.21 and 0.10. Default 0.1. "
                         "Sweep this, not the mass: if settled sinkage moves "
                         "with omega the loop is not converging")
+    p.add_argument("--max_iterations", type=int, default=None,
+                   help="Gauss-Seidel sweeps per MPM solve, default 250. "
+                        "Measured, the solve runs to this cap on nearly every "
+                        "step -- res_l2 converges by 2-20x under tolerance "
+                        "early and res_linf, a handful of degenerate nodes, "
+                        "never does. So this IS the solve cost, and the "
+                        "honest value is the smallest that does not change "
+                        "the answer. Keep it a multiple of 25: the host loop "
+                        "is range(max_iterations // solve_granularity) and "
+                        "solve_granularity is 25, so 24 runs ZERO sweeps")
+    p.add_argument("--tolerance", type=float, default=None,
+                   help="absolute tolerance on the dimensionless per-step "
+                        "strain, default 1e-5. It must sit BELOW the physical "
+                        "signal rho*g*H/K, which is 6.1e-6 at a lunar "
+                        "regolith density of 1500 -- so 1e-5 is now above "
+                        "what it is meant to resolve and wants about 2e-6")
     p.add_argument("--mpm_verbose", action="store_true",
                    help="make the MPM rheology solve report how many "
                         "Gauss-Seidel iterations it actually spends. "
@@ -1045,6 +1061,19 @@ def main(argv=None) -> int:
                 setattr(env_cfg, field, zero)
         print("[play] STRAIGHT: yaw, xy, arm and gradient jitter all zeroed; "
               "machine spawns on the centreline pointed down +x")
+
+    for _fld, _val, _unit in (
+        ("mpm_max_iterations", args.max_iterations, "sweeps"),
+        ("mpm_tolerance", args.tolerance, ""),
+    ):
+        if _val is None:
+            continue
+        if hasattr(env_cfg, _fld):
+            setattr(env_cfg, _fld, _val)
+            print(f"[play] {_fld} set to {_val:g} {_unit}".rstrip())
+        else:
+            print(f"[play] {_fld} is not a field on this cfg; "
+                  f"edit the MPMSolverCfg block in excavate_env_cfg instead")
 
     if args.no_cuda_graph:
         env_cfg.use_cuda_graph = False

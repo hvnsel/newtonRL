@@ -375,6 +375,29 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # The solver grid, deliberately coarser than the particle spacing.
     mpm_voxel_size: float = MPM_VOXEL_SIZE
     particles_per_cell: float = MPM_PARTICLES_PER_CELL
+
+    # Gauss-Seidel sweeps per MPM solve, and the tolerance that would stop it
+    # early. Both were buried in the MPMSolverCfg block below; they are fields
+    # so a run can sweep them, and the long notes at their use sites explain
+    # the traps (a value under solve_granularity = 25 runs ZERO sweeps).
+    #
+    # Measured with --mpm_verbose: the solve runs to the cap on nearly every
+    # step. res_l2 lands at 5e-7..6.5e-6, already 2-20x under tolerance, while
+    # res_linf sits at 1e-5..1.2e-4 and is what fails -- a handful of
+    # degenerate nodes, most likely the ~0.6 % of particles with no strain
+    # node at all, which carry no physics and cannot converge. The only two
+    # solves in a 1 s run that stopped early (161 and 206 sweeps) both did so
+    # the moment res_linf dipped below 1e-5.
+    #
+    # So this cap IS the solve cost, not a safety net on it, and the honest
+    # value is the smallest that does not move the answer.
+    mpm_max_iterations: int = 250
+    # Tolerance has to sit BELOW the physical per-step strain rho*g*H/K it is
+    # meant to resolve. At the old 4x soil density that signal was 2.4e-5 and
+    # 1e-5 cleared it; at lunar regolith's 1500 kg/m3 it is 6.1e-6 and 1e-5
+    # does not, which is exactly the fault the note below records for 1e-4.
+    # Costs nothing in time: the solve never reaches tolerance anyway.
+    mpm_tolerance: float = 2.0e-6
     spawn_on_bed: bool = True
 
     # How far past the bed, on every side, the MPM floor slab and the height
@@ -1233,6 +1256,16 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
         # Newton validates these too, but only after the ~95 s scene build,
         # and each run is ten minutes.
+        # _GaussSeidelSolver.solve_granularity is 25 and the host loop is
+        # range(max_iterations // solve_granularity), so 24 runs ZERO sweeps
+        # and reports success. It cost a day once; it does not get to again.
+        if self.mpm_max_iterations < 25:
+            raise ValueError(
+                f"mpm_max_iterations is {self.mpm_max_iterations}, under the "
+                f"Gauss-Seidel solve_granularity of 25. The host loop is "
+                f"range(max_iterations // solve_granularity), so this runs "
+                f"ZERO sweeps and reports convergence. Use a multiple of 25."
+            )
         if self.proxy_relaxation_mode not in ("fixed", "aitken"):
             raise ValueError(
                 f"proxy_relaxation_mode must be 'fixed' or 'aitken', got "
@@ -1481,7 +1514,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             # lever on it from out here; closing it properly means
                             # adding a contact term to the stopping test, which
                             # would be a Newton patch.
-                            max_iterations=250,
+                            max_iterations=self.mpm_max_iterations,
                             # ABSOLUTE tolerance on a DIMENSIONLESS per-step
                             # strain: evaluate_strain_residual measures
                             # |D . dsigma| = |tau_new - tau| and
@@ -1514,7 +1547,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                             # worst case is 40x the rheology work per step. That
                             # cost is real -- a parked 24 s run takes minutes --
                             # and training cannot afford it.
-                            tolerance=1.0e-5,
+                            tolerance=self.mpm_tolerance,
                             warmstart_mode=self.mpm_warmstart_mode,
                             velocity_basis="Q1",
                             # S2, not pic27, because pic27 switches the

@@ -125,10 +125,23 @@ def _parse(argv):
                         "the shroud sits --cut under the surface, spin the "
                         "drums up, then creep forward. For seeing whether the "
                         "machine can excavate at all, without a checkpoint")
-    p.add_argument("--cut", type=float, default=None,
-                   help="cut depth in m for --dig. Default is the mean of the "
-                        "task's own cut_depth_range, i.e. the depth the reward "
-                        "is written against")
+    p.add_argument("--straight", action="store_true",
+                   help="zero every spawn randomisation so the machine starts "
+                        "on the bed centreline pointed down +x with a level "
+                        "target plane. The defaults jitter yaw by +-0.40 rad "
+                        "(23 deg), x by +-0.55 m and y by +-0.30 m, which is "
+                        "training diversity and pure noise in a single run")
+    p.add_argument("--boom", type=float, default=None,
+                   help="boom command in [-1, 1], overriding --cut. -1 is the "
+                        "stow angle and +1 is full dig. Use this to bypass "
+                        "boom_command_for_cut when the question is whether the "
+                        "drums can reach the soil at all")
+    p.add_argument("--cut", type=float, default=0.10,
+                   help="cut depth in m for --dig, measured to the SHROUD. "
+                        "Default 0.10 puts the rotor tip about 53 mm into the "
+                        "soil. The task's own cut_depth_range is 0.04, which "
+                        "leaves the rotor ABOVE the bed and cuts nothing -- "
+                        "see the geometry note in the --dig branch")
     p.add_argument("--dig_speed", type=float, default=0.15,
                    help="forward command during --dig, a fraction of "
                         "MAX_WHEEL_SPEED (5 rad/s, 1.5 m/s). Default 0.15 is "
@@ -401,10 +414,26 @@ def _attitude(u) -> None:
         bl = list(getattr(u.robot.data, "body_names", []) or [])
         bz = d.body_pos_w.torch[0, :, 2].detach().cpu().numpy()
         want = [i for i, n in enumerate(bl) if "wheel" in n or "drum" in n]
+        # A drum's body z is its AXIS. Whether it is in the soil is decided by
+        # its lowest point, which is a rotor tip radius below that, and the
+        # difference is 18.5 cm -- enough to read a drum hanging clear of the
+        # bed as a drum that is cutting. So report the bottom and the gap.
+        try:
+            from luna_hifi_tasks.excavator.excavator import (  # noqa: PLC0415
+                ROTOR_TIP_R,
+                WHEEL_RADIUS,
+            )
+        except Exception:  # noqa: BLE001
+            ROTOR_TIP_R, WHEEL_RADIUS = 0.185, 0.30
+        surf = float(getattr(u.cfg, "bed_top", float("nan")))
         if want:
-            print("[attitude] body heights (world z):")
+            print(f"[attitude] body heights (world z), bed surface z={surf:+.4f}:")
             for i in want:
-                print(f"[attitude]   {bl[i]:22s} z={bz[i]:+8.4f}")
+                r = WHEEL_RADIUS if "wheel" in bl[i] else ROTOR_TIP_R
+                bot = bz[i] - r
+                print(f"[attitude]   {bl[i]:22s} axis z={bz[i]:+8.4f}  "
+                      f"bottom={bot:+8.4f}  {1000 * (bot - surf):+7.0f} mm "
+                      f"{'BELOW' if bot < surf else 'above'} the bed")
             wz = [bz[i] for i in want if "wheel" in bl[i]]
             if len(wz) >= 2:
                 print(f"[attitude]   wheel z spread {1000 * (max(wz) - min(wz)):.0f} mm "
@@ -966,6 +995,21 @@ def main(argv=None) -> int:
             f"{'rigid rails' if args.rails else 'soil'}"
         )
 
+    if args.straight:
+        # Spawn randomisation is for training diversity. In a single run it
+        # only rotates the plot and drives the machine at a wall.
+        for field, zero in (
+            ("spawn_yaw_jitter", 0.0),
+            ("spawn_x_jitter", 0.0),
+            ("spawn_y_jitter", 0.0),
+            ("arm_start_jitter", 0.0),
+            ("cut_gradient_max", 0.0),
+        ):
+            if hasattr(env_cfg, field):
+                setattr(env_cfg, field, zero)
+        print("[play] STRAIGHT: yaw, xy, arm and gradient jitter all zeroed; "
+              "machine spawns on the centreline pointed down +x")
+
     if args.proxy_relaxation is not None:
         env_cfg.proxy_relaxation = args.proxy_relaxation
         g = (args.wheel_mass_scale
@@ -1053,10 +1097,13 @@ def main(argv=None) -> int:
             # the [-1, 1] action, so the depth asked for here is the depth the
             # reward is written against rather than a guess at a joint angle.
             cut = args.cut
-            if cut is None:
-                clo, chi = u.cfg.cut_depth_range
-                cut = 0.5 * (clo + chi)
             boom_cmd, angle = u.cfg.boom_command_for_cut(cut)
+            if args.boom is not None:
+                lo_a, hi_a = u.cfg.arm_range
+                boom_cmd = max(-1.0, min(1.0, args.boom))
+                angle = lo_a + 0.5 * (boom_cmd + 1.0) * (hi_a - lo_a)
+                print(f"[play] --boom {args.boom:+.2f} overrides --cut: the "
+                      f"geometry solve wanted {cut * 100:.1f} cm")
             ramp = max(1, int(args.dig_ramp / u.step_dt))
             # Lazily, like _wheel_radius: this script should not stop working
             # because a geometry constant moved.
@@ -1067,6 +1114,35 @@ def main(argv=None) -> int:
                 )
             except Exception:  # noqa: BLE001
                 MAX_DRUM_SPEED, MAX_WHEEL_SPEED = 2.9, 5.0
+            # boom_command_for_cut places the SHROUD, outer radius 0.212,
+            # while the thing that cuts is the rotor at tip radius 0.185. It
+            # also assumes the wheels rest exactly on bed_top, but SPAWN_Z
+            # carries 20 mm of clearance and -- now that the soil holds the
+            # machine up instead of letting it sink -- it stays there. Both
+            # errors lift the rotor, and together they are 47 mm: at the
+            # task's own 4 cm cut the rotor tip ends up 7 mm ABOVE the bed and
+            # the run excavates nothing, which reads exactly like soil that is
+            # too hard to cut. Predict the tip here and say so before the run,
+            # rather than after twenty minutes.
+            try:
+                from luna_hifi_tasks.excavator.excavator import (  # noqa: PLC0415
+                    ARM_LEN,
+                    CHASSIS_Z,
+                    MAST_TOP_Z,
+                    ROTOR_TIP_R,
+                )
+
+                chassis0 = float(u.cfg.bed_top) + CHASSIS_Z + 0.02
+                tip = chassis0 + MAST_TOP_Z - ARM_LEN * math.sin(angle) - ROTOR_TIP_R
+                gap = tip - float(u.cfg.bed_top)
+                print(f"[play] DIG geometry: rotor tip lands at z={tip:.4f} "
+                      f"against a bed surface of {u.cfg.bed_top:.4f}, "
+                      f"{1000 * gap:+.0f} mm")
+                if gap >= 0.0:
+                    print("[play] *** the rotor is ABOVE the bed and will cut "
+                          "NOTHING. Raise --cut or use --boom. ***")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[play] could not predict the rotor tip: {exc!r}")
             print(
                 f"[play] DIG: cut {cut * 100:.1f} cm -> boom command "
                 f"{boom_cmd:+.3f} (arm {angle:+.4f} rad, "
@@ -1088,6 +1164,16 @@ def main(argv=None) -> int:
                 _a[:, 0] = args.dig_speed if f >= 1.0 else 0.0
                 _a[:, 2] = -1.0 + f * (_b + 1.0)
                 _a[:, 3] = f
+                if _k[0] == _r + 1:
+                    # The ramp is over and the machine is about to move off.
+                    # Print where the arm and drums ACTUALLY got to, measured
+                    # rather than derived, before 500 steps of output buries
+                    # it. A drum still above the soil here means the run can
+                    # say nothing about whether the soil can be cut.
+                    print("[play] --- end of dig ramp, before moving off ---")
+                    _attitude(u)
+                    print(f"[play] undisturbed bed surface is z={u.cfg.bed_top:.4f}; "
+                          f"a drum bottom above that never entered the soil")
                 return _a
 
             in_dim = None

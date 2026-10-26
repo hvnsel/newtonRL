@@ -115,6 +115,14 @@ def _parse(argv):
                         "mass scale 8.7 that is 0.21 and 0.10. Default 0.1. "
                         "Sweep this, not the mass: if settled sinkage moves "
                         "with omega the loop is not converging")
+    p.add_argument("--coupler_iterations", type=int, default=None,
+                   help="rigid<->MPM passes per physics step, default 4. Each "
+                        "pass runs both solvers, so this multiplies step cost "
+                        "directly: 4 -> 2 is a 2x speedup. It was 4 because "
+                        "the exchange ran undamped and needed the passes; with "
+                        "proxy_relaxation at its optimum the loop should "
+                        "converge in fewer. Verify the same way as omega -- if "
+                        "settled sinkage moves, it is too few")
     p.add_argument("--proxy_relaxation_mode", default=None,
                    choices=("fixed", "aitken"),
                    help="'fixed' holds --proxy_relaxation, 'aitken' updates it "
@@ -1009,6 +1017,10 @@ def main(argv=None) -> int:
                 setattr(env_cfg, field, zero)
         print("[play] STRAIGHT: yaw, xy, arm and gradient jitter all zeroed; "
               "machine spawns on the centreline pointed down +x")
+
+    if args.coupler_iterations is not None:
+        env_cfg.coupler_iterations = args.coupler_iterations
+        print(f"[play] coupler_iterations set to {args.coupler_iterations}")
 
     if args.proxy_relaxation is not None:
         env_cfg.proxy_relaxation = args.proxy_relaxation

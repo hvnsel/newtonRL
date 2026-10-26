@@ -115,6 +115,18 @@ def _parse(argv):
                         "mass scale 8.7 that is 0.21 and 0.10. Default 0.1. "
                         "Sweep this, not the mass: if settled sinkage moves "
                         "with omega the loop is not converging")
+    p.add_argument("--mpm_verbose", action="store_true",
+                   help="make the MPM rheology solve report how many "
+                        "Gauss-Seidel iterations it actually spends. "
+                        "max_iterations is a CAP, not a cost -- the solve "
+                        "exits on residual -- so this says whether it bails "
+                        "at 40 or pins at 250. Enormously verbose: use with "
+                        "--seconds 1. Needs --no_cuda_graph, because the "
+                        "iteration count is printed on the host path only")
+    p.add_argument("--no_cuda_graph", action="store_true",
+                   help="disable CUDA graph capture. Slower, but the solver's "
+                        "per-batch residual and iteration count are printed "
+                        "from the host loop, which the captured path skips")
     p.add_argument("--arm_effort", type=float, default=None,
                    help="arm actuator effort ceiling [N.m], default 180. Above "
                         "228 the arm can lift the machine off its wheels "
@@ -1034,6 +1046,11 @@ def main(argv=None) -> int:
         print("[play] STRAIGHT: yaw, xy, arm and gradient jitter all zeroed; "
               "machine spawns on the centreline pointed down +x")
 
+    if args.no_cuda_graph:
+        env_cfg.use_cuda_graph = False
+        print("[play] CUDA graph capture OFF -- slower, but the solver's host "
+              "loop prints its residuals and iteration count")
+
     if args.arm_effort is not None:
         try:
             env_cfg.scene.excavator.actuators["arms"].effort_limit_sim = args.arm_effort
@@ -1242,6 +1259,27 @@ def main(argv=None) -> int:
                       f"nothing is driven; arms will fall under gravity")
             except Exception as exc:  # noqa: BLE001
                 print(f"[play] --limp failed, actuators are STILL driven: {exc!r}")
+
+        if args.mpm_verbose:
+            # MPMSolverCfg does not carry a verbose field, but the solver reads
+            # self.verbose at call time (solver_implicit_mpm passes it straight
+            # into solve_rheology), so setting it after construction works.
+            hit = 0
+            try:
+                coupled = _find_coupled_solver()
+                for nm in (coupled.entry_names() if coupled else ()):
+                    sv = coupled.solver(nm)
+                    if hasattr(sv, "collect_collider_impulses"):
+                        sv.verbose = True
+                        hit += 1
+                        print(f"[play] MPM verbose ON for entry {nm!r}. Look "
+                              f"for 'terminated after N iterations': N at "
+                              f"max_iterations means the solve never converged "
+                              f"and the cap is the cost")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[play] --mpm_verbose failed: {exc!r}")
+            if hit == 0:
+                print("[play] --mpm_verbose found no MPM solver; nothing set")
 
         dt = u.step_dt
         steps = int(args.seconds / dt)

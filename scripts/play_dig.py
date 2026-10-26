@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import re
 import sys
 from pathlib import Path
@@ -119,6 +120,22 @@ def _parse(argv):
                    help="'fixed' holds --proxy_relaxation, 'aitken' updates it "
                         "from successive residuals (Irons-Tuck). Keep 'fixed' "
                         "while sweeping omega")
+    p.add_argument("--dig", action="store_true",
+                   help="scripted dig instead of a policy: lower the arm until "
+                        "the shroud sits --cut under the surface, spin the "
+                        "drums up, then creep forward. For seeing whether the "
+                        "machine can excavate at all, without a checkpoint")
+    p.add_argument("--cut", type=float, default=None,
+                   help="cut depth in m for --dig. Default is the mean of the "
+                        "task's own cut_depth_range, i.e. the depth the reward "
+                        "is written against")
+    p.add_argument("--dig_speed", type=float, default=0.15,
+                   help="forward command during --dig, a fraction of "
+                        "MAX_WHEEL_SPEED (5 rad/s, 1.5 m/s). Default 0.15 is "
+                        "0.22 m/s, which crosses the 5.8 m bed in 26 s")
+    p.add_argument("--dig_ramp", type=float, default=3.0,
+                   help="seconds to lower the arm from stow to the cut depth "
+                        "and spin the drums up, before the machine moves off")
     p.add_argument("--limp", action="store_true",
                    help="zero every actuator gain, so NOTHING is driven. --park "
                         "still commands all four controllers (wheels braked to "
@@ -927,7 +944,7 @@ def main(argv=None) -> int:
         env_cfg.soil_cohesion = args.cohesion
         print(f"[play] soil_cohesion set to {args.cohesion} Pa")
 
-    if args.park or args.probe:
+    if args.park or args.probe or args.dig:
         # A reset respawns the machine in the air and re-lays the bed, so any
         # measurement taken after one describes a fresh scene rather than a
         # loaded one. Hold the episode open past the run instead: a parked run
@@ -1030,6 +1047,50 @@ def main(argv=None) -> int:
             parked = torch.zeros(u.num_envs, 5, device=u.device)
             parked[:, 2] = -1.0
             policy, in_dim = (lambda _obs: parked), None
+        elif args.dig:
+            # boom_command_for_cut solves the arm angle that puts the SHROUD
+            # `cut` metres under the surface and returns it already mapped to
+            # the [-1, 1] action, so the depth asked for here is the depth the
+            # reward is written against rather than a guess at a joint angle.
+            cut = args.cut
+            if cut is None:
+                clo, chi = u.cfg.cut_depth_range
+                cut = 0.5 * (clo + chi)
+            boom_cmd, angle = u.cfg.boom_command_for_cut(cut)
+            ramp = max(1, int(args.dig_ramp / u.step_dt))
+            # Lazily, like _wheel_radius: this script should not stop working
+            # because a geometry constant moved.
+            try:
+                from luna_hifi_tasks.excavator.excavator_cfg import (  # noqa: PLC0415
+                    MAX_DRUM_SPEED,
+                    MAX_WHEEL_SPEED,
+                )
+            except Exception:  # noqa: BLE001
+                MAX_DRUM_SPEED, MAX_WHEEL_SPEED = 2.9, 5.0
+            print(
+                f"[play] DIG: cut {cut * 100:.1f} cm -> boom command "
+                f"{boom_cmd:+.3f} (arm {angle:+.4f} rad, "
+                f"{math.degrees(angle):+.1f} deg), drums to "
+                f"{MAX_DRUM_SPEED:.2f} rad/s, then forward {args.dig_speed:+.2f} "
+                f"({args.dig_speed * MAX_WHEEL_SPEED * _wheel_radius():.2f} m/s) "
+                f"after a {args.dig_ramp:.1f}s ramp"
+            )
+            # Lower and spin up BEFORE moving off. Driving into the bed with
+            # the arm still falling plants the drums instead of cutting with
+            # them, which is the failure this is meant to distinguish from a
+            # machine that cannot cut.
+            dig_a = torch.zeros(u.num_envs, 5, device=u.device)
+            k = [0]
+
+            def policy(_obs, _a=dig_a, _k=k, _b=boom_cmd, _r=ramp):
+                f = min(1.0, _k[0] / _r)
+                _k[0] += 1
+                _a[:, 0] = args.dig_speed if f >= 1.0 else 0.0
+                _a[:, 2] = -1.0 + f * (_b + 1.0)
+                _a[:, 3] = f
+                return _a
+
+            in_dim = None
         else:
             policy, in_dim = _load_policy(str(u.device), ckpt)
 

@@ -159,6 +159,17 @@ def _parse(argv):
                    help="forward command during --dig, a fraction of "
                         "MAX_WHEEL_SPEED (5 rad/s, 1.5 m/s). Default 0.15 is "
                         "0.22 m/s, which crosses the 5.8 m bed in 26 s")
+    p.add_argument("--shroud", type=float, default=0.0,
+                   help="shroud command in [-1, 1] during --dig, default 0. "
+                        "The shroud wall stands 27 mm proud of the vane tips "
+                        "(SHROUD_OUT_R 0.212 vs ROTOR_TIP_R 0.185) everywhere "
+                        "except its 100 deg inlet, so unless the inlet is "
+                        "aimed at the soil the wall skis on it and the vanes "
+                        "never touch. Joint angle 0 centres the inlet on the "
+                        "shroud's own -z WITH THE ARM HORIZONTAL, so at a dig "
+                        "angle of 0.44 rad it has swung ~25 deg off the "
+                        "contact point. Sweep both signs and watch the drum's "
+                        "contact-node count in the probe table")
     p.add_argument("--dig_ramp", type=float, default=3.0,
                    help="seconds to lower the arm from stow to the cut depth "
                         "and spin the drums up, before the machine moves off")
@@ -1178,6 +1189,12 @@ def main(argv=None) -> int:
                 f"({args.dig_speed * MAX_WHEEL_SPEED * _wheel_radius():.2f} m/s) "
                 f"after a {args.dig_ramp:.1f}s ramp"
             )
+            slo, shi = u.cfg.shroud_range
+            s_ang = slo + 0.5 * (args.shroud + 1.0) * (shi - slo)
+            print(f"[play] shroud command {args.shroud:+.2f} -> joint "
+                  f"{s_ang:+.4f} rad ({math.degrees(s_ang):+.1f} deg) against "
+                  f"an arm at {math.degrees(angle):+.1f} deg. The inlet is "
+                  f"aimed at the contact point when these cancel")
             # Lower and spin up BEFORE moving off. Driving into the bed with
             # the arm still falling plants the drums instead of cutting with
             # them, which is the failure this is meant to distinguish from a
@@ -1191,6 +1208,7 @@ def main(argv=None) -> int:
                 _a[:, 0] = args.dig_speed if f >= 1.0 else 0.0
                 _a[:, 2] = -1.0 + f * (_b + 1.0)
                 _a[:, 3] = f
+                _a[:, 4] = f * args.shroud
                 if _k[0] == _r + 1:
                     # The ramp is over and the machine is about to move off.
                     # Print where the arm and drums ACTUALLY got to, measured

@@ -115,6 +115,11 @@ def _parse(argv):
                         "mass scale 8.7 that is 0.21 and 0.10. Default 0.1. "
                         "Sweep this, not the mass: if settled sinkage moves "
                         "with omega the loop is not converging")
+    p.add_argument("--arm_effort", type=float, default=None,
+                   help="arm actuator effort ceiling [N.m], default 180. Above "
+                        "228 the arm can lift the machine off its wheels "
+                        "instead of cutting; below 67 it cannot hold the empty "
+                        "drum out. See ARM_EFFORT in excavator_cfg")
     p.add_argument("--coupler_iterations", type=int, default=None,
                    help="rigid<->MPM passes per physics step, default 4. Each "
                         "pass runs both solvers, so this multiplies step cost "
@@ -1017,6 +1022,16 @@ def main(argv=None) -> int:
                 setattr(env_cfg, field, zero)
         print("[play] STRAIGHT: yaw, xy, arm and gradient jitter all zeroed; "
               "machine spawns on the centreline pointed down +x")
+
+    if args.arm_effort is not None:
+        try:
+            env_cfg.scene.excavator.actuators["arms"].effort_limit_sim = args.arm_effort
+            note = ""
+            if args.arm_effort > 228.0:
+                note = "  *** above 228, the arm can jack the machine up ***"
+            print(f"[play] arm effort_limit_sim set to {args.arm_effort:g} N.m{note}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[play] --arm_effort failed, the arm is STILL at its default: {exc!r}")
 
     if args.coupler_iterations is not None:
         env_cfg.coupler_iterations = args.coupler_iterations

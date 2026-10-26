@@ -121,7 +121,32 @@ SPIN_LIMIT = math.sqrt(LUNAR_G / ROTOR_TIP_R)
 # Actuator effort ceilings. The actuator cfgs below take these, and the
 # observation divides measured joint torque by them.
 WHEEL_EFFORT = 120.0
-ARM_EFFORT = 800.0
+# 800 let the arms jack the whole machine off its wheels. Commanded to a cut
+# depth, the shroud reached soil, the actuator found that lifting a 797 N rover
+# was cheaper than cutting, and the chassis ROSE 53 mm with all four wheels
+# ending 73 mm clear of the bed and carrying nothing -- the entire 816 N of
+# support came through the two shrouds. No wheels on the ground means no
+# traction, no forward motion, and so no cutting: the drums only press.
+#
+# Torque PER ARM to lift the machine is (W/2) * ARM_LEN * cos(angle), lowest at
+# the full dig angle:
+#
+#     angle -0.55 (stow)   258 N.m
+#     angle  0.00          303 N.m
+#     angle +0.72 (dig)    228 N.m   <- the floor; stay below this
+#
+# Holding the empty drum, shroud and arm out needs 67 N.m, so the usable window
+# is 67 .. 228. 180 sits in it at 2.7x the hold and 0.79x the lift threshold.
+#
+# Note what does NOT fit in that window: holding a FULL drum out horizontally
+# is the 229 N.m this file already quoted, and even at the dig angle it is
+# about 200 N.m. Both are at or above the 228 N.m that lifts the machine, so
+# there is NO effort limit at which this rover both carries a full drum on an
+# extended arm and stays on its wheels. That is a machine design problem --
+# 492 kg at lunar gravity is 797 N against a 0.76 m arm -- and the answers are a
+# heavier rover, a shorter arm, or a lower target_load_kg. It is recorded here
+# rather than hidden behind a large effort limit, which is what 800 was doing.
+ARM_EFFORT = 180.0
 DRUM_EFFORT = 350.0
 SHROUD_EFFORT = 200.0
 
@@ -176,10 +201,12 @@ EXCAVATOR_CFG = ArticulationCfg(
             stiffness=0.0,
             damping=400.0,
         ),
-        # Position drive, sized by dig load. Holding a full drum out
-        # horizontally is 229 N-m at lunar gravity, and the vertical component
-        # of digging resistance is larger. Raise this if the arm sags or is
-        # driven up out of the cut.
+        # Position drive, force-limited so it cannot lift the machine. See
+        # ARM_EFFORT above for the window. Do NOT raise this past 228 N.m to
+        # cure a sagging arm: above that the actuator stops cutting and starts
+        # jacking the rover onto its shrouds, which reads as a machine that
+        # cannot excavate. If the arm sags under load, the load is too large
+        # for the arm -- lower target_load_kg or shorten ARM_LEN.
         "arms": ImplicitActuatorCfg(
             joint_names_expr=JOINT_ARMS,
             effort_limit_sim=ARM_EFFORT,

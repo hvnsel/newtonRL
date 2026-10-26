@@ -877,6 +877,56 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # which would read as excessive cutting resistance.
     drum_proxy_mass_scale: float = 1.0
 
+    # Under-relaxation on the rigid<->MPM force exchange. NOT damping: it adds
+    # no viscosity and removes no energy, and at convergence it cancels out
+    # entirely -- _blend_aitken_forces_kernel is
+    #     force = force_previous + omega * (force_raw - force_previous)
+    # so a converged pass has force_raw == force_previous, residual 0, and the
+    # same answer for any omega. It changes only whether the loop gets there.
+    #
+    # It has to be below 1.0, which is what Newton defaults to, because the
+    # exchange is a fixed-point iteration with a gain that is not small. Per
+    # pass: the rigid side integrates under the soil's force, so
+    # d(delta)/dF = -dt^2/M; the MPM contact is a velocity-level constraint
+    # whose impulse response goes through IJtm ~ cell_volume/m_proxy, so it
+    # behaves as a spring of stiffness K = d(F)/d(delta) = m_proxy/dt^2. The
+    # loop gain is the product:
+    #     g = (m_proxy/dt^2)(dt^2/M) = m_proxy / M
+    # The dt^2 cancels exactly, so this instability is timestep-independent --
+    # a smaller step will not help.
+    #
+    # Measured, g tracks M = the wheel's own 14.1 kg rather than the 123 kg it
+    # carries, i.e. the articulation does not transmit the chassis inertia
+    # within a pass. So g is about the mass scale itself: scale 1 gives g = 1
+    # and the machine sank 230 mm without ever settling (marginal stability),
+    # scale 2 gives g = 2 and it oscillated +-70 mm, scale 8.7 gives g = 8.7
+    # and the bed diverged (|F-I| 15.7, p -3.1 MPa, tau/yield 1670, which is
+    # impossible by construction and so is proof of divergence).
+    #
+    # Relaxed, the gain is |1 - omega*(1+g)|, so stability wants
+    # omega < 2/(1+g) = 0.21 at g = 8.7, and the error per pass is smallest at
+    #     omega = 1/(1+g) = 1/9.7 = 0.10
+    # which zeroes it outright in this scalar reading. That is also exactly
+    # Newton's proxy_relaxation_min default.
+    #
+    # The scalar reading is a simplification: four frictional contacts on an
+    # articulated machine make the gain a matrix and g its spectral radius, so
+    # treat 0.10 as the right order rather than an exact optimum. The test
+    # that settles it is whether sinkage comes out the same across a sweep of
+    # omega. If it moves with omega the loop is still not converging and the
+    # number is numerics, however smooth the trace looks.
+    proxy_relaxation: float = 0.1
+
+    # "fixed" holds proxy_relaxation; "aitken" updates it from successive
+    # residuals -- _update_aitken_relaxation_kernel computes
+    #     omega <- -omega * (r_prev . dr) / (dr . dr)
+    # clamped to [proxy_relaxation_min, proxy_relaxation_max], which is
+    # Irons-Tuck dynamic relaxation, the standard accelerator for a
+    # partitioned coupling whose gain is not known in advance. It needs more
+    # than one pass to have any effect, which is what coupler_iterations gives
+    # it. Keep "fixed" while sweeping omega, so the sweep means something.
+    proxy_relaxation_mode: str = "fixed"
+
     # How the rigid entry's wheels and drums are presented to the MPM solve.
     # "lagged" feeds back the previous pass's forces, so a body under a steady
     # load is always supported one step late; "staggered" alternates the two
@@ -1171,6 +1221,21 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             f"~{leaf * 512 * 48 / 1e6:.0f} MB of grid"
         )
 
+        # Newton validates these too, but only after the ~95 s scene build,
+        # and each run is ten minutes.
+        if self.proxy_relaxation_mode not in ("fixed", "aitken"):
+            raise ValueError(
+                f"proxy_relaxation_mode must be 'fixed' or 'aitken', got "
+                f"{self.proxy_relaxation_mode!r}"
+            )
+        if not 0.0 <= self.proxy_relaxation <= 1.0:
+            raise ValueError(
+                f"proxy_relaxation must be in [0, 1], got {self.proxy_relaxation!r}. "
+                f"0 is one-way coupling (no feedback at all); 1 is Newton's "
+                f"undamped default, which the gain g~{self.wheel_proxy_mass_scale:g} "
+                f"needs to be below {2.0 / (1.0 + self.wheel_proxy_mass_scale):.3f}"
+            )
+
         # The wheels and the drums reach the MPM solve as separate proxy
         # mappings so each can carry its own effective mass; see
         # wheel_proxy_mass_scale. The two body sets are disjoint and their
@@ -1184,6 +1249,8 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                 bodies=[bodies],
                 mode=self.proxy_mode,
                 mass_scale=mass_scale,
+                proxy_relaxation=self.proxy_relaxation,
+                proxy_relaxation_mode=self.proxy_relaxation_mode,
                 collision_pipeline=pipeline,
             )
 

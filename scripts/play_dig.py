@@ -106,6 +106,19 @@ def _parse(argv):
                         "The wheel carries about 123 kg of the machine, so the "
                         "default is 8.7; 1.0 hands the soil a free wheel and "
                         "is why it sank")
+    p.add_argument("--proxy_relaxation", type=float, default=None,
+                   help="under-relaxation on the rigid<->MPM force exchange. "
+                        "The exchange is a fixed-point iteration of gain "
+                        "g = m_proxy/M, so stability wants omega < 2/(1+g) "
+                        "and the error per pass is smallest at 1/(1+g); at "
+                        "mass scale 8.7 that is 0.21 and 0.10. Default 0.1. "
+                        "Sweep this, not the mass: if settled sinkage moves "
+                        "with omega the loop is not converging")
+    p.add_argument("--proxy_relaxation_mode", default=None,
+                   choices=("fixed", "aitken"),
+                   help="'fixed' holds --proxy_relaxation, 'aitken' updates it "
+                        "from successive residuals (Irons-Tuck). Keep 'fixed' "
+                        "while sweeping omega")
     p.add_argument("--limp", action="store_true",
                    help="zero every actuator gain, so NOTHING is driven. --park "
                         "still commands all four controllers (wheels braked to "
@@ -935,6 +948,21 @@ def main(argv=None) -> int:
             f"[play] wheel_rails set to {args.rails}: wheels on "
             f"{'rigid rails' if args.rails else 'soil'}"
         )
+
+    if args.proxy_relaxation is not None:
+        env_cfg.proxy_relaxation = args.proxy_relaxation
+        g = (args.wheel_mass_scale
+             if args.wheel_mass_scale is not None
+             else env_cfg.wheel_proxy_mass_scale)
+        print(
+            f"[play] proxy_relaxation set to {args.proxy_relaxation:g} "
+            f"(gain g~{g:g} wants omega < {2.0 / (1.0 + g):.3f}, "
+            f"best near {1.0 / (1.0 + g):.3f})"
+        )
+
+    if args.proxy_relaxation_mode is not None:
+        env_cfg.proxy_relaxation_mode = args.proxy_relaxation_mode
+        print(f"[play] proxy_relaxation_mode set to {args.proxy_relaxation_mode}")
 
     if args.wheel_mass_scale is not None:
         env_cfg.wheel_proxy_mass_scale = args.wheel_mass_scale

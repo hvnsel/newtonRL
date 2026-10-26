@@ -540,14 +540,24 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # yield_stress, hardening is off so its multiplier is 1, and
     # young_modulus defaults to 1e15 so this is not elastic settlement.
     #
-    # Capacity scales with gamma = density * gravity, and gravity is not
-    # negotiable, so density is the only lever that works. 4x puts the
-    # capacity at 6.85 kPa and the machine 9 mm into the bed instead of
-    # 226 mm. This buys a trainable environment while the material model is
-    # still wrong, and every number it produces is suspect until that is
-    # fixed: the drum calibration in workstation/dig_sweep.sh above all, which
-    # is cutting resistance through a material four times as heavy.
-    soil_density: float = 6000.0
+    # Lunar regolith bulk density at the surface. It was 6000, a deliberate
+    # 4x, and the note here said so: it bought a trainable environment "while
+    # the material model is still wrong", with every number it produced
+    # suspect "until that is fixed". It is fixed. The machine now parks on the
+    # bed and settles 1 mm with the soil carrying 813 N of its 797 N weight,
+    # so the bed no longer needs to be four times too heavy to hold it up.
+    #
+    # The fudge is not neutral now, it actively blocks the dig. Confining
+    # pressure is rho*g*h and the yield surface is 500 + 0.84*p, so 4x the
+    # density is roughly 2.5x the shear strength: geostatic at 25 cm goes
+    # 2430 -> 608 Pa and the yield there 2541 -> 1011 Pa. Three dig runs ended
+    # with the drums reading n=0 contact nodes because the arm saturates
+    # pressing into a bed far stronger than the moon's.
+    #
+    # target_load_kg follows from this through BORE_VOLUME * soil_density, so
+    # it moves 160 -> 40 kg on its own, which is the figure the comment on
+    # that field was already written against.
+    soil_density: float = 1500.0
     soil_friction: float = 0.84              # tan(40 deg)
     soil_cohesion: float = 500.0             # yield_stress, Pa
     soil_yield_pressure: float = 1.0e12      # Pa, compression cap

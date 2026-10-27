@@ -434,7 +434,13 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # that sinks. That is the one switch: the two settings are paired on
     # purpose, because rails off with the wheels still uncoupled would leave
     # them resting on nothing and drop the machine to the bed floor at once.
-    wheel_rails: bool = True
+    # False: the wheels belong on soil. True parks them on rigid beams, which
+    # was a workaround from when the coupling could not hold the machine up at
+    # all, and it makes every soil result moot -- the startup line reads
+    # "wheels on rigid rails" and "soil coupling: drums and shrouds", with the
+    # wheels coupled to nothing. Training against that would train against the
+    # workaround. Everything measured this session used --no_rails.
+    wheel_rails: bool = False
 
     # How far outboard of the cutting end a rail's inner face starts.
     #
@@ -722,7 +728,22 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # back into kilograms.
     cut_volume_ref: float = 0.0432
 
-    max_num_envs = 104
+    # The sparse grid is sized from THIS, not from scene.num_envs, as an
+    # absolute total over all envs -- so a run with fewer envs still allocates
+    # for this many. At 104 that is 50750 x 104 = 5.28M particles and ~25770 MB
+    # of grid against a 3090's 24576, which does not fail with a message about
+    # env counts: it hangs and then dies in wp_alloc_device_async.
+    #
+    # play_dig overrides it per run and re-runs __post_init__. The training
+    # path does not, so the committed value has to match what training uses.
+    # It is a plain class attribute rather than an annotated dataclass field,
+    # so a hydra `env.max_num_envs=` override does not reliably reach it --
+    # change it here.
+    #
+    # 4, because separate_worlds=True (required for the masked resets training
+    # performs) costs enough memory that 8 envs fails to allocate 4.8 GB and 4
+    # runs clean.
+    max_num_envs = 4
 
     # actions: [forward, yaw, boom, drum, shroud] in [-1, 1]. Boom, drum and
     # shroud are one command each, applied to both ends.

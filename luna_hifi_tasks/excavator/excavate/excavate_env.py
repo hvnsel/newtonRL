@@ -770,6 +770,15 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # _reset_idx, so terminating here means the reset writes fresh state
         # and the observation for this very step comes back finite.
         self._nonfinite_now = self._nonfinite_state()
+        # A diverged env is not a failed episode. Episode/failed came back at
+        # 0.4102 against Episode/nonfinite 0.4082 -- the same envs -- so the
+        # policy was being charged Episode_Reward/fail of -15.6 for a solver
+        # divergence it did not cause, on 41% of episodes. Whatever route the
+        # flag took (every comparison against a NaN is False, so it was not
+        # the bed test, which read 0.002), it is cleared here: the env resets
+        # and pays nothing, because there is nothing to learn from it.
+        self._failed_now = self._failed_now & ~self._nonfinite_now
+        self._off_bed = self._off_bed & ~self._nonfinite_now
         if bool(self._nonfinite_now.any()):
             envs = self._nonfinite_now.nonzero().flatten().tolist()
             print(

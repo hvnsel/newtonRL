@@ -741,6 +741,33 @@ def reach() -> dict[str, float]:
     }
 
 
+def source_hash() -> str:
+    """MD5 of this file, the single source the MJCF and so the USD derive from."""
+    import hashlib
+
+    return hashlib.md5(Path(__file__).read_bytes()).hexdigest()
+
+
+def source_stamp_path() -> Path:
+    """Where the converted asset's record of its source lives.
+
+    In assets/ but OUTSIDE assets/excavator/, which the documented rebuild
+    deletes with `rm -rf` after write_mjcf has run. Tracked alongside the
+    asset deliberately: a pull that restores a stale USD restores its stale
+    stamp with it, so the mismatch survives the thing that defeats mtime.
+    """
+    return Path(__file__).resolve().parents[2] / "assets" / "excavator.usd.srchash"
+
+
+def _write_source_stamp() -> None:
+    try:
+        p = source_stamp_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(source_hash() + "\n", encoding="utf-8")
+    except OSError:
+        pass  # a stamp we cannot write is a warning, not a failure
+
+
 def write_mjcf(directory: str | None = None) -> str:
     """Write the MJCF to disk and return its path. Idempotent.
 
@@ -752,6 +779,7 @@ def write_mjcf(directory: str | None = None) -> str:
     makedirs(exist_ok=True) succeeds against the existing directory and gives
     no hint that the problem is ownership.
     """
+    _write_source_stamp()
     if directory is None:
         import getpass
 

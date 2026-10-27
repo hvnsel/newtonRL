@@ -46,6 +46,7 @@ from isaaclab_newton.sim.spawners.mpm import MPMGridCfg, MPMParticleMaterialCfg
 
 from isaaclab_contrib.coupling import CouplerEntryCfg, CouplerProxyCfg, CouplerProxyMappingCfg
 
+from ..ground import ground_plane_spawn
 from .tricycle import CHASSIS_Z, JOINT_REAR, JOINT_STEER
 # ---------------------------------------------------------------------------
 # Constants
@@ -170,7 +171,7 @@ def _mpm_ground() -> RigidObjectCfg:
 class TricycleSceneCfg(InteractiveSceneCfg):
     ground = AssetBaseCfg(
         prim_path="/World/GroundPlane",
-        spawn=sim_utils.GroundPlaneCfg(),
+        spawn=ground_plane_spawn(),
         collision_group=-1,
     )
     light = AssetBaseCfg(

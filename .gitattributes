@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Binary assets: never LF-normalize. A CRLF-mangled texture is silent
+# corruption that only shows up as a broken material on someone else's checkout.
+*.png binary

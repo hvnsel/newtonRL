@@ -28,6 +28,7 @@ from isaaclab_newton.sim.spawners.mpm import MPMGridCfg, MPMParticleMaterialCfg
 
 from isaaclab_contrib.coupling import CouplerEntryCfg, CouplerProxyCfg, CouplerProxyMappingCfg
 
+from ...ground import ground_plane_spawn
 from ..excavator import (
     ARM_LEN,
     ARM_RANGE,
@@ -269,7 +270,7 @@ def _wheel_rail(name: str) -> RigidObjectCfg:
 class ExcavateSceneCfg(InteractiveSceneCfg):
     ground = AssetBaseCfg(
         prim_path="/World/GroundPlane",
-        spawn=sim_utils.GroundPlaneCfg(),
+        spawn=ground_plane_spawn(),
         collision_group=-1,
     )
     light = AssetBaseCfg(

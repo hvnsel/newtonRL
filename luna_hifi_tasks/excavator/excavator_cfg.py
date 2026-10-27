@@ -148,7 +148,19 @@ WHEEL_EFFORT = 120.0
 # 492 kg at lunar gravity is 797 N against a 0.76 m arm -- and the answers are a
 # heavier rover, a shorter arm, or a lower target_load_kg. It is recorded here
 # rather than hidden behind a large effort limit, which is what 800 was doing.
-ARM_EFFORT = 180.0
+# 360, not 180. This is not an independent knob: the window below is derived
+# from the machine's weight, and DECK_MASS just doubled it. The floor is
+# (W/2)*ARM_LEN*cos(angle) at the dig angle, so it moved with the ballast:
+#
+#     494 kg,  801 N:  lift floor 229 N.m/arm, 0.79x = 181
+#     994 kg, 1611 N:  lift floor 460 N.m/arm, 0.79x = 364
+#
+# Holding the empty drum, shroud and arm out is still 67 N.m, so 360 is 5.4x
+# the hold and 0.78x the lift floor -- the same place in the window 180 held
+# before. Left at 180 the arm would simply saturate short of depth on a
+# machine twice as hard to lift, which would read as a drum that cannot
+# reach rather than as the arm being under-sized.
+ARM_EFFORT = 360.0
 DRUM_EFFORT = 350.0
 SHROUD_EFFORT = 200.0
 

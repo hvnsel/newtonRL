@@ -195,7 +195,29 @@ CAP_HALF_T = SHROUD_END_T
 # --- masses (kg) ---
 RAIL_MASS = 35.0                # each
 CROSSMEMBER_MASS = 30.0         # each
-DECK_MASS = 170.0               # ballast, low and central
+# Ballast, low and central: one box geom slung under the axle line, so this
+# adds mass without moving the CG, the wheelbase or any reach.
+#
+# 170 gave a 494 kg machine, 801 N at lunar gravity, and it could not hold
+# itself down while cutting. Every dig run floated to about +75 mm above
+# spawn with all four wheels at n=0 and the drums carrying everything --
+# through two soil densities, two stiffnesses, two cohesions, two vane
+# counts, both spin directions and three arm effort limits. The float height
+# never moved, because it is set by the machine's weight rather than by
+# anything about the soil or the drum.
+#
+# RASSOR digs at 45 kg, so mass looked like the wrong answer, and it was for
+# the wrong reason. RASSOR takes roughly 5 mm bites. The smallest bite this
+# bed can represent is one particle spacing, 40 mm, and a 40 mm cut measured
+# 711-930 N of reaction against a 801 N machine. A rover that must take
+# eight times RASSOR's bite has to be heavier than RASSOR; that is the
+# discretisation's doing, not the design's, and it is the honest thing to
+# write down rather than a number tuned until the wheels stayed put.
+#
+# 670 gives 994 kg and 1611 N, about 2x. Against a 900 N cut that leaves
+# ~700 N on the wheels, which should be traction enough. It is a probe, not
+# a final value: if it still floats, weight is not the lever either.
+DECK_MASS = 670.0
 MAST_MASS = 20.0                # each
 WHEEL_MASS = 12.0               # cylinder only
 GROUSER_MASS = 0.35             # each

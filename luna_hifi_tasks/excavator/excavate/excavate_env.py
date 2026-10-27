@@ -726,15 +726,58 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._escaped = self._particle_max_m > c.particle_escape_m
         return bad | self._off_bed | self._escaped
 
+    def _nonfinite_state(self) -> torch.Tensor:
+        """(E,) True where the articulation's own state has gone non-finite.
+
+        Not a soil reading: root pose, root velocity and joint state only. A
+        rigid solve that diverges poisons every observation derived from it --
+        base velocities, all four joint groups, drum phase, target_level,
+        depth_error, slip -- while terrain_scan, drum_fill and cut_progress
+        stay clean, which is how one env's articulation was told apart from a
+        soil problem.
+        """
+        d = self.robot.data
+        bad = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        for t in (
+            d.root_pos_w.torch,
+            d.root_quat_w.torch,
+            d.root_lin_vel_w.torch,
+            d.root_ang_vel_w.torch,
+            d.joint_pos.torch,
+            d.joint_vel.torch,
+        ):
+            bad |= ~torch.isfinite(t.reshape(self.num_envs, -1)).all(dim=-1)
+        return bad
+
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         self._failed_now = self._failed()
         terminated = self._failed_now | self._shape_done
         if not self.cfg.terminate_early:
-            # Every world has to reset on the same step for the shared MPM
-            # grid, so nothing ends an episode but the timeout. The flags
-            # above are still set, and success and fail still pay.
+            # Nothing ends an episode but the timeout. The flags above are
+            # still set, and success and fail still pay. The reason given here
+            # was that every world has to reset on the same step for a SHARED
+            # MPM grid; mpm_separate_worlds is True now, so that constraint is
+            # gone and what remains is the reward argument -- running to the
+            # timeout is what lets overcut charge for digging past the plane.
             terminated = torch.zeros_like(terminated)
+
+        # Exempt from the gate above, deliberately. A diverged articulation is
+        # not a task outcome, it is a broken env, and leaving it running feeds
+        # NaN into the policy observation until rsl_rl's check_nan kills the
+        # whole run -- which it did at step 542, with every bad entry in env 3
+        # and every other env clean. Isaac Lab calls _get_observations AFTER
+        # _reset_idx, so terminating here means the reset writes fresh state
+        # and the observation for this very step comes back finite.
+        self._nonfinite_now = self._nonfinite_state()
+        if bool(self._nonfinite_now.any()):
+            envs = self._nonfinite_now.nonzero().flatten().tolist()
+            print(
+                f"[env] articulation state non-finite in env(s) {envs} at step "
+                f"{int(self.common_step_counter)}; terminating them to reset",
+                flush=True,
+            )
+        terminated = terminated | self._nonfinite_now
         return terminated, time_out
 
     # ------------------------------------------------------------------
@@ -761,6 +804,12 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             (self._above_init[env_ids] * self.cfg.soil_density).mean()
         )
         exits["Episode/failed"] = float(self._failed_now[env_ids].float().mean())
+        # Should be 0. Anything else means the rigid solve is diverging, and
+        # the policy is being trained partly on resets it did not cause.
+        if hasattr(self, "_nonfinite_now"):
+            exits["Episode/nonfinite"] = float(
+                self._nonfinite_now[env_ids].float().mean()
+            )
         exits["Episode/off_bed"] = float(self._off_bed[env_ids].float().mean())
         exits["Episode/escaped"] = float(self._escaped[env_ids].float().mean())
         exits["Episode/particle_max_m"] = float(self._particle_max_m[env_ids].max())

@@ -753,6 +753,28 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         self._failed_now = self._failed()
         terminated = self._failed_now | self._shape_done
+        # A FAILURE ends the episode whatever terminate_early says. The reward
+        # calls its charge "the one-time charge that makes tipping over cost
+        # more than the stream it escapes", and one-time is only true if the
+        # episode stops. It did not: _failed_now stays raised, so -w_fail is
+        # paid EVERY step until the timeout. Iteration 3 logged
+        # Episode_Reward/fail -7192.34 against w_fail 20.0 over a 389-step
+        # episode -- 360 steps of a charge meant to be paid once, which is
+        # where the -1486 mean reward and the 26872 value loss came from.
+        #
+        # It is also how the machine kept driving off the bed. off_bed read
+        # 0.9414 that iteration, and with nothing ending the episode a 994 kg
+        # machine carries on past the bed edge into the wall or off the ledge
+        # until the rigid solver diverges -- nonfinite 0.9004 the iteration
+        # after, with the episode length collapsed from 389 to 11.6.
+        #
+        # shape_done is left under the gate. That is what the terminate_early
+        # note is actually protecting: a finished cut running on to the
+        # timeout is what lets overcut charge for digging past the plane, and
+        # a policy that never sees what follows a finished cut never learns to
+        # stop cutting. A machine that has left the bed has nothing left to
+        # teach.
+        fail_terminates = self._failed_now.clone()
         if not self.cfg.terminate_early:
             # Nothing ends an episode but the timeout. The flags above are
             # still set, and success and fail still pay. The reason given here
@@ -761,6 +783,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             # gone and what remains is the reward argument -- running to the
             # timeout is what lets overcut charge for digging past the plane.
             terminated = torch.zeros_like(terminated)
+        terminated = terminated | fail_terminates
 
         # Exempt from the gate above, deliberately. A diverged articulation is
         # not a task outcome, it is a broken env, and leaving it running feeds
@@ -780,12 +803,26 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._failed_now = self._failed_now & ~self._nonfinite_now
         self._off_bed = self._off_bed & ~self._nonfinite_now
         if bool(self._nonfinite_now.any()):
-            envs = self._nonfinite_now.nonzero().flatten().tolist()
+            envs = tuple(self._nonfinite_now.nonzero().flatten().tolist())
+            # One line per step buried four iterations of training output in
+            # 272 identical messages. Report a change of which envs are bad,
+            # and a count when it stops, rather than every step of a run.
+            if envs != getattr(self, "_nonfinite_last", None):
+                self._nonfinite_last = envs
+                self._nonfinite_since = int(self.common_step_counter)
+                print(
+                    f"[env] articulation state non-finite in env(s) "
+                    f"{list(envs)} from step {self._nonfinite_since}; "
+                    f"terminating them to reset",
+                    flush=True,
+                )
+        elif getattr(self, "_nonfinite_last", None) is not None:
             print(
-                f"[env] articulation state non-finite in env(s) {envs} at step "
-                f"{int(self.common_step_counter)}; terminating them to reset",
+                f"[env] env(s) {list(self._nonfinite_last)} finite again after "
+                f"{int(self.common_step_counter) - self._nonfinite_since} steps",
                 flush=True,
             )
+            self._nonfinite_last = None
         terminated = terminated | self._nonfinite_now
         return terminated, time_out
 

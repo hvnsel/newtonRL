@@ -527,11 +527,32 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # leaves overcut to charge for digging past the plane.
     terminate_early: bool = False
 
-    # False: measured over 18 s of digging, 4 envs run the rebuild clean with
-    # per-world partitioning off, while 2 envs fail with it on and 1 env is
-    # clean either way. The beds sit 9 m apart and are 8 m long, so a shared
-    # grid cannot let one env's soil reach another's.
-    mpm_separate_worlds: bool = False
+    # True, and it is not optional for training. Newton refuses a masked reset
+    # against grid-backed warm starts on a multi-world model:
+    #
+    #   RuntimeError: Masked reset cannot selectively clear grid-backed warm
+    #   starts when Config.separate_worlds=False for a multi-world model; set
+    #   separate_worlds=True or reset all worlds.
+    #
+    # _validate_reset_warmstart_fields lets a field through only when the mask
+    # is None or its basis is a PointBasisSpace. ws_stress_field rides on
+    # strain_basis pic8 and is skipped; ws_impulse_field rides on
+    # collider_basis Q1 and is not. And the test is on the mask EXISTING, not
+    # on it being selective, so every Isaac Lab reset trips it -- the failure
+    # lands on the very first env.reset() at 2 envs or more.
+    #
+    # Nothing else is open. collider_basis to a pic* basis makes
+    # activation_distance 0.0 and the machine gets no contact band at all,
+    # which was the original bug. One env avoids the check but throughput goes
+    # with env count, so a 410k-sample budget is about 91 hours.
+    #
+    # This field read False on a measurement -- 2 envs failing the rebuild with
+    # per-world partitioning on, 4 running clean with it off -- taken at 4x
+    # soil density, six vanes and 1e15 stiffness, on a bed being torn apart by
+    # a solver that has since been fixed in six ways. It needs re-measuring
+    # against the bed as it is now, and the failure mode is loud (LEAF, LOWER
+    # and UPPER capacity exceeded), not silent.
+    mpm_separate_worlds: bool = True
 
     # --- regolith ---
     #

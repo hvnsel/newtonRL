@@ -187,6 +187,14 @@ def _parse(argv):
                    help="forward command during --dig, a fraction of "
                         "MAX_WHEEL_SPEED (5 rad/s, 1.5 m/s). Default 0.15 is "
                         "0.22 m/s, which crosses the 5.8 m bed in 26 s")
+    p.add_argument("--drum", type=float, default=None,
+                   help="drum command in [-1, 1] during --dig. The default is "
+                        "DIG_DRUM_SIGN, currently -1, which is the direction "
+                        "the vanes were BUILT to bite in: the spiral is laid "
+                        "out with RAKE_SIGN and DIG_DRUM_SIGN is -RAKE_SIGN, "
+                        "so the concave face leads. The opposite sign is the "
+                        "DUMP direction -- vanes convex-face-first, shoving "
+                        "material instead of taking it")
     p.add_argument("--shroud", type=float, default=0.0,
                    help="shroud command in [-1, 1] during --dig, default 0. "
                         "The shroud wall stands 27 mm proud of the vane tips "
@@ -1198,6 +1206,18 @@ def main(argv=None) -> int:
                 )
             except Exception:  # noqa: BLE001
                 MAX_DRUM_SPEED, MAX_WHEEL_SPEED = 2.9, 5.0
+            try:
+                from luna_hifi_tasks.excavator.excavator import (  # noqa: PLC0415
+                    DIG_DRUM_SIGN,
+                )
+            except Exception:  # noqa: BLE001
+                DIG_DRUM_SIGN = -1.0
+            drum_cmd = DIG_DRUM_SIGN if args.drum is None else args.drum
+            if drum_cmd * DIG_DRUM_SIGN < 0:
+                print(f"[play] *** --drum {drum_cmd:+.2f} is the DUMP "
+                      f"direction. Loading is {DIG_DRUM_SIGN:+.0f}. The vanes "
+                      f"will run convex-face-first and shove material instead "
+                      f"of taking it ***")
             # boom_command_for_cut places the SHROUD, outer radius 0.212,
             # while the thing that cuts is the rotor at tip radius 0.185. It
             # also assumes the wheels rest exactly on bed_top, but SPAWN_Z
@@ -1231,7 +1251,11 @@ def main(argv=None) -> int:
                 f"[play] DIG: cut {cut * 100:.1f} cm -> boom command "
                 f"{boom_cmd:+.3f} (arm {angle:+.4f} rad, "
                 f"{math.degrees(angle):+.1f} deg), drums to "
-                f"{MAX_DRUM_SPEED:.2f} rad/s, then forward {args.dig_speed:+.2f} "
+                f"{drum_cmd * MAX_DRUM_SPEED:+.2f} rad/s "
+                f"({'LOADING' if drum_cmd * DIG_DRUM_SIGN > 0 else 'DUMPING'}, "
+                f"same sign both ends so the rear assembly's 180 deg yaw makes "
+                f"them counter-rotate in world and the cutting reactions "
+                f"cancel through the frame), then forward {args.dig_speed:+.2f} "
                 f"({args.dig_speed * MAX_WHEEL_SPEED * _wheel_radius():.2f} m/s) "
                 f"after a {args.dig_ramp:.1f}s ramp"
             )
@@ -1248,12 +1272,12 @@ def main(argv=None) -> int:
             dig_a = torch.zeros(u.num_envs, 5, device=u.device)
             k = [0]
 
-            def policy(_obs, _a=dig_a, _k=k, _b=boom_cmd, _r=ramp):
+            def policy(_obs, _a=dig_a, _k=k, _b=boom_cmd, _r=ramp, _d=drum_cmd):
                 f = min(1.0, _k[0] / _r)
                 _k[0] += 1
                 _a[:, 0] = args.dig_speed if f >= 1.0 else 0.0
                 _a[:, 2] = -1.0 + f * (_b + 1.0)
-                _a[:, 3] = f
+                _a[:, 3] = f * _d
                 _a[:, 4] = f * args.shroud
                 if _k[0] == _r + 1:
                     # The ramp is over and the machine is about to move off.

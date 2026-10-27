@@ -33,3 +33,7 @@ dig_*.png
 goal_trace.csv
 goals.png
 setpoint.png
+
+# Training console output. One file, overwritten each run: the numbered
+# variants only ever accumulated dead logs nobody reads.
+train.log

@@ -71,6 +71,7 @@ from __future__ import annotations
 import math
 import os
 import tempfile
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Dimensions (metres, radians)

@@ -582,7 +582,32 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # that field was already written against.
     soil_density: float = 1500.0
     soil_friction: float = 0.84              # tan(40 deg)
-    soil_cohesion: float = 500.0             # yield_stress, Pa
+    # 150, down from 500. Near the surface the confining pressure is tiny --
+    # 61 Pa at 2.5 cm once density came back to 1500 -- so the yield surface
+    # 500 + 0.84*p is almost all cohesion there, and cohesion is what decides
+    # both how far the wheels settle and how hard the vanes have to work.
+    #
+    # The bind it breaks: the smallest cut this bed can represent is one
+    # particle spacing, 40 mm, while the wheels settled 1 mm. To dig, the
+    # drums must sit below the wheels' contact plane by the cut depth, so a
+    # 40 mm cut puts them 40 mm under wheels that move 1 mm, and the drums
+    # take the whole machine. That is why every dig run reported all four
+    # wheels at n=0 whatever the vane count, spin direction, shroud aim or arm
+    # effort: the cut depth and the wheel sinkage are the same quantity and
+    # they were a factor of 40 apart.
+    #
+    # The vanes are not short of reach -- the 100 degree inlet leaves the
+    # shroud's lowest material 0.136 m below the drum axis against the tips'
+    # 0.185, so they clear it by 49 mm, and the front shroud carried |net|
+    # 0.049 while the drums carried 5.7 and 6.2 N.s. They cut. The reaction
+    # just came to 711 N against a 797 N machine.
+    #
+    # 150 Pa sits inside the Apollo-derived range for loose surface regolith,
+    # 0.1 to 1.8 kPa, so it is a layer being modelled rather than a number
+    # being tuned. The cost to watch is that this is also the wheels' support:
+    # parked sinkage was 1 mm and will grow, which is the point, but if it
+    # runs to tens of centimetres the bearing capacity has gone with it.
+    soil_cohesion: float = 150.0             # yield_stress, Pa
     soil_yield_pressure: float = 1.0e12      # Pa, compression cap
     # Elastic stiffness. Newton registers this with a default of 1.0e15 and
     # nothing here overrode it, nor does any of Newton's own MPM examples,

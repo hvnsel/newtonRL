@@ -166,8 +166,8 @@ SHROUD_EFFORT = 200.0
 
 
 def usd_status() -> str | None:
-    """None if the converted asset is present and newer than its source,
-    else a message naming the fix."""
+    """None if the converted asset is present and was built from the current
+    excavator.py, else a message naming the fix."""
     source = Path(__file__).with_name("excavator.py")
     rebuild = (
         "  rebuild it (from the Isaac Lab directory):\n"
@@ -180,13 +180,14 @@ def usd_status() -> str | None:
     if not EXCAVATOR_USD_PATH.exists():
         return f"the excavator asset is missing:\n    {EXCAVATOR_USD_PATH}\n{rebuild}"
     # Content first. The mtime test below cannot see the case that actually
-    # bites: `git checkout -- .` and `git pull` rewrite excavator.py AND the
-    # tracked excavator.usd in the same instant, so source is not newer and a
-    # stale asset sails through. That cost a dig run -- ROTOR_VANES went 6 -> 4
-    # and the drum in the probe still reported 31 geoms, which is 6 vanes x 5
-    # segments plus a hub. The stamp is written beside the USD by write_mjcf
-    # and tracked with it, so a pull that restores a stale asset restores its
-    # stale stamp too and the mismatch survives.
+    # bites: a git checkout rewrites excavator.py and anything else it touches
+    # in the same instant, so source is not newer and a stale asset sails
+    # through. That cost a dig run -- ROTOR_VANES went 6 -> 4 and the drum in
+    # the probe still reported 31 geoms, which is 6 vanes x 5 segments plus a
+    # hub. The stamp is written beside the USD by write_mjcf, and neither is
+    # tracked: when the USD was and the stamp was not, `git checkout -- .`
+    # restored an old build under a stamp that still matched, and this check
+    # passed the very asset it exists to reject.
     try:
         stamp = source_stamp_path()
         if stamp.exists():

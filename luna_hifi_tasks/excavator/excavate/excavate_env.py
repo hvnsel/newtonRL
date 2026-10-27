@@ -25,7 +25,7 @@ import torch
 from isaaclab_newton.assets import MPMObject
 
 from ..excavator import ARM_LEN, PIVOT_X, ROTOR_VANES, WHEEL_RADIUS
-from ..excavator_cfg import MAX_DRUM_SPEED
+from ..excavator_cfg import MAX_DRUM_SPEED, usd_status
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rewards as R
 from ..mdp.sensors import drum_fill_mass, mpm_grid_particle_mass, mpm_particle_state, soil_heightmap
@@ -55,6 +55,14 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     cfg: ExcavatorExcavateEnvCfg
 
     def __init__(self, cfg: ExcavatorExcavateEnvCfg, render_mode: str | None = None, **kwargs):
+        # Checked before anything spawns, as every probe script already does.
+        # Training is the run that most needs it and was the one that never
+        # asked: a stale asset does not fail, it trains for a day and a half
+        # on the previous geometry.
+        problem = usd_status()
+        if problem is not None:
+            raise RuntimeError(f"[asset] {problem}")
+
         # __post_init__ derives the bed, the grid capacities and the MPM
         # material from the primitive fields, and Hydra applies its overrides
         # after it. 

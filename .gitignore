@@ -37,3 +37,12 @@ setpoint.png
 # Training console output. One file, overwritten each run: the numbered
 # variants only ever accumulated dead logs nobody reads.
 train.log
+
+# The converted excavator asset and the stamp recording which excavator.py it
+# was built from. Both are generated on the machine that runs, by write_mjcf
+# then convert_mjcf, and neither is tracked. The USD once was -- committed on
+# one box, never pushed -- while the stamp was not, so every
+# `git checkout -- .` put that old build back under a stamp that still matched
+# the current source: the one case the stamp exists to catch, passed.
+assets/excavator/
+assets/excavator.usd.srchash

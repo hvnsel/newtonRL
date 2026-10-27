@@ -775,9 +775,13 @@ def source_stamp_path() -> Path:
     """Where the converted asset's record of its source lives.
 
     In assets/ but OUTSIDE assets/excavator/, which the documented rebuild
-    deletes with `rm -rf` after write_mjcf has run. Tracked alongside the
-    asset deliberately: a pull that restores a stale USD restores its stale
-    stamp with it, so the mismatch survives the thing that defeats mtime.
+    deletes with `rm -rf` after write_mjcf has run.
+
+    Neither this nor the asset is tracked; .gitignore covers both. The asset
+    once was -- committed on one box, never pushed -- and the stamp was not,
+    so `git checkout -- .` restored an old build and left a stamp that still
+    matched the current source. With both generated on the machine that runs,
+    the stamp says what the asset on disk was actually built from.
     """
     return Path(__file__).resolve().parents[2] / "assets" / "excavator.usd.srchash"
 

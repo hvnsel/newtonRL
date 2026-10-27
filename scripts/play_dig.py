@@ -586,9 +586,22 @@ def _probe(u) -> None:
                 pm = (flags & proxy) != 0
                 zp = net[pm][:, 2].sum()
                 print(f"[probe]   proxy bodies net +z: {zp:+.3f} N.s")
+                # Read the weight off the machine, do not hardcode it. It was
+                # 797 N for a 494 kg rover and stayed printed as 797 after the
+                # deck was ballasted to 994 kg, which turns a reaction at 51%
+                # of weight into one that reads as 104%.
+                try:
+                    import numpy as _np  # noqa: PLC0415
+
+                    g = _np.asarray(u.cfg.sim.gravity, dtype=float)
+                    mass = float(u.robot.data.default_mass.torch[0].sum().item())
+                    weight = mass * float(_np.linalg.norm(g))
+                    wtxt = f"weight is {weight:.0f} N, {mass:.0f} kg"
+                except Exception as exc:  # noqa: BLE001
+                    wtxt = f"weight unavailable: {exc!r}"
                 for dt_ in (0.01, 0.04):
                     print(f"[probe]     as force at dt={dt_}: {zp / dt_:+9.1f} N "
-                          f"(weight is 797 N)")
+                          f"({wtxt})")
             except Exception as exc:                       # noqa: BLE001
                 print(f"[probe]   per-body breakdown failed: {exc!r}")
         except Exception as exc:                           # noqa: BLE001

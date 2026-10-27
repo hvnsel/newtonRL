@@ -132,7 +132,30 @@ ARM_RANGE = (-0.55, 0.72)       # -31.5 deg (stowed high) .. +41.3 deg (full dig
 ROTOR_HUB_R = 0.045             # central drum the vanes are welded to
 ROTOR_TIP_R = 0.185             # vane tip; fill is counted inside this
 ROTOR_HALF_LEN = 0.475          # ~100 cm wide, matching the old drum
-ROTOR_VANES = 6
+# 6 gave a 0.185 m tip gap and nothing ever loaded. The pocket mouth has to
+# pass regolith, and the width at which it flows is MPM_FLOW = 4 grains: the
+# note below sizes the gap against MPM_TARGET_VOXEL at 0.03, where 0.155 m
+# clear is 5.2 grains and flows. The env runs 0.04 m particles, where the same
+# gap is 0.145 m clear against a 0.16 m flow width -- 3.6 grains, under the
+# threshold, so the material arches at the mouth and goes round the drum
+# instead of into it. Three dig runs cut visible trenches and reported
+# payload 0.0 with spoil berms either side of the cut, which is what arching
+# looks like from above.
+#
+#     vanes   tip gap   clear at 0.04   grains
+#       6      0.185       0.145          3.6   arches
+#       5      0.218       0.178          4.4
+#       4      0.262       0.222          5.5
+#
+# 4 it is. Fewer, bigger scoops is also what RASSOR carries. The constraint
+# this has to respect is that a blade stays inside one pocket: it sweeps
+# ln(TIP/HUB)*tan(rake) = 1.414*tan(32 deg) = 50.6 deg, which fits a 6-vane
+# 60 deg pocket with 9 deg spare and a 4-vane 90 deg pocket with 39, so going
+# down loosens the constraint rather than tightening it.
+#
+# BORE_VOLUME is a plain cylinder, so drum capacity and target_load_kg do not
+# move with this.
+ROTOR_VANES = 4
 VANE_SEGMENTS = 5               # straight boxes approximating one spiral vane
 VANE_HALF_T = 0.006
 

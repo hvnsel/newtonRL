@@ -601,9 +601,19 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # 1.7.0's changelog names, and the reason it added a majorize option to
     # bound the spherical/deviatoric coupling.
     #
-    # 1e8 is the stiff end of measured regolith. Soil pressures then land at
-    # volumetric strains near 1e-5, comfortably inside float32.
-    soil_young_modulus: float = 1.0e8        # Pa
+    # 1e8 is the STIFF end of measured regolith, and the bed does not need to
+    # be at that end. Published values for loose surface material run nearer
+    # 1e6..1e7, and the dig runs want the softer figure: the cut reaction has
+    # been lifting the machine off its wheels -- 930 N against 797 N of weight
+    # at the worst, with all four reading n=0 contact nodes -- and that
+    # reaction scales with the stiffness the vanes are working against.
+    #
+    # Numerically it is still comfortable, and in fact better. The per-step
+    # physical strain rho*g*H/E goes 6.1e-6 -> 6.1e-5, which is 30x clear of
+    # the 2e-6 tolerance instead of 3x, and 1e-4 volumetric strain is far
+    # inside float32's 1.2e-7 epsilon. The failure mode this field's note
+    # describes is at 1e15, in the other direction entirely.
+    soil_young_modulus: float = 1.0e7        # Pa
     # Maximum solid fraction the material may occupy of a grid node's FREE
     # volume, where free means the node minus whatever a collider occupies:
     #

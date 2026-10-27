@@ -447,13 +447,36 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     # observations
     # ------------------------------------------------------------------
 
+    # Reported once per field, because the thing that stops a training run is
+    # "observation group 'policy' contains NaN values" and that names the
+    # group, not which of nineteen tensors went bad. A per-field isnan over
+    # four envs is free next to a 1.2 s step.
+    _nan_seen = set()
+
+    def _report_nonfinite(self, group: str, fields: dict) -> None:
+        for name, t in fields.items():
+            key = f"{group}.{name}"
+            if key in self._nan_seen:
+                continue
+            bad = ~torch.isfinite(t)
+            if not bool(bad.any()):
+                continue
+            self._nan_seen.add(key)
+            idx = bad.nonzero()[:4].tolist()
+            print(
+                f"[obs] NON-FINITE in {key}: {int(bad.sum())} of {t.numel()} "
+                f"entries, shape {tuple(t.shape)}, first at {idx}, "
+                f"step {int(self.common_step_counter)}",
+                flush=True,
+            )
+
     def _get_observations(self) -> dict:
         c = self.cfg
         p = self._proprio()
         pos, env = self._particles()
         actor_scan, critic_scan = self._scans(self._bed_heightmap(pos, env))
         cut = self._cut_state(actor_scan)
-        policy = DIG_OBS.assemble({
+        policy_fields = {
             "base_lin_vel": p["base_lin_vel"],
             "base_ang_vel": p["base_ang_vel"],
             "projected_gravity": p["projected_gravity"],
@@ -476,7 +499,9 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
                 c.scan_range_ref, c.scan_invalid,
             ),
             "last_action": self._actions,
-        })
+        }
+        self._report_nonfinite("policy", policy_fields)
+        policy = DIG_OBS.assemble(policy_fields)
 
         wheel_vel = self.robot.data.joint_vel.torch
         v_fwd = p["base_lin_vel"][:, 0]
@@ -484,12 +509,14 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             R.wheel_slip(wheel_vel[:, self._left_ids], v_fwd, WHEEL_RADIUS),
             R.wheel_slip(wheel_vel[:, self._right_ids], v_fwd, WHEEL_RADIUS),
         ], dim=-1)
-        critic = DIG_CRITIC.assemble({
+        critic_fields = {
             "terrain_scan_true": critic_scan,
             "drum_fill_mass": self._fill_kg,
             "base_lin_vel_w": self.robot.data.root_lin_vel_w.torch,
             "slip": slip,
-        })
+        }
+        self._report_nonfinite("critic", critic_fields)
+        critic = DIG_CRITIC.assemble(critic_fields)
         return {"policy": policy, "critic": critic}
 
     # ------------------------------------------------------------------

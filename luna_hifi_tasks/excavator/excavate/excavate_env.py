@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import math
 
+import newton
+import numpy as np
 import torch
+import warp as wp
 
 from isaaclab_newton.assets import MPMObject
 
@@ -838,6 +841,62 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     # reset
     # ------------------------------------------------------------------
 
+    def _reset_particle_history(self, env_ids: torch.Tensor) -> None:
+        """Clear the implicit MPM's per-particle history in these envs' worlds.
+
+        soil.reset() writes particle position and velocity and nothing else,
+        but every particle also carries elastic strain, plastic Jp, stress,
+        its transform and its velocity gradient from one step to the next.
+        Isaac Lab's own per-world reset hook calls the coupled solver with
+        flags=0, which clears the warm starts, MuJoCo's per-world buffers and
+        the lagged coupling forces -- and, by SolverImplicitMPM.reset's own
+        rule, leaves particle history alone unless a PARTICLE flag is set. So
+        a bed that blew up was put back on its lattice still carrying the
+        history it blew up with, and blew up again on the first step.
+
+        That is what ended the first dig training run. Iterations 2 to 4 logged
+        Episode/nonfinite 0.998 and Episode/resets 1.004 per reset call: one
+        env terminated and reset on every single step. Env 2 went at step 451
+        and env 3 joined it at 1369; "finite again" was never printed for
+        either. Iteration 1 had led up to it with particle_max_m at 10.6 m and
+        Episode/escaped at 0.66, which is what a bed exploding on every respawn
+        while its history was still finite would log.
+
+        Reproduced on CPU against the same Newton install (1.6.1 solver shell,
+        1.7.0 rheology, patch_newton_mpm.py): SolverCoupledProxy, lagged body
+        proxy, in-place MPM entry, separate worlds. After the env reset in the
+        box's order -- robot write, soil.reset, the flags=0 hook, FK -- a world
+        with NaN strain went non-finite on every following step. With this
+        call made first it stayed finite, and the other world's history was
+        untouched.
+
+        This is the reset Isaac Lab documents for tasks with independent MPM
+        worlds ("call reset_solver_state explicitly after authoring their
+        complete state"), which the coupler's manager does not provide. It goes
+        through the coupled solver, the same call Isaac Lab's hook makes, so it
+        reaches the MPM entry's in-place state: that is where history lives,
+        and SolverCoupled never copies it from the parent state, so the hook's
+        flags=0 pass that follows cannot put the old values back. PARTICLE
+        selects particle history only -- SolverMuJoCo.reset rewrites joint
+        state only for JOINT flags -- so the pose _reset_robot just wrote
+        stands.
+        """
+        manager = self.sim.physics_manager
+        solver = getattr(manager, "_solver", None)
+        backend = getattr(manager, "backend", None)
+        if solver is None or backend is None:
+            raise RuntimeError(
+                "[soil] cannot reset MPM particle history: the physics manager has "
+                "no _solver/backend. A bed that diverges would be re-laid with the "
+                "history it diverged with and never recover."
+            )
+        # Env i is Newton world i; the last slot is the global world -1, left
+        # unselected. Built on the host so it is in Warp's stream order.
+        selected = np.zeros(int(solver.model.world_count) + 1, dtype=bool)
+        selected[env_ids.cpu().numpy()] = True
+        world_mask = wp.array(selected, dtype=wp.bool, device=solver.model.device)
+        solver.reset(backend.state_0, world_mask=world_mask, flags=newton.StateFlags.PARTICLE)
+
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
@@ -885,11 +944,18 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
         # Soil returns to its spawn cells every soil_reset_every episodes. In
         # between the env keeps the ground it has worked, which is what makes
-        # one env's bed differ from another's.
+        # one env's bed differ from another's. A bed that was thrown clear of
+        # the env or went non-finite is re-laid whatever its age: there is no
+        # worked ground left in it to keep.
         self._soil_age[env_ids] += 1
-        stale = env_ids[self._soil_age[env_ids] >= c.soil_reset_every]
+        broken = self._escaped[env_ids]
+        nonfinite = getattr(self, "_nonfinite_now", None)
+        if nonfinite is not None:
+            broken = broken | nonfinite[env_ids]
+        stale = env_ids[(self._soil_age[env_ids] >= c.soil_reset_every) | broken]
         if stale.numel() > 0:
             self.soil.reset(stale)
+            self._reset_particle_history(stale)
             self._soil_age[stale] = 0
             self._bed_grid[stale] = c.bed_top
 

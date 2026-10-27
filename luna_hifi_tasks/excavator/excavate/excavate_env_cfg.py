@@ -768,7 +768,26 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # spawn cell. The MPM grid is one spawner shared by all envs, so a carried
     # over bed is what makes one env's ground differ from another's: terrain
     # the machine has already worked.
-    soil_reset_every: int = 8
+    # 1, down from 8. At 8 the machine respawns seven episodes out of eight
+    # onto soil it has already dug, at a FIXED height -- SPAWN_Z is
+    # CHASSIS_Z + 0.02, which is 20 mm of clearance above the NOMINAL bed top,
+    # not above the terrain that is actually there. Land over a spoil pile and
+    # the machine spawns inside it.
+    #
+    # That is where the rigid solver was diverging. A 994 kg machine
+    # interpenetrating soil at spawn gets an impulse large enough to put NaN
+    # through the whole articulation, and the env then respawns onto the same
+    # terrain and does it again -- which is the fourteen consecutive hits on
+    # env 2 at steps 513 to 526. _soil_age is seeded with randint(0, 8) so the
+    # envs desynchronise, which is why it was one env rather than all four,
+    # and the 12 s dig runs never saw it because they never respawn.
+    #
+    # The cost is terrain diversity: every episode now starts on a flat bed
+    # instead of inheriting the last one's workings. For a policy that has
+    # never trained, starting every episode from the same known state is worth
+    # more than variety. The settling is already unpaid time in the episode
+    # budget, so this does not shorten the cut.
+    soil_reset_every: int = 1
 
     # --- actions ---
     action_smoothing = 0.3

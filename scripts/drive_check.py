@@ -1,11 +1,16 @@
 """Does the machine drive?
 
 Commands a constant action and reports how far the chassis actually travels,
-in the env frame. Compares the distance covered against what the commanded
-speed should produce over the same number of steps.
+in the env frame, and how far it turns. Compares both against what the
+commanded speed and yaw rate should produce over the same number of steps.
 
     isaaclab -p scripts/drive_check.py --task Luna-Excavator-Navigate \
         --num_envs 16 --steps 749 --forward 1.0
+
+Turning on the spot, with the wheel motors' torque cap overridden:
+
+    isaaclab -p scripts/drive_check.py --task Luna-Excavator-Navigate \
+        --num_envs 16 --steps 125 --forward 0 --yaw 1 --wheel_effort 240
 
 A policy-free measurement: whatever the reward is doing, this is the ceiling
 the machine can reach.
@@ -33,6 +38,8 @@ def _parse(argv=None):
     p.add_argument("--steps", type=int, default=749)
     p.add_argument("--forward", type=float, default=1.0, help="action[0] in [-1, 1]")
     p.add_argument("--yaw", type=float, default=0.0, help="action[1] in [-1, 1]")
+    p.add_argument("--wheel_effort", type=float, default=None,
+                   help="override the wheel motors' torque cap, N.m per wheel")
     p.add_argument("--terrain_rows", type=int, default=None)
     p.add_argument("--terrain_cols", type=int, default=None)
     add_launcher_args(p)
@@ -49,7 +56,8 @@ def main(argv=None) -> int:
     torch.manual_seed(0)
 
     from luna_hifi_tasks.excavator.excavator import WHEEL_RADIUS
-    from luna_hifi_tasks.excavator.excavator_cfg import MAX_WHEEL_SPEED, usd_status
+    from luna_hifi_tasks.excavator.excavator_cfg import MAX_WHEEL_SPEED, MAX_YAW_SPEED, usd_status
+    from luna_hifi_tasks.excavator.mdp.terrain import yaw_from_quat
 
     problem = usd_status()
     if problem is not None:
@@ -58,6 +66,10 @@ def main(argv=None) -> int:
 
     env_cfg, _ = resolve_task_config(args.task, "")
     env_cfg.scene.num_envs = args.num_envs
+    if args.wheel_effort is not None:
+        wheels = env_cfg.scene.excavator.actuators["wheels"]
+        print(f"[drive_check] wheel torque cap {wheels.effort_limit_sim} -> {args.wheel_effort} N.m")
+        wheels.effort_limit_sim = args.wheel_effort
 
     gen = getattr(getattr(env_cfg.scene, "terrain", None), "terrain_generator", None)
     if gen is not None:
@@ -77,6 +89,10 @@ def main(argv=None) -> int:
         u = env.unwrapped
         dev = u.device
         dt = u.step_dt
+        # What the simulation actually holds, which is what --wheel_effort has
+        # to have changed for the comparison to mean anything.
+        caps = u.robot.data.joint_effort_limits.torch[0, u._wheel_ids]
+        print(f"[drive_check] wheel torque cap in the sim: {[round(float(c), 1) for c in caps]} N.m")
 
         n_act = env.action_space.shape[-1]
         action = torch.zeros(u.num_envs, n_act, device=dev)
@@ -92,18 +108,26 @@ def main(argv=None) -> int:
 
         origins = u.scene.env_origins
         start = (u.robot.data.root_pos_w.torch - origins).clone()
+        # Heading change summed step by step, so a full turn and more reads
+        # as such instead of wrapping back to zero.
+        prev_yaw = yaw_from_quat(u.robot.data.root_quat_w.torch)
+        turned = torch.zeros(u.num_envs, device=dev)
 
         peak_speed = torch.zeros(u.num_envs, device=dev)
         for i in range(args.steps):
             env.step(action)
             v = u.robot.data.root_lin_vel_b.torch[:, 0]
             peak_speed = torch.maximum(peak_speed, v)
+            yaw = yaw_from_quat(u.robot.data.root_quat_w.torch)
+            step_turn = yaw - prev_yaw
+            turned += torch.atan2(torch.sin(step_turn), torch.cos(step_turn))
+            prev_yaw = yaw
             if i % 100 == 0:
                 pos = u.robot.data.root_pos_w.torch - origins
                 moved = torch.linalg.norm((pos - start)[:, :2], dim=-1)
                 print(
                     f"  step {i:4d}  moved {moved.mean():6.2f} m  "
-                    f"speed {v.mean():5.2f} m/s"
+                    f"speed {v.mean():5.2f} m/s  turned {torch.rad2deg(turned).mean():7.1f} deg"
                 )
 
         end = (u.robot.data.root_pos_w.torch - origins).clone()
@@ -111,6 +135,9 @@ def main(argv=None) -> int:
 
         commanded = args.forward * MAX_WHEEL_SPEED * WHEEL_RADIUS
         ideal = abs(commanded) * dt * args.steps
+        yaw_cmd = args.yaw * MAX_YAW_SPEED
+        turn_ideal = abs(yaw_cmd) * dt * args.steps
+        turn = turned.abs()
 
         print("\n=== drive check ===")
         print(f"  action            forward={args.forward}  yaw={args.yaw}")
@@ -121,6 +148,13 @@ def main(argv=None) -> int:
               f"(min {moved.min():.2f}, max {moved.max():.2f})")
         print(f"  peak forward speed{peak_speed.mean():6.2f} m/s")
         print(f"  fraction of ideal {float(moved.mean() / max(ideal, 1e-6)):6.1%}")
+        print(f"  commanded yaw rate{yaw_cmd:6.2f} rad/s")
+        print(f"  turn if ideal     {torch.rad2deg(torch.tensor(turn_ideal)):7.1f} deg")
+        print(f"  turn measured     {torch.rad2deg(turn).mean():7.1f} deg  "
+              f"(min {torch.rad2deg(turn).min():.1f}, max {torch.rad2deg(turn).max():.1f}), "
+              f"{float(turn.mean() / (dt * args.steps)):.2f} rad/s")
+        if turn_ideal > 0:
+            print(f"  turn fraction     {float(turn.mean() / turn_ideal):6.1%}")
 
         env.close()
     return 0

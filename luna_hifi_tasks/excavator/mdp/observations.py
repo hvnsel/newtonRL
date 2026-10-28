@@ -152,13 +152,14 @@ def navigate_obs_spec(
         ObsTerm("base_ang_vel", 3, "body frame"),
         ObsTerm("projected_gravity", 3, "body frame; also the tip-over signal"),
         ObsTerm("goal_vec_b", 2, "goal xy in BODY frame, scaled"),
+        ObsTerm("goal_vec_near", 2, "goal xy in BODY frame / max(dist, goal_near_range)"),
         ObsTerm("goal_heading", 2, "(sin, cos) of heading error"),
         ObsTerm("wheel_vel", num_wheels, "joint velocities, scaled"),
         ObsTerm("arm_pos", num_arms, "held stowed here, but it moves the CG"),
         ObsTerm("drum_fill", num_arms, "0 on the rigid tier; keeps the layout"),
         ObsTerm("last_action", 2, "[forward, yaw]"),
     ]
-    # The two scans are 224 of the 247 inputs, against the 4 that carry the
+    # The two scans are 224 of the 249 inputs, against the 6 that carry the
     # goal. On flat ground they are 224 channels of near-constant height plus
     # whatever degrade_scan injects, and the actor has to find the goal
     # underneath them; the critic reads the clean scan through its own spec

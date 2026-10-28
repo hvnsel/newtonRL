@@ -3,7 +3,7 @@
 # A "policy" style config, which Isaac Lab converts into rsl_rl's model
 # configs at start-up (isaaclab_rl.rsl_rl.utils).
 #
-#   * observation normalisation is on, over 247 inputs spanning body
+#   * observation normalisation is on, over 249 inputs spanning body
 #     velocities, unit vectors and metres of terrain relief.
 #   * obs_groups routes the env's "critic" observation group to the critic
 #     alone, which is the asymmetric actor-critic: the critic reads the clean

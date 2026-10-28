@@ -782,12 +782,12 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
     # --- start state ---
     # Jitter spans what navigate hands over. It was 0.55 m, 0.30 m and
-    # 0.40 rad to match navigate declaring success at goal_dist_tol 0.5 m and
-    # goal_heading_tol_rad 0.35. The approach is now navigate's job alone, to
-    # be retrained to finish within ~5 cm and ~3 deg and stopped, and the dig
-    # only drives straight -- so the dig trains on that handover. The cropped
-    # bed could not hold the old one anyway: 0.40 rad swings the drums 0.7 m
-    # sideways. Until navigate is retrained, its handover is looser than this.
+    # 0.40 rad, for a navigate that declared success within 0.5 m. The
+    # approach is now navigate's job alone: it arrives by holding goal_dist_tol
+    # 0.05 m and goal_heading_tol_rad 3 deg, stopped, for a second, and the
+    # dig only drives straight -- so the dig trains on that handover. The
+    # cropped bed could not hold the old one anyway: 0.40 rad swings the drums
+    # 0.7 m sideways.
     arm_start_angle = -0.20              # drums ~0.44 m up, clear of the bed
     arm_start_jitter = 0.10              # rad
     spawn_yaw_jitter = 0.05              # rad, ~3 deg

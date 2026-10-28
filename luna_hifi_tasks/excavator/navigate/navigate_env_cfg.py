@@ -135,10 +135,10 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # actions: [forward, yaw] in [-1, 1]. No arm or drum actuator is wired.
     action_space = 2
     # Whether the actor sees the terrain scan. False drops both scans from the
-    # policy observation, 247 inputs down to 23, leaving velocities, attitude,
+    # policy observation, 249 inputs down to 25, leaving velocities, attitude,
     # the goal and the last action. The critic keeps the clean scan regardless.
     actor_scan = True
-    observation_space = NAV_OBS.dim      # 247, or 23 without the scan
+    observation_space = NAV_OBS.dim      # 249, or 25 without the scan
     state_space = NAV_CRITIC.dim         # 231, critic only
 
     # --- goals ---
@@ -150,37 +150,43 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # and goal_dist_hi sat at 8.0 for 1800 iterations without moving.
     #
     # 1.5-3.0 m is a real drive -- 1.5 m is half the machine's length, 57
-    # steps at 1.1 m/s -- while leaving +-19 deg of heading slack at the near
-    # end against the 0.5 m tolerance, so arrivals are frequent enough to
-    # teach the critic what arriving is worth. The band then widens by
-    # curriculum_step on each window that clears the threshold. The low end
-    # stays put, which keeps short goals in the mix and stops the policy
-    # forgetting them as the ceiling rises.
+    # steps at 1.1 m/s. The band then widens by curriculum_step on each window
+    # that clears the threshold. The low end stays put, which keeps short goals
+    # in the mix and stops the policy forgetting them as the ceiling rises.
+    #
+    # Goals are drawn from the flat-patch spots terrain_cfg.py has the
+    # generator find in every cell, within 13 m of the cell centre: the spot
+    # whose distance from the spawn is closest to a draw from this band. On
+    # hazard cells no spot has a crater or boulder within 2 m.
     goal_dist_range = (1.5, 3.0)
     goal_dist_max = 18.0                 # curriculum ceiling
-    goal_dist_tol = 0.5                  # reached when closer than this ...
-    # ... and slower than this, as a planar speed magnitude.
-    #
-    # Friction is 1.0 and lunar gravity 1.62, so the traction-limited stop is
-    # mu*g = 1.62 m/s^2: from the 1.5 m/s top speed that is 0.69 m, longer than
-    # the 0.5 m tolerance radius. The machine therefore cannot enter the ball
-    # at speed and pull up inside it -- it has to be slowing on approach, which
-    # is the whole point. 0.25 m/s is a sixth of top speed and takes 0.02 m to
-    # shed, so the condition is comfortably satisfiable once the approach is
-    # right.
-    goal_speed_tol = 0.25                # m/s
-    # ... and facing within this. math.pi disables the heading test: arriving
-    # is a position-only condition. Heading at the goal is the excavate
-    # policy's job -- it shimmies to the plane it wants to cut -- so requiring
-    # it here only makes the navigate credit assignment harder for nothing.
-    goal_heading_tol_rad = math.pi
     spawn_xy_jitter = 3.0                # random offset inside the terrain cell
 
-    # Goals are held inside the sub-terrain the env was assigned. Cells are
-    # 32 m against a 3.78 m machine, and goal_cell_half is derived in
-    # __post_init__ as 0.5 * cell - margin, which is 13 m.
-    goal_cell_margin = 3.0
-    goal_cell_half = 13.0
+    # --- arrival ---
+    # Arriving is holding the pose: within goal_dist_tol of the point and
+    # goal_heading_tol_rad of the heading, slower than goal_speed_tol and
+    # turning slower than goal_yaw_rate_tol, for arrive_hold_steps steps in a
+    # row. A step outside any of them restarts the count. The episode ends,
+    # and w_goal is paid, on the step the hold completes, so the policy has
+    # practised standing on the goal before it is ever allowed to stop there.
+    #
+    # The pose tolerances are the dig's start state: excavate spawns the
+    # machine jittered by up to 5 cm along each axis and 0.05 rad, at rest,
+    # and only drives straight from there.
+    goal_dist_tol = 0.05                 # m
+    goal_heading_tol_rad = math.radians(3.0)
+    # Stopped. Training samples every action with noise, which can keep a
+    # machine that is trying to stand still from reading under 0.05 m/s;
+    # staying inside 5 cm for a whole second caps the average speed at 5 cm/s
+    # anyway. Speed is the planar magnitude, so backing in counts.
+    goal_speed_tol = 0.10                # m/s
+    goal_yaw_rate_tol = 0.10             # rad/s
+    arrive_hold_steps = 25               # 1 s at 25 Hz
+
+    # goal_vec_near is the goal vector divided by max(dist, this): a unit
+    # direction beyond it, and 0.1 at 5 cm, where goal_vec_b (divided by
+    # goal_dist_max) reads 0.003.
+    goal_near_range = 0.5                # m
 
     # Goal heading, relative to the bearing the machine drove in on, which is
     # how a dig approach arrives. goal_yaw_random_frac of episodes draw a
@@ -191,16 +197,15 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
     # --- playback ---
     # Keep an episode alive this many steps after it arrives, instead of
-    # terminating on the frame the flag fires. 0 is off.
+    # ending it on the step the hold completes. 0 is off.
     #
-    # For validation footage only. Arriving is the thing worth watching and
-    # the episode currently cuts at the exact instant it happens, so the clip
-    # never shows the machine actually stopped at the point. 75 steps is three
-    # seconds of it sitting there.
+    # This is the handover: from that step navigate's commands are latched to
+    # zero, which is what it does when it hands the machine to the dig, so the
+    # clip shows the machine left standing where navigate put it. 75 steps is
+    # three seconds of it.
     #
-    # Leave it at 0 for training: during the hold the machine is still inside
-    # the tolerance and still slow, so goal_reached stays true and w_goal is
-    # paid on every held step.
+    # For validation footage only. Leave it at 0 for training, where it would
+    # spend that many samples per arrival on a machine with its commands cut.
     goal_hold_steps: int = 0
 
     # Where the playback camera sits and what it points at.
@@ -223,15 +228,14 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     camera_lookat: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     # --- trace ---
-    # Per-step CSV of where the machine is, where the goal is and how fast it
-    # is going, for this many envs. 0 disables it.
+    # Per-step CSV of where the machine is, where the goal is, how far off
+    # its heading is and how fast it is going, for this many envs. 0 disables
+    # it.
     #
     # This exists because nothing renders the goal, so footage cannot answer
-    # the question that matters: arrival is `dist < goal_dist_tol` with no
-    # velocity clause, so a machine that drives through the ball at full speed
-    # scores exactly the same as one that stops in it. The speed on the step
-    # `reached` fires is what separates them, and it is a number, not a
-    # picture.
+    # the questions that matter: how close the machine finished, how well it
+    # was lined up, and whether it was still moving. Those are numbers, not
+    # pictures.
     goal_trace_envs: int = 0
     goal_trace_path: str = "goal_trace.csv"
 
@@ -253,18 +257,38 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
     # --- reward weights ---
     # bearing is scaled by forward speed (see mdp/rewards.bearing_alignment),
-    # so its episode ceiling is ~6.
+    # so its episode ceiling is ~6. It fades out between bearing_fade[1] and
+    # bearing_fade[0] metres from the goal: it pays for driving at the point,
+    # and on the point that is driving back and forth across it.
     #
     # Set from scripts/reward_audit.py, which prints per-term episode totals
     # over a zero pass and a random walk.
     w_progress = 5.0
     w_bearing = 0.1
-    # Arriving also stops the per-step penalties, which come to ~0.037/step:
-    # finishing at step 150 instead of timing out at 750 is worth ~22 on its
-    # own, so the bonus does not have to be large. It does have to stay small
-    # enough for the critic to fit, since it lands on a minority of episodes:
-    # the return variance it injects goes as the square of this.
+    bearing_fade = (1.0, 2.0)            # m: 0 inside the first, full beyond the second
+    # Paid once, on the step the hold completes. Arriving also stops the
+    # per-step penalties, which come to ~0.037/step: finishing at step 150
+    # instead of timing out at 750 is worth ~22 on its own, so the bonus does
+    # not have to be large. It does have to stay small enough for the critic
+    # to fit, since it lands on a minority of episodes: the return variance it
+    # injects goes as the square of this.
     w_goal = 30.0
+    # The pose terms, as a potential; see mdp/rewards.pose_potential. The
+    # reward is the change in it, so an episode collects only the difference
+    # between where it started and where it ended. progress pulls at 5 per
+    # metre all the way in; these pull on the last 15 cm and the last few
+    # degrees, which progress barely notices. heading_radius keeps
+    # w_heading * 2 / heading_radius at w_progress, so backing away from the
+    # goal never pays for a bad heading.
+    w_pos_fine = 5.0
+    pos_sigma = 0.15                     # m
+    w_heading = 5.0
+    heading_sigma = 0.10                 # rad, ~6 deg
+    heading_radius = 2.0                 # m
+    # Charged on motion while inside the pose tolerances, in m/s: planar speed
+    # plus yaw rate times half the track. The hold already demands stopping;
+    # this says so on every step instead of only at the end.
+    w_settle = 1.0
     # Charged once on _failed(), never on a timeout or an arrival. A fresh
     # policy's per-step penalties come to about 24 over a full episode.
     w_fail = 20.0
@@ -295,8 +319,6 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     scan_invalid = -2.0                  # outside +- scan_clip
 
     def __post_init__(self) -> None:
-        cell = min(self.scene.terrain.terrain_generator.size)
-        self.goal_cell_half = 0.5 * cell - self.goal_cell_margin
         self.observation_space = navigate_obs_spec(include_scan=self.actor_scan).dim
 
         self.sim.physics = NewtonCfg(

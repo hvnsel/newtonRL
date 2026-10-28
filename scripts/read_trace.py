@@ -4,14 +4,13 @@
     python scripts/read_trace.py goal_trace.csv --plot traj.png
 
 Splits the trace into episodes and reports, per episode, how far the goal was,
-how much of that got closed, how long it took, and -- the number this exists
-for -- the forward speed on the step `reached` fired.
+how much of that got closed, how long it took, and how far off the machine
+finished in position and heading.
 
-Arrival is `dist < goal_dist_tol` with no velocity clause, so a machine that
-crosses the ball at full speed scores the same as one that settles in it. If
-the arrival speeds come back near the 1.5 m/s top speed, the policy learned to
-touch the point, not to stop at it, and a handoff to a digging policy is
-getting a machine that is still moving.
+Arrival is holding the pose for a second: within goal_dist_tol and
+goal_heading_tol_rad, slower than goal_speed_tol. `reached` reads 1 from the
+step the hold completes, so the arrival summary reads that step: where a
+digging policy would be handed the machine.
 
 Needs nothing but the standard library. --plot additionally wants matplotlib.
 """
@@ -24,8 +23,9 @@ import math
 from collections import defaultdict
 
 TOP_SPEED = 1.5         # MAX_WHEEL_SPEED * WHEEL_RADIUS
-DIST_TOL = 0.5          # cfg.goal_dist_tol
-SPEED_TOL = 0.25        # cfg.goal_speed_tol
+DIST_TOL = 0.05         # cfg.goal_dist_tol
+HEAD_TOL_DEG = 3.0      # cfg.goal_heading_tol_rad
+SPEED_TOL = 0.10        # cfg.goal_speed_tol
 DT = 0.04               # policy step
 
 
@@ -69,17 +69,19 @@ def main(argv=None) -> int:
         for raw in csv.DictReader(fh):
             r = {k: (int(v) if k in ("step", "ep_step", "env", "reached", "timeout")
                      else float(v)) for k, v in raw.items()}
-            # Traces written before `speed` existed only carry body-frame x.
+            # Traces written before `speed` existed only carry body-frame x,
+            # and before `herr` no heading error at all.
             r.setdefault("speed", abs(r["speed_fwd"]))
+            r.setdefault("herr", float("nan"))
             by_env[r["env"]].append(r)
 
     if not by_env:
         print("empty trace")
         return 1
 
-    arrival_speeds: list[float] = []
+    arrivals: list[dict] = []
     print(f"{'env':>4} {'ep':>4} {'start m':>8} {'end m':>7} {'closed':>7} "
-          f"{'steps':>6} {'path m':>7} {'v@end':>7} {'peak v':>7}  outcome")
+          f"{'steps':>6} {'path m':>7} {'v@end':>7} {'peak v':>7} {'deg@end':>8}  outcome")
     for env in sorted(by_env):
         for k, ep in enumerate(_episodes(by_env[env])):
             first, last = ep[0], ep[-1]
@@ -93,45 +95,29 @@ def main(argv=None) -> int:
             peak = max(abs(r["speed"]) for r in ep)
             outcome = "reached" if last["reached"] else ("timeout" if last["timeout"] else "cut")
             if last["reached"]:
-                # signed, so the reverse split below can still be counted
-                arrival_speeds.append(last["speed_fwd"])
+                # The step the hold completed, not the last one: playback runs
+                # on past it with the commands cut.
+                arrivals.append(next(r for r in ep if r["reached"]))
             print(f"{env:>4} {k:>4} {first['dist']:>8.2f} {last['dist']:>7.2f} "
                   f"{first['dist'] - last['dist']:>7.2f} {len(ep):>6} {path:>7.2f} "
-                  f"{last['speed_fwd']:>7.2f} {peak:>7.2f}  {outcome}")
+                  f"{last['speed_fwd']:>7.2f} {peak:>7.2f} {last['herr']:>8.2f}  {outcome}")
 
     print()
-    if arrival_speeds:
-        n = len(arrival_speeds)
+    if arrivals:
+        n = len(arrivals)
         # speed_fwd is body-frame x and therefore SIGNED: reversing reads
-        # negative. Averaging it directly lets a machine arriving backwards at
-        # 1.5 cancel one arriving forwards at 1.5 and reports a sedate 0.0.
-        # Magnitude is the only thing that answers "was it still moving".
-        mag = [abs(v) for v in arrival_speeds]
-        mean = sum(mag) / n
-        reverse = [v for v in arrival_speeds if v < 0]
-        over = [v for v in mag if v > TOP_SPEED]
+        # negative. Magnitude is the only thing that answers "was it still
+        # moving".
+        mag = [r["speed"] for r in arrivals]
+        dist = [r["dist"] for r in arrivals]
+        head = [abs(r["herr"]) for r in arrivals]
         print(f"arrivals: {n}")
-        print(f"  |speed| at arrival  mean {mean:.2f}  min {min(mag):.2f}  max {max(mag):.2f} m/s")
-        print(f"  against the {TOP_SPEED} m/s commanded cap: {mean / TOP_SPEED:.0%}")
-        print()
-        if mean > 0.5 * TOP_SPEED:
-            print("  -> Driving THROUGH the goal, not stopping at it. goal_reached has no")
-            print("     velocity clause, so this is the reward satisfied as written.")
-        else:
-            print("  -> Slowing into the goal.")
-        if reverse:
-            rm = sum(abs(v) for v in reverse) / len(reverse)
-            print()
-            print(f"  -> {len(reverse)}/{n} ({len(reverse)/n:.0%}) arrive IN REVERSE, mean {rm:.2f} m/s.")
-            print("     bearing_alignment clamps forward_speed to [0, 1], so reversing")
-            print("     forgoes that reward but is never penalised, and nothing else in")
-            print("     the reward refers to heading. Backwards is near-equally optimal.")
-        if over:
-            print()
-            print(f"  -> {len(over)}/{n} ({len(over)/n:.0%}) exceed the {TOP_SPEED} m/s the wheels can")
-            print(f"     command, up to {max(mag):.2f}. The drive is a velocity servo, so the")
-            print("     body is outrunning its own wheels: sliding, or running downhill")
-            print("     under lunar gravity. Check wheel_slip if this matters.")
+        print(f"  position error  mean {100 * sum(dist) / n:.1f}  max {100 * max(dist):.1f} cm"
+              f"   (tolerance {100 * DIST_TOL:.0f} cm)")
+        print(f"  heading error   mean {sum(head) / n:.2f}  max {max(head):.2f} deg"
+              f"   (tolerance {HEAD_TOL_DEG:.0f} deg)")
+        print(f"  |speed|         mean {sum(mag) / n:.3f}  max {max(mag):.3f} m/s"
+              f"   (tolerance {SPEED_TOL} m/s)")
     else:
         print("no episode in this trace ended in an arrival")
 

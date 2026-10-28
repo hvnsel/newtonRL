@@ -272,6 +272,98 @@ def excavation_height_field_np(
     return np.rint(field / vertical_scale).astype(np.int16)
 
 
+def hazard_relief_np(
+    width_pixels: int,
+    length_pixels: int,
+    horizontal_scale: float,
+    rng: np.random.Generator,
+    difficulty: float = 1.0,
+    num_craters: int = 6,
+    crater_radius: tuple[float, float] = (1.0, 1.8),
+    crater_depth: tuple[float, float] = (0.40, 0.70),
+    crater_wall_power: float = 16.0,
+    rim_height: tuple[float, float] = (0.10, 0.20),
+    rim_width: float = 0.5,
+    num_boulders: int = 12,
+    boulder_radius: tuple[float, float] = (0.40, 0.70),
+    boulder_height: tuple[float, float] = (0.35, 0.60),
+    clear_radius: float = 6.5,
+    hazard_extent: float = 14.0,
+    min_gap: float = 1.8,
+    max_attempts: int = 200,
+) -> np.ndarray:
+    """Craters and boulders the machine cannot drive through, in metres, on
+    the same (width_pixels, length_pixels) grid as excavation_height_field_np.
+    Added to a base field by the caller.
+
+    The machine stands on 0.30 m wheels with 0.025 m cleats and 0.16 m of
+    ground clearance under the deck, and the mesh turns any flank steeper than
+    the generator's slope_threshold into a vertical wall:
+
+      crater   a bowl of depth D whose wall rises as (r/R)^crater_wall_power,
+               so the floor is near flat and the top of the wall is vertical,
+               behind a rim of height H that falls away outward over
+               rim_width. On generated cells the rim step plus the vertical
+               part of the wall measures at least 0.38 m, more than the
+               0.325 m a wheel reaches with its cleats.
+      boulder  a flat-topped block whose whole height, 0.35-0.60 m, is a
+               vertical edge: more than a wheel reaches and more than the
+               deck clears.
+
+    Counts scale with `difficulty`, which the generator ties to the curriculum
+    row; the sizes do not, so any hazard present is a real one. None sits
+    within clear_radius of the cell centre, where the env spawns the machine,
+    and every pair stands min_gap apart edge to edge, so a route between any
+    two always exists. A hazard that finds no free spot in max_attempts draws
+    is skipped rather than forced in.
+    """
+    xs = np.arange(width_pixels, dtype=np.float64) * horizontal_scale
+    ys = np.arange(length_pixels, dtype=np.float64) * horizontal_scale
+    gx, gy = np.meshgrid(xs, ys, indexing="ij")
+    cx, cy = xs.mean(), ys.mean()
+    d = float(np.clip(difficulty, 0.0, 1.0))
+    relief = np.zeros((width_pixels, length_pixels), dtype=np.float64)
+
+    placed: list[tuple[float, float, float]] = []    # (x, y, footprint radius)
+
+    def place(footprint: float) -> tuple[float, float] | None:
+        for _ in range(max_attempts):
+            x = rng.uniform(cx - hazard_extent, cx + hazard_extent)
+            y = rng.uniform(cy - hazard_extent, cy + hazard_extent)
+            if np.hypot(x - cx, y - cy) < clear_radius + footprint:
+                continue
+            if any(np.hypot(x - px, y - py) < footprint + pr + min_gap for px, py, pr in placed):
+                continue
+            placed.append((x, y, footprint))
+            return x, y
+        return None
+
+    # Craters first: they are the larger, so they get the free space while
+    # there is most of it.
+    for _ in range(int(round(d * num_craters))):
+        radius = rng.uniform(*crater_radius)
+        depth = rng.uniform(*crater_depth)
+        rim = rng.uniform(*rim_height)
+        at = place(radius + rim_width)
+        if at is None:
+            continue
+        r = np.hypot(gx - at[0], gy - at[1])
+        bowl = -depth * (1.0 - (r / radius) ** crater_wall_power)
+        lip = rim * (1.0 - (r - radius) / rim_width)
+        relief += np.where(r < radius, bowl, np.where(r < radius + rim_width, lip, 0.0))
+
+    for _ in range(int(round(d * num_boulders))):
+        radius = rng.uniform(*boulder_radius)
+        height = rng.uniform(*boulder_height)
+        at = place(radius)
+        if at is None:
+            continue
+        r = np.hypot(gx - at[0], gy - at[1])
+        relief += np.where(r < radius, height, 0.0)
+
+    return relief
+
+
 def generate_excavation_terrain(
     num_envs: int,
     nx: int,

@@ -18,7 +18,7 @@ Weights mirror excavate_env_cfg. Run it after changing any of them.
 SOIL = 1500.0          # kg/m3, cfg.soil_density
 CAP = 40.0             # kg/drum, cfg.target_load_kg
 LOAD = 2 * CAP         # both normalisers
-CUT_REF = 0.0432       # m3, the nominal cut: 0.9 x 1.2 m taken down one voxel
+CUT_REF = 0.0304       # m3, the nominal cut: 0.8 x 0.95 m taken down one voxel
 W_REMOVAL = 100.0
 W_UNHELD = 120.0
 W_OVERCUT = 200.0
@@ -50,7 +50,7 @@ CASES = {
     "capture at measured 0.733": (CLEARED, 0.0, 0.733 * 0.9 * CUT_REF * SOIL),
     "packs the drums":           (CLEARED, 0.0, 86.0),
     "pushes the layer aside":    (CLEARED, 0.0, 0.0),
-    "digs down, keeps spoil":    (CLEARED, 0.25 * CUT_REF, 74.5),
+    "digs down, keeps spoil":    (CLEARED, 0.25 * CUT_REF, (0.9 + 0.25) * CUT_REF * SOIL),
     "mines off-target":          (CUT_REF, 0.0, 36.0),
 }
 HONEST = ("keeps what it cuts", "capture at measured 0.733")

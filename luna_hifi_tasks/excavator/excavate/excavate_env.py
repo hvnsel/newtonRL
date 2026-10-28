@@ -115,6 +115,9 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._target_xy = torch.zeros(E, 2, device=dev)
         self._target_z0 = torch.zeros(E, device=dev)
         self._target_grad = torch.zeros(E, 2, device=dev)
+        # How far below the surface the height grid reads the plane goes.
+        # _get_rewards re-places _target_z0 from this during the settle.
+        self._target_depth = torch.zeros(E, device=dev)
         # The episode's exit: the commanded plane is cut. Carrying the spoil
         # is not the deliverable -- a pass of the commanded length yields
         # several times what the pair can hold, so the drums filling is
@@ -544,6 +547,38 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         d_env = torch.nan_to_num(d_env, nan=0.0, posinf=0.0, neginf=0.0)
         self._particle_max_m.scatter_reduce_(0, env, d_env, reduce="amax")
         self._bed_grid = self._bed_heightmap(pos, env)
+
+        # The commanded plane is measured from the soil the height grid
+        # actually reads, not from bed_top. _reset_idx can only place it
+        # against the grid it left behind -- bed_top for a re-laid bed -- but
+        # the grid holds the tallest particle CENTRE in each cell, and a fresh
+        # bed's top layer of centres sits half a particle spacing (1.8 cm)
+        # under bed_top. So a "4 cm" cut was 2.2 cm of soil as every volume
+        # here measures it: above_init_kg read ~35 kg against a nominal 65,
+        # which the offset alone accounts for, with no measurable settling.
+        # While the settle runs the plane is re-placed `depth` under the work
+        # area's mean surface each step, so it would follow settling too, and
+        # it stays there once the settle ends. The plane is level
+        # (cut_gradient_max 0), so the mean over the work area is the height
+        # at the anchor; with a gradient commanded it would be the height at
+        # the area's centre instead. Cells with no soil -- bare ground where a
+        # pile is reached from outside, as in -Small and -Micro -- are left out
+        # by the same test _cut_state applies, or they would drag the mean
+        # down to the floor.
+        work = self._work_mask & (self._bed_grid > BED_FLOOR_Z + 0.5 * self.cfg.voxel_size)
+        cells = work.sum(dim=(1, 2))
+        surface = (
+            torch.where(work, self._bed_grid, torch.zeros_like(self._bed_grid)).sum(dim=(1, 2))
+            / cells.clamp_min(1)
+            + self.scene.env_origins[:, 2]
+        )
+        floor = self.scene.env_origins[:, 2] + BED_FLOOR_Z
+        self._target_z0.copy_(torch.where(
+            self._cut_fresh & (cells > 0),
+            (surface - self._target_depth).clamp_min(floor),
+            self._target_z0,
+        ))
+
         actor_scan, _ = self._scans(self._bed_grid)
         self._fill_kg = self._compute_fill(pos, env)
         self._fill_filt.mul_(1.0 - self._fill_alpha).add_(self._fill_kg, alpha=self._fill_alpha)
@@ -671,6 +706,18 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             "action_rate": -c.w_action_rate * R.action_rate_penalty(self._actions, self._prev_actions),
             "time": -c.w_time * torch.ones(self.num_envs, device=self.device),
         }
+        # A step on which the articulation went non-finite is not one the
+        # policy took. The drum pose is NaN, the scan reads the work area as
+        # empty, and removal and unheld booked the whole layer: about +40 and
+        # -47 points per diverged episode in the first dig run, with nothing
+        # in the drums. Nothing is paid or logged for it, as the fail charge
+        # already was not; the env resets on this same step.
+        nonfinite = getattr(self, "_nonfinite_now", None)
+        if nonfinite is not None:
+            self._last_terms = {
+                k: torch.where(nonfinite, torch.zeros_like(v), v)
+                for k, v in self._last_terms.items()
+            }
         reward = L.add_all(self._last_terms)
         # The trainer's own check reports only that some reward was NaN, which
         # does not say which of twelve terms produced it. The soil-derived
@@ -730,8 +777,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # capacity can be provisioned. It ran at 3.5 m for the whole of two
         # earlier runs and reached 107 m at iteration 38 of the one that dug
         # below the plane, so it tracks the drum being buried and spun rather
-        # than being sim noise. The bed reaches 3.4 m from the origin and envs
-        # sit 9 m apart, so 15 m is past anything legitimate and far below the
+        # than being sim noise. The bed reaches 2.64 m from the origin and envs
+        # sit 5.12 m apart, so 15 m is past anything legitimate and far below the
         # scale that breaks the tree. Ending the episode both protects the
         # grid and prices the configuration that throws the soil.
         self._escaped = self._particle_max_m > c.particle_escape_m
@@ -976,7 +1023,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         anchor_xy, surface = self._drum_spawn_ground(env_ids, spawn_xy, yaw, arm)
         floor = self.scene.env_origins[env_ids, 2] + BED_FLOOR_Z
         self._target_xy[env_ids] = anchor_xy
+        # Provisional: measured against bed_top. _get_rewards re-places it
+        # under the surface the height grid reads, every step of the settle.
         self._target_z0[env_ids] = (surface - depth).clamp_min(floor)
+        self._target_depth[env_ids] = depth
 
         # Gradient sampled in the body frame and rotated out, so forward is
         # the direction the machine starts pointing.

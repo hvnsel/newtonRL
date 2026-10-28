@@ -324,17 +324,32 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
     scene: ExcavateSceneCfg = ExcavateSceneCfg(
         num_envs=16,
-        # Beds are 8 m long, so origins have to stay at least that far apart.
-        # Beyond that, keep them as close as possible: the MPM sparse grid's
-        # node tree is budgeted by the span it has to cover, not by particle
-        # count, and it is the first thing to run out. At 4 envs a 12.0 m
-        # spacing spans 20 x 14 m and the rebuild fails every step with
-        # LOWER and UPPER internal node capacity exceeded; 9.0 m spans
-        # 17 x 11 m and is clean. Raising the node counts does not help --
-        # only shrinking the span does, which is what the solver's own error
-        # suggests. grid_cap_multiplier is unrelated: it sizes active voxels,
-        # and VOXEL_CAPACITY_EXCEEDED is never among the flags.
-        env_spacing=9.0,
+        # Origins have to clear a bed (4.56 m plus its retaining plates) and
+        # otherwise stay as close as possible: the MPM sparse grid's node tree
+        # is budgeted by the span it has to cover, not by particle count, and
+        # it is the first thing to run out. At 4 envs a 12.0 m spacing spanned
+        # 20 x 14 m and the rebuild failed every step with LOWER and UPPER
+        # internal node capacity exceeded; 9.0 m spanned 17 x 11 m and was
+        # clean, and 5.12 m spans under 10 x 7 m. Raising the node counts does
+        # not help -- only shrinking the span does, which is what the solver's
+        # own error suggests. grid_cap_multiplier is unrelated: it sizes active
+        # voxels, and VOXEL_CAPACITY_EXCEEDED is never among the flags.
+        #
+        # 5.12 rather than a round number because the solver grid is anchored
+        # at the world origin, not at each env's. Origins sit at +-spacing/2,
+        # and at 9.0 that is 56.25 voxels of 0.08 m: the two columns of envs
+        # sat at different offsets inside their voxels, and half the grains
+        # lay exactly on voxel faces, where float rounding picked their cell.
+        # 13 to 25 of the 73 voxel columns along the bed held 1 or 3 grains
+        # instead of 2, differently for each column of envs -- and all ten
+        # divergences of the first two dig runs were in envs 2 and 3, the pair
+        # at x = -4.5. A multiple of 0.16 puts every origin on a voxel corner,
+        # and with the bed edges on the 0.08 grid the grains fill the voxels
+        # identically in all four envs: 1 voxel column of 57 holds other than
+        # two grains, and 4 of 115 sit within 2% of a face, against 13 to 25
+        # columns and 72 grains before. If the alignment is what singled those
+        # envs out, it no longer can.
+        env_spacing=5.12,
         replicate_physics=True,
     )
 
@@ -343,13 +358,26 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # The machine spawns at the origin facing +x. With spawn_on_bed the wheels
     # rest on the bed surface and both drums start over soil: the front one
     # meets fresh regolith as it drives, the rear trails through the trench.
-    # 5.8 m, down from 8.0. The machine spans +-1.81 m at the dig angle and
-    # stands on the bed, spawn jitter is +-0.55, and the work area now reaches
-    # 0.9 m rather than 2.3, so the chassis origin stays inside
-    # [-0.55, 1.45]. With bed_margin_x at 1.81 that needs -2.36 and 3.26.
-    # Worth doing because throughput goes as 1/particles-per-env.
-    bed_x: tuple[float, float] = (-2.4, 3.4)
-    bed_y: tuple[float, float] = (-1.0, 1.0)
+    #
+    # 4.56 x 1.6 m, down from 5.8 x 2.0: 50,750 -> 32,200 particles/env.
+    # Navigate owns the approach and hands over within ~5 cm and ~3 deg, so
+    # the dig only drives straight down its strip, and the bed has to hold
+    # the machine and that strip and nothing else. Along x the machine reaches
+    # 1.81 m fore and aft at the dig angle, and a full pass takes the chassis
+    # origin over [-0.05, 0.73]: spawn jitter, then the 8.4 cm that lowering
+    # the arm pulls the drum back behind the anchor, then the 0.6 m strip.
+    # With bed_margin_x that needs -1.86 and 2.54; 2.64 leaves 10 cm. Across,
+    # it reaches 0.6 m each side, plus jitter and drift. Edges are multiples
+    # of the 0.08 m solver voxel -- see env_spacing on the scene for why.
+    #
+    # 2.64 - (-1.92) is 4.5600000000000005 in float64, so the spawner's ceil
+    # lays 115 grains along x at 0.03965 m rather than 114 at 0.04, and the
+    # phase drifts half a voxel down the bed: one voxel column holds 1 or 3
+    # grains, the same one in every env. The nearest edge that comes out
+    # exact is 2.80, and 33,040 grains x 4 envs crosses 2^17, which doubles
+    # the sparse grid's reserved cells; at 32,200 they halve.
+    bed_x: tuple[float, float] = (-1.92, 2.64)
+    bed_y: tuple[float, float] = (-0.80, 0.80)
     bed_depth: float = 0.25
     # Retaining plates outside each bed face. A few voxels is enough; the
     # plates are kinematic and only ever take a normal load.
@@ -722,12 +750,12 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     drum_capacity_kg: float = DRUM_CAPACITY_KG
     # Work area times the mean commanded depth, derived in __post_init__,
     # which overwrites whatever stands here. The value below is what the
-    # current work area and cut depth produce (0.9 x 1.2 m taken down one
-    # 0.04 m voxel, 64.8 kg at 1500 kg/m3) so that reading this field off the
+    # current work area and cut depth produce (0.8 x 0.95 m taken down one
+    # 0.04 m voxel, 45.6 kg at 1500 kg/m3) so that reading this field off the
     # class gives the right order of magnitude. It previously read 0.22, five
     # times the truth, which is an easy way to misconvert a logged reward
     # back into kilograms.
-    cut_volume_ref: float = 0.0432
+    cut_volume_ref: float = 0.0304
 
     # The sparse grid is sized from THIS, not from scene.num_envs, as an
     # absolute total over all envs -- so a run with fewer envs still allocates
@@ -753,17 +781,18 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     state_space = DIG_CRITIC.dim         # 231
 
     # --- start state ---
-    # Jitter spans what navigate hands over: it declares success at
-    # goal_dist_tol 0.5 m in any direction and goal_heading_tol_rad 0.35.
+    # Jitter spans what navigate hands over. It was 0.55 m, 0.30 m and
+    # 0.40 rad to match navigate declaring success at goal_dist_tol 0.5 m and
+    # goal_heading_tol_rad 0.35. The approach is now navigate's job alone, to
+    # be retrained to finish within ~5 cm and ~3 deg and stopped, and the dig
+    # only drives straight -- so the dig trains on that handover. The cropped
+    # bed could not hold the old one anyway: 0.40 rad swings the drums 0.7 m
+    # sideways. Until navigate is retrained, its handover is looser than this.
     arm_start_angle = -0.20              # drums ~0.44 m up, clear of the bed
     arm_start_jitter = 0.10              # rad
-    spawn_yaw_jitter = 0.40              # rad
-    spawn_x_jitter = 0.55                # m
-    # Was 0.55, which spawned the machine outside bed_margin_y and would fail
-    # the episode on its first step. It also put the work area's far edge at
-    # 1.15 m against a bed half-width of 1.00, so the commanded cut ran off
-    # the bed entirely. 0.30 keeps both inside: 0.30 + 0.60 = 0.90 < 1.00.
-    spawn_y_jitter = 0.30                # m
+    spawn_yaw_jitter = 0.05              # rad, ~3 deg
+    spawn_x_jitter = 0.05                # m
+    spawn_y_jitter = 0.05                # m
 
     # Episodes an env keeps its bed before every particle goes back to its
     # spawn cell. The MPM grid is one spawner shared by all envs, so a carried
@@ -836,14 +865,24 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # The ground this cut is responsible for, anchored where the drum first
     # meets soil and extending forward along the approach heading. Fixed in the
     # world for the episode, and progress is measured over it.
-    # 0.60 ahead plus 0.30 behind is 0.90 m, which with the 1.2 m swath is
-    # 1.08 m2: one voxel layer off it is 65 kg, and the drum is throughput
-    # limited at 4 to 7 kg/s regardless of depth or speed, so that is about
-    # 13 s of cutting inside a 20 s episode. At 2.0 m the commanded layer was
-    # 166 kg, three to four passes, and could never be finished in one.
+    #
+    # Exactly what one straight pass reaches. It was 1.2 m wide against the
+    # drums' 0.95 m swath, and 0.30 m behind the anchor ran past the back of
+    # the landing: about 40% of the scored area was ground no straight pass
+    # could touch. The anchor is where the drum would come down with the arm
+    # at its raised spawn angle; lowering it to the 4 cm dig angle (0.52 rad)
+    # pulls the drum 8.4 cm back toward the chassis, and the crater it cuts
+    # reaches 11.5 cm behind that (the chord of a 0.185 m rotor at 4 cm). So
+    # 0.20 behind holds the whole landing, and soil the drums catch while
+    # lowering is soil from the work area rather than charged as unheld.
+    # Now 0.80 x 0.95 m, 0.76 m2: one voxel layer off it is 45.6 kg, of
+    # which ~2.1 kg in the crater's back half is cut to the drum's curve and
+    # not to the plane. With the drum throughput limited at 4 to 7 kg/s that
+    # is 7 to 11 s of cutting in the 21 s after the settle. At 2.0 m long the
+    # commanded layer was 166 kg, and could never be finished in one pass.
     work_area_length: float = 0.60           # m ahead of the anchor
-    work_area_behind: float = 0.3            # m behind it
-    work_area_width: float = 1.2             # m, a little over the 1.0 m swath
+    work_area_behind: float = 0.20           # m behind it: the whole landing
+    work_area_width: float = 0.95            # m, the drums' swath, 2 x ROTOR_HALF_LEN
 
     # Residual volume, as a fraction of cut_volume_ref, at or below which the
     # commanded shape counts as achieved and the episode ends.
@@ -919,21 +958,24 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # Both normalise by 2 x target_load_kg, so a weight is points per 80 kg.
     # unheld is the larger of the two on purpose: at equal weights pushing the
     # whole layer aside nets exactly zero, and zero is not a deterrent when
-    # every alternative also costs energy. At 120 it nets -15. Checked against
-    # the five cases -- ideal 72.9, measured capture 49.5, packing 40.4,
-    # pushing -14.6, off-target mining -54.0 -- in which order they must fall.
+    # every alternative also costs energy. At 120 it nets -10.3 on the 0.8 x
+    # 0.95 m area (-14.6 on the old 0.9 x 1.2 m one: the layer is 70% of the
+    # mass). scripts/balance_check.py, success bonus included as it prints
+    # them: keeps what it cuts +91.3, measured capture +74.9, packing the
+    # drums +32.9, pushing aside -10.3, digging down -15.8, off-target mining
+    # -54.0 -- every way of faking it below honest work and below zero.
     # Set from scripts/reward_audit.py, which prints per-term episode totals
     # for a stationary and a fresh policy.
     w_removal = 100.0                    # per 2 x target_load_kg cut on-target
     w_unheld = 120.0                     # per 2 x target_load_kg not held
     # Fraction of the mass removed from the work area that must still be in
     # the drums for the shape to count as achieved. Measured capture over a
-    # pass is 0.733, and a 70%-cleared cut is 45.4 kg against a pair that
+    # pass is 0.733, and a 70%-cleared cut is 31.9 kg against a pair that
     # carries about 52, so 0.50 is inside what the hardware does and leaves
     # room for the stragglers at the end of a pass costing capture.
     capture_min_fraction: float = 0.50
     # Distance from its env origin at which a particle counts as thrown clear
-    # and ends the episode. The bed reaches 3.4 m and envs are 9 m apart.
+    # and ends the episode. The bed reaches 2.64 m and envs are 5.12 m apart.
     particle_escape_m: float = 15.0
     # Matched to w_removal: they are the reward and the penalty for the same
     # surface, and leaving this behind would make overcutting nearly free.

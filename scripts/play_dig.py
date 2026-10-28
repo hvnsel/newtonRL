@@ -169,8 +169,8 @@ def _parse(argv):
     p.add_argument("--straight", action="store_true",
                    help="zero every spawn randomisation so the machine starts "
                         "on the bed centreline pointed down +x with a level "
-                        "target plane. The defaults jitter yaw by +-0.40 rad "
-                        "(23 deg), x by +-0.55 m and y by +-0.30 m, which is "
+                        "target plane. The defaults jitter yaw by +-0.05 rad "
+                        "(3 deg) and x and y by +-0.05 m, which is "
                         "training diversity and pure noise in a single run")
     p.add_argument("--boom", type=float, default=None,
                    help="boom command in [-1, 1], overriding --cut. -1 is the "
@@ -186,7 +186,7 @@ def _parse(argv):
     p.add_argument("--dig_speed", type=float, default=0.15,
                    help="forward command during --dig, a fraction of "
                         "MAX_WHEEL_SPEED (5 rad/s, 1.5 m/s). Default 0.15 is "
-                        "0.22 m/s, which crosses the 5.8 m bed in 26 s")
+                        "0.22 m/s, which covers the 0.8 m strip in under 4 s")
     p.add_argument("--drum", type=float, default=None,
                    help="drum command in [-1, 1] during --dig. The default is "
                         "DIG_DRUM_SIGN, currently -1, which is the direction "

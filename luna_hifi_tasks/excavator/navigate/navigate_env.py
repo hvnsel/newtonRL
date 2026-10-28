@@ -21,7 +21,7 @@ from ..excavator_cfg import MAX_WHEEL_SPEED
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rewards as R
 from ..mdp.terrain import degrade_scan, nav_far_pattern, nav_near_pattern, scan_from_raycaster
-from ..mdp.observations import navigate_obs_spec
+from ..mdp.observations import NAV_FAR_IMAGE, NAV_NEAR_IMAGE, navigate_obs_spec
 from ..terrain_cfg import GOAL_PATCHES
 from .navigate_env_cfg import NAV_CRITIC, SCANNER_HEIGHT, ExcavatorNavigateEnvCfg
 
@@ -95,8 +95,9 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
              "action_rate", "energy", "time", "fill_change"],
             E, dev,
         )
-        self._obs_spec = navigate_obs_spec(include_scan=self.cfg.actor_scan)
+        self._obs_spec = navigate_obs_spec()
         print(self._obs_spec.describe())
+        print(f"[navigate] actor images: far_scan {NAV_FAR_IMAGE}, near_scan {NAV_NEAR_IMAGE}")
         print(NAV_CRITIC.describe())
         rows, cols, spots = self._goal_spots.shape[:3]
         print(f"[navigate] goals from {spots} flat-patch spots per cell, {rows} x {cols} cells")
@@ -203,9 +204,6 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             "drum_fill": self._drum_fill,
             "last_action": self._actions,
         }
-        if c.actor_scan:
-            parts["far_scan"] = degrade(far, self._far_pattern)
-            parts["near_scan"] = degrade(near, self._near_pattern)
         policy = self._obs_spec.assemble(parts)
 
         wheel_vel = self.robot.data.joint_vel.torch
@@ -220,7 +218,14 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             "base_lin_vel_w": self.robot.data.root_lin_vel_w.torch,
             "slip": slip,
         })
-        return {"policy": policy, "critic": critic}
+        n = self.num_envs
+        return {
+            "policy": policy,
+            # Images for the actor's CNN encoders; see NAV_FAR_IMAGE.
+            "far_scan": degrade(far, self._far_pattern).reshape(n, *NAV_FAR_IMAGE),
+            "near_scan": degrade(near, self._near_pattern).reshape(n, *NAV_NEAR_IMAGE),
+            "critic": critic,
+        }
 
     # ------------------------------------------------------------------
     # rewards

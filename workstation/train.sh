@@ -2,8 +2,7 @@
 # Run the Isaac Lab CLI against this checkout, on a workstation install.
 #
 #   workstation/train.sh train --rl_library rsl_rl \
-#       --task Luna-Excavator-Navigate --num_envs 1024 --max_iterations 400 \
-#       env.actor_scan=false
+#       --task Luna-Excavator-Navigate --num_envs 1024 --max_iterations 400
 #
 #   workstation/train.sh -p scripts/run_task.py --task Luna-Excavator-Navigate --num_envs 4
 #

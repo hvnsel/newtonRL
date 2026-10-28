@@ -1,13 +1,23 @@
 # agents/rsl_rl_ppo_cfg.py
 #
-# A "policy" style config, which Isaac Lab converts into rsl_rl's model
-# configs at start-up (isaaclab_rl.rsl_rl.utils).
+# Model configs in rsl_rl 5's form, which Isaac Lab passes through to the
+# runner (isaaclab_rl.rsl_rl.utils).
 #
-#   * observation normalisation is on, over 249 inputs spanning body
-#     velocities, unit vectors and metres of terrain relief.
-#   * obs_groups routes the env's "critic" observation group to the critic
-#     alone, which is the asymmetric actor-critic: the critic reads the clean
-#     scan and true slip, the actor what a rover could sense.
+#   * the actor is rsl_rl's CNNModel. The 25-wide "policy" group --
+#     velocities, attitude, the goal, the last action -- is normalised and
+#     goes straight to the MLP. The two terrain windows arrive as images and
+#     each goes through its own CNN encoder, trained by the PPO loss with
+#     everything else; no separate autoencoder. Two 3x3 stride-2 convolutions
+#     with zero padding halve a window twice: far, 8 x 16 at 0.45 m, comes out
+#     a 2 x 4 grid of 2 features, 16 numbers; near, 8 x 12 at 0.20 m, a 2 x 3
+#     grid of 3, 18 numbers. Each output cell covers about 1.8 m and 0.8 m of
+#     ground, so it still says where a hazard is; global pooling would average
+#     that away. The MLP reads 59 inputs, 34 of them terrain, where the raw
+#     scan was 224 of 249 and outnumbered the 6 that carry the goal.
+#   * the critic is an MLP over the policy group and the privileged "critic"
+#     group, which carries the clean scan, true slip and exact fill: the
+#     asymmetric actor-critic. It is discarded after training, so it may read
+#     what no rover could.
 #
 # gamma 0.997 is an effective horizon of 333 steps, 13 s at 25 Hz, against a
 # 750-step episode covering an 18 m traverse. A goal reached 400 steps out
@@ -15,7 +25,15 @@
 # long run.
 
 from isaaclab.utils.configclass import configclass
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import (
+    RslRlCNNModelCfg,
+    RslRlMLPModelCfg,
+    RslRlOnPolicyRunnerCfg,
+    RslRlPpoAlgorithmCfg,
+)
+
+# The layer settings both encoders share; only the last layer's width differs.
+_ENCODER = dict(kernel_size=3, stride=2, padding="zeros", activation="elu")
 
 
 @configclass
@@ -24,17 +42,23 @@ class ExcavatorNavigatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 2000
     save_interval = 100
     experiment_name = "excavator_navigate"
-    empirical_normalization = False
-    obs_groups = {"actor": ["policy"], "critic": ["policy", "critic"]}
+    obs_groups = {"actor": ["policy", "far_scan", "near_scan"], "critic": ["policy", "critic"]}
     clip_actions = 1.0
 
-    policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        actor_hidden_dims=[256, 128, 64],
-        critic_hidden_dims=[256, 128, 64],
+    actor = RslRlCNNModelCfg(
+        hidden_dims=[256, 128, 64],
         activation="elu",
-        actor_obs_normalization=True,
-        critic_obs_normalization=True,
+        obs_normalization=True,
+        distribution_cfg=RslRlCNNModelCfg.GaussianDistributionCfg(init_std=1.0),
+        cnn_cfg={
+            "far_scan": RslRlCNNModelCfg.CNNCfg(output_channels=[16, 2], **_ENCODER),
+            "near_scan": RslRlCNNModelCfg.CNNCfg(output_channels=[16, 3], **_ENCODER),
+        },
+    )
+    critic = RslRlMLPModelCfg(
+        hidden_dims=[256, 128, 64],
+        activation="elu",
+        obs_normalization=True,
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,

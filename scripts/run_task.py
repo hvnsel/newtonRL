@@ -207,13 +207,15 @@ def main(argv=None) -> int:
         _check(bool(torch.isfinite(obs["policy"]).all()), "policy observation finite", failures)
         _check(bool(torch.isfinite(obs["critic"]).all()), "critic observation finite", failures)
 
-        from luna_hifi_tasks.excavator.mdp.observations import excavate_obs_spec, navigate_obs_spec
+        from luna_hifi_tasks.excavator.mdp.observations import excavate_obs_spec
 
-        sp = excavate_obs_spec() if is_dig else navigate_obs_spec()
+        # Navigate hands the actor its two windows as image groups of their
+        # own; the dig scan sits inside the policy vector.
+        sp = excavate_obs_spec() if is_dig else None
         names = ["terrain_scan"] if is_dig else ["far_scan", "near_scan"]
         print("\n=== terrain scan ===")
         for name in names:
-            scan = obs["policy"][:, sp.slice_of(name)]
+            scan = obs["policy"][:, sp.slice_of(name)] if is_dig else obs[name].flatten(1)
             print(f"  {name:<11} min {scan.min():.3f} max {scan.max():.3f} std {scan.std():.4f}")
             _check(float(scan.std()) > 1e-4,
                    f"{name} varies across cells (sensor is seeing the ground)", failures)

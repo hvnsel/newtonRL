@@ -29,6 +29,13 @@ NAV_NEAR_CELLS = NAV_NEAR_NX * NAV_NEAR_NY
 # Total navigation scan width, which is also what the critic gets clean.
 NAV_SCAN_CELLS = NAV_FAR_CELLS + NAV_NEAR_CELLS
 
+# The navigate actor reads the two windows as single-channel images, (C, H, W)
+# = (1, NY, NX). The ray caster's "xy" grid lays its rays out with x fastest,
+# so a reshape puts y down the rows, from the machine's right to its left, and
+# x along the columns, from behind it to ahead of it: a picture of the ground.
+NAV_FAR_IMAGE = (1, NAV_FAR_NY, NAV_FAR_NX)
+NAV_NEAR_IMAGE = (1, NAV_NEAR_NY, NAV_NEAR_NX)
+
 # Excavation: the cutting face, at the front drum, which is the one meeting
 # fresh soil under symmetric arm control.
 DIG_SCAN_NX, DIG_SCAN_NY = 16, 8
@@ -131,21 +138,17 @@ class ObsSpec:
     def __repr__(self) -> str:
         return f"ObsSpec(dim={self.dim}, hash={self.schema_hash()}, terms={self.names})"
 
-def navigate_obs_spec(
-    far_cells: int = NAV_FAR_CELLS,
-    near_cells: int = NAV_NEAR_CELLS,
-    num_arms: int = 2,
-    num_wheels: int = 4,
-    include_scan: bool = True,
-) -> ObsSpec:
-    """Observation for the navigation skill.
+def navigate_obs_spec(num_arms: int = 2, num_wheels: int = 4) -> ObsSpec:
+    """The navigation skill's 1-D observation, the "policy" group.
 
-    Two windows: far_scan reaches 4.0 m past the front of the machine, at the
-    scale of a line through the terrain; near_scan resolves one wheel width,
-    at the scale of a single wheel placement.
-
-    A cell the sensor did not measure reads scan_invalid, which sits outside
-    the clipped range of a real height.
+    The terrain is not in it. The actor gets two windows as image groups of
+    their own, "far_scan" (NAV_FAR_IMAGE) and "near_scan" (NAV_NEAR_IMAGE),
+    each through a small CNN encoder trained with the policy; see
+    navigate/agents/rsl_rl_ppo_cfg.py. far_scan reaches 4.0 m past the front
+    of the machine, at the scale of a line through the terrain; near_scan
+    resolves one wheel width, at the scale of a single wheel placement. A cell
+    the sensor did not measure reads scan_invalid, which sits outside the
+    clipped range of a real height.
     """
     terms = [
         ObsTerm("base_lin_vel", 3, "body frame"),
@@ -159,16 +162,9 @@ def navigate_obs_spec(
         ObsTerm("drum_fill", num_arms, "0 on the rigid tier; keeps the layout"),
         ObsTerm("last_action", 2, "[forward, yaw]"),
     ]
-    # The two scans are 224 of the 249 inputs, against the 6 that carry the
-    # goal. On flat ground they are 224 channels of near-constant height plus
-    # whatever degrade_scan injects, and the actor has to find the goal
-    # underneath them; the critic reads the clean scan through its own spec
-    # either way, so dropping them here costs the value function nothing.
-    if include_scan:
-        terms += [
-            ObsTerm("far_scan", far_cells, "16x8 at 0.45 m, chassis-relative heights"),
-            ObsTerm("near_scan", near_cells, "12x8 at 0.20 m, one cell per wheel width"),
-        ]
+    # Concatenated in here, the two scans were 224 of 249 inputs against the 6
+    # that carry the goal, and the actor had to find the goal underneath
+    # them. Through the encoders they reach the MLP as 34 numbers.
     return ObsSpec(terms)
 
 

@@ -76,12 +76,17 @@ def _policy_std(agent_cfg, override: float | None) -> tuple[float, str]:
     std = getattr(getattr(agent_cfg, "policy", None), "init_noise_std", None)
     if std is None and isinstance(agent_cfg, dict):
         std = agent_cfg.get("policy", {}).get("init_noise_std")
+    if std is not None:
+        return float(std), "policy.init_noise_std"
+    # rsl_rl 5's own form, which the navigate cfg uses for its CNN actor.
+    dist = getattr(getattr(agent_cfg, "actor", None), "distribution_cfg", None)
+    std = getattr(dist, "init_std", None)
     if std is None:
         raise SystemExit(
-            f"no policy.init_noise_std on the rsl_rl config "
-            f"({type(agent_cfg).__name__}); pass --action_std explicitly."
+            f"no policy.init_noise_std or actor.distribution_cfg.init_std on the rsl_rl "
+            f"config ({type(agent_cfg).__name__}); pass --action_std explicitly."
         )
-    return float(std), "policy.init_noise_std"
+    return float(std), "actor.distribution_cfg.init_std"
 
 
 def _collect(env, kind: str, episodes: int, std: float, max_steps: int):

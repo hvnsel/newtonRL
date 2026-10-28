@@ -97,8 +97,7 @@ looks:
 
 ```bash
 workstation/train.sh train --rl_library rsl_rl \
-  --task Luna-Excavator-Navigate --num_envs 1024 --max_iterations 400 \
-  env.actor_scan=false
+  --task Luna-Excavator-Navigate --num_envs 1024 --max_iterations 400
 ```
 
 Do not use `isaaclab.sh`. It resolves its own interpreter, and where the system

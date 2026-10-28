@@ -175,12 +175,18 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # and only drives straight from there.
     goal_dist_tol = 0.05                 # m
     goal_heading_tol_rad = math.radians(3.0)
-    # Stopped. Training samples every action with noise, which can keep a
-    # machine that is trying to stand still from reading under 0.05 m/s;
-    # staying inside 5 cm for a whole second caps the average speed at 5 cm/s
-    # anyway. Speed is the planar magnitude, so backing in counts.
-    goal_speed_tol = 0.10                # m/s
-    goal_yaw_rate_tol = 0.10             # rad/s
+    # Stopped, as far as training noise allows. Every action is sampled with
+    # noise, and model_1199 trained at a std near 0.38. In a longitudinal
+    # model of this drive -- 994 kg, the wheel servo at its 120 N.m cap, the
+    # action smoothing -- a policy holding the goal perfectly under that noise
+    # read over 0.10 m/s often enough that only 8% of its holds completed
+    # within an episode; at 0.25 m/s every one did. Staying inside 5 cm and
+    # 3 deg for a whole second caps the average speed at 5 cm/s and the
+    # average turn rate near 0.05 rad/s regardless, so these only catch a
+    # machine still driving or spinning. Speed is the planar magnitude, so
+    # backing in counts.
+    goal_speed_tol = 0.25                # m/s
+    goal_yaw_rate_tol = 0.30             # rad/s
     arrive_hold_steps = 25               # 1 s at 25 Hz
 
     # goal_vec_near is the goal vector divided by max(dist, this): a unit
@@ -248,8 +254,17 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     curriculum_window = 2048             # episodes averaged for the success rate
     curriculum_success_rate = 0.7        # widen the band above this ...
     curriculum_step = 1.5                # ... by this many metres
-    # An episode that ended without reaching the goal and closed less than
-    # this fraction of its starting distance moves that env down a level.
+    # Both ladders count an episode a success when the machine got within
+    # curriculum_dist_tol of the goal and slower than curriculum_speed_tol at
+    # any point: navigation, not parking. The held arrival pays w_goal but
+    # does not gate the curriculum. If it did and held arrivals plateaued
+    # under curriculum_success_rate, the band would stay at 1.5-3 m from a
+    # spawn at most 4.24 m from the cell centre, every goal within ~7.2 m of
+    # it, and the hazards from 6.5 m out would almost never stand in a path.
+    curriculum_dist_tol = 0.5            # m
+    curriculum_speed_tol = 0.25          # m/s
+    # An episode that ended without getting near the goal and closed less
+    # than this fraction of its starting distance moves that env down a level.
     terrain_demote_fraction = 0.5
 
     # --- actions ---

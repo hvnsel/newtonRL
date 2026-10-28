@@ -54,6 +54,9 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._held = torch.zeros(E, dtype=torch.long, device=dev)
         self._reached = torch.zeros(E, dtype=torch.bool, device=dev)
         self._arrived = torch.zeros(E, dtype=torch.bool, device=dev)
+        # Got within curriculum_dist_tol and slowed at some point this
+        # episode: what the curriculum counts as a success.
+        self._near = torch.zeros(E, dtype=torch.bool, device=dev)
         self._failed_now = torch.zeros(E, dtype=torch.bool, device=dev)
 
         # curriculum state
@@ -286,6 +289,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._held = torch.where(still, self._held + 1, torch.zeros_like(self._held))
         self._reached = (self._held >= c.arrive_hold_steps) & ~self._arrived
         self._arrived |= self._reached
+        self._near |= (dist < c.curriculum_dist_tol) & (speed < c.curriculum_speed_tol)
         self._last_herr[:] = herr
         if self._trace is not None:
             self._write_trace(dist, herr, time_out)
@@ -343,7 +347,9 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
 
     def _record_outcomes(self, env_ids: torch.Tensor) -> None:
         """Move each env's terrain level, and widen the goal band once the
-        success rate over the window clears the threshold.
+        success rate over the window clears the threshold. Success here is
+        getting near the goal (see curriculum_dist_tol), not the held
+        arrival.
 
         The ring buffer is written with one scatter, since a reset batch can
         carry every env.
@@ -353,14 +359,14 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         if k == 0:
             return
 
-        reached = self._arrived[env_ids]
-        # Did not arrive and closed less than terrain_demote_fraction of the
-        # gap: this env moves down a level.
-        stalled = ~reached & (self._prev_dist[env_ids] > c.terrain_demote_fraction * self._start_dist[env_ids])
-        self.terrain.update_env_origins(env_ids, reached, stalled)
+        near = self._near[env_ids]
+        # Did not get near and closed less than terrain_demote_fraction of
+        # the gap: this env moves down a level.
+        stalled = ~near & (self._prev_dist[env_ids] > c.terrain_demote_fraction * self._start_dist[env_ids])
+        self.terrain.update_env_origins(env_ids, near, stalled)
 
         idx = (self._success_ptr + torch.arange(k, device=self.device)) % c.curriculum_window
-        self._success_hist[idx] = reached.float()
+        self._success_hist[idx] = near.float()
         self._success_ptr = int((self._success_ptr + k) % c.curriculum_window)
         self._success_n = min(self._success_n + k, c.curriculum_window)
 
@@ -412,6 +418,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         # Read before super() clears the episode buffers.
         exits = self._exit_stats(env_ids)
         exits["Episode/reached"] = float(self._arrived[env_ids].float().mean())
+        exits["Episode/near"] = float(self._near[env_ids].float().mean())
         exits["Episode/failed"] = float(self._failed_now[env_ids].float().mean())
         exits["Episode/end_dist"] = float(self._prev_dist[env_ids].mean())
         exits["Episode/end_heading_deg"] = float(torch.rad2deg(self._last_herr[env_ids].abs()).mean())
@@ -439,6 +446,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._held[env_ids] = 0
         self._reached[env_ids] = False
         self._arrived[env_ids] = False
+        self._near[env_ids] = False
         self._hold_left[env_ids] = 0
         self._failed_now[env_ids] = False
         self._actions[env_ids] = 0.0

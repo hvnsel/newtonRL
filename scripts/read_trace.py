@@ -25,7 +25,7 @@ from collections import defaultdict
 TOP_SPEED = 1.5         # MAX_WHEEL_SPEED * WHEEL_RADIUS
 DIST_TOL = 0.05         # cfg.goal_dist_tol
 HEAD_TOL_DEG = 3.0      # cfg.goal_heading_tol_rad
-SPEED_TOL = 0.10        # cfg.goal_speed_tol
+SPEED_TOL = 0.25        # cfg.goal_speed_tol
 DT = 0.04               # policy step
 
 

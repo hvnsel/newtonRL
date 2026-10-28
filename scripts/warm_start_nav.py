@@ -91,6 +91,36 @@ def _columns(terms: list[tuple[str, int]]) -> tuple[dict[str, tuple[int, int]], 
     return out, off
 
 
+def _first_layer_gap(w, mean, std, w_new, mean_new, std_new, old_cols, new_cols) -> tuple[float, float]:
+    """How far DST's first layer is from SRC's: the largest difference in
+    pre-activation over random inputs that agree on the old columns, whatever
+    the new ones hold, and the largest sum of absolute terms that difference
+    sits in. mean and std are None without a normaliser.
+
+    In float64. A trained normaliser divides an input that never varies --
+    the held arm, an always-empty drum -- by its std plus 0.01, so a random
+    test value there lands near a hundred and a row sums to hundreds; float32
+    rounds a 254-wide and a 480-wide sum of that size apart by ~1e-4, which
+    no fixed tolerance tells from a misplaced column. float64 rounds them
+    apart by ~1e-16 of the sum.
+    """
+    f64 = torch.float64
+    old_dim, new_dim = w.shape[1], w_new.shape[1]
+    x_old = torch.randn(64, old_dim, dtype=f64)
+    x_new = torch.randn(64, new_dim, dtype=f64) * 3.0
+    for name, (oa, ob) in old_cols.items():
+        a, b = new_cols[name]
+        x_new[:, a:b] = x_old[:, oa:ob]
+    if mean is not None:
+        eps = 1e-2      # EmpiricalNormalization's default
+        x_old = (x_old - mean.reshape(1, -1).to(f64)) / (std.reshape(1, -1).to(f64) + eps)
+        x_new = (x_new - mean_new.reshape(1, -1).to(f64)) / (std_new.reshape(1, -1).to(f64) + eps)
+    w64, w_new64 = w.to(f64), w_new.to(f64)
+    gap = float((x_old @ w64.T - x_new @ w_new64.T).abs().max())
+    scale = max(float((x_old.abs() @ w64.abs().T).max()), 1e-30)
+    return gap, scale
+
+
 def _widen(sd: dict, old_terms, new_terms, label: str) -> list[str]:
     """Rewrite the first layer and the normaliser of one model in place.
     Returns the names of the new terms."""
@@ -145,19 +175,16 @@ def _widen(sd: dict, old_terms, new_terms, label: str) -> list[str]:
     # The point of the zero columns: the first layer's pre-activation is
     # unchanged for any input that agrees with SRC's on the old columns,
     # whatever the new ones hold.
-    x_old = torch.randn(64, old_dim, dtype=w.dtype)
-    x_new = torch.randn(64, new_dim, dtype=w.dtype) * 3.0
-    for name, (oa, ob) in old_cols.items():
-        a, b = new_cols[name]
-        x_new[:, a:b] = x_old[:, oa:ob]
-    if has_norm:
-        eps = 1e-2      # EmpiricalNormalization's default
-        n_old = (x_old - mean.reshape(1, -1)) / (std.reshape(1, -1) + eps)
-        n_new = (x_new - mean_new) / (std_new + eps)
-    else:
-        n_old, n_new = x_old, x_new
-    if not torch.allclose(n_old @ w.T, n_new @ w_new.T, atol=1e-5, rtol=1e-5):
-        raise SystemExit(f"{label}: widened first layer does not reproduce SRC's")
+    gap, scale = _first_layer_gap(
+        w, mean if has_norm else None, std if has_norm else None,
+        w_new, mean_new if has_norm else None, std_new if has_norm else None,
+        old_cols, new_cols,
+    )
+    if gap > 1e-9 * scale:
+        raise SystemExit(
+            f"{label}: widened first layer does not reproduce SRC's: off by {gap:.3g} "
+            f"in sums of up to {scale:.3g}"
+        )
 
     sd[FIRST] = w_new
     if has_norm:
@@ -168,7 +195,8 @@ def _widen(sd: dict, old_terms, new_terms, label: str) -> list[str]:
     print(f"[warm start] {label:<6} {old_dim:>4} -> {new_dim:>4} inputs, "
           f"{sum(new_cols[n][1] - new_cols[n][0] for n in added)} new at zero weight "
           f"({', '.join(added)})"
-          + (f"; normaliser count {count:,}" if count is not None else "; no normaliser"))
+          + (f"; normaliser count {count:,}" if count is not None else "; no normaliser")
+          + f"; matches SRC to {gap / scale:.0e}")
     return added
 
 

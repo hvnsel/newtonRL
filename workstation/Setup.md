@@ -159,6 +159,10 @@ workstation/dev.sh isaaclab train --rl_library rsl_rl \
 # telemetry, from the host, no container needed
 python scripts/peek.py --tags goal_dist_hi reached mean_std learning_rate
 
+# navigate footage, headless: 12 one-episode clips over hazard terrain with the
+# goal drawn, a trace per clip, and the graphs (scripts/plot_nav.py), in ~/nav_media
+bash workstation/nav_videos.sh
+
 # watch it dig
 xhost +local:docker
 workstation/dev.sh isaaclab -p scripts/dig_demo.py

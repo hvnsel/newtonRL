@@ -25,6 +25,14 @@ from ..mdp.observations import NAV_FAR_IMAGE, NAV_NEAR_IMAGE, navigate_obs_spec
 from ..terrain_cfg import GOAL_PATCHES
 from .navigate_env_cfg import NAV_CRITIC, SCANNER_HEIGHT, ExcavatorNavigateEnvCfg
 
+# Playback goal marker: a disc on the goal spot and a bar from its centre along
+# the goal heading. 3 m of bar clears the front drum, 1.76 m out from the
+# chassis centre, by 1.2 m when the machine is parked on the goal.
+MARKER_RGB = (0.10, 0.90, 0.20)
+MARKER_DISC = (0.5, 0.04)               # radius, height
+MARKER_BAR = (3.0, 0.20, 0.04)          # length, width, height
+MARKER_LIFT = 0.15                      # m above the goal spot, clear of small relief
+
 
 class ExcavatorNavigateEnv(ExcavatorEnvBase):
     cfg: ExcavatorNavigateEnvCfg
@@ -39,6 +47,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         # goal pose in the world frame
         self._goal_pos_w = torch.zeros(E, 2, device=dev)
         self._goal_yaw = torch.zeros(E, device=dev)
+        # Ground height at the goal spot, for the playback marker.
+        self._goal_z_w = torch.zeros(E, device=dev)
         self._prev_dist = torch.zeros(E, device=dev)
         self._start_dist = torch.zeros(E, device=dev)
         self._prev_pose_pot = torch.zeros(E, device=dev)
@@ -90,6 +100,9 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             )
             print(f"[trace] writing {self._trace_n} env(s) to {cfg.goal_trace_path}")
 
+        # Playback only; see cfg.goal_marker.
+        self._goal_marker = self._make_goal_marker() if cfg.goal_marker else None
+
         self._log = R.TermLogger(
             ["progress", "bearing", "goal", "pose", "settle", "fail", "upright", "slip",
              "action_rate", "energy", "time", "fill_change"],
@@ -128,6 +141,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
                 f"that key. Found: {sorted(patches)}"
             )
         self._goal_spots = patches[GOAL_PATCHES][..., :2]
+        # The height the patch search raycast at each spot: the ground there.
+        self._goal_spots_z = patches[GOAL_PATCHES][..., 2]
 
     # ------------------------------------------------------------------
     # actions
@@ -181,6 +196,10 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         return out[0], out[1]
 
     def _get_observations(self) -> dict:
+        # Every step rather than on reset alone: the marker backend attaches to
+        # the viewer on the first call after the viewer exists, which can be
+        # later than the first reset.
+        self._show_goal_marker()
         p = self._proprio()
         c = self.cfg
         vec_b, dist, heading, _ = self._goal_in_body()
@@ -347,6 +366,58 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._trace_step += 1
 
     # ------------------------------------------------------------------
+    # playback goal marker
+    # ------------------------------------------------------------------
+
+    def _make_goal_marker(self):
+        """The goal's VisualizationMarkers, or None if they cannot be built.
+
+        Footage without the marker is still footage, so a failure here is
+        reported and playback goes on without it.
+        """
+        try:
+            import isaaclab.sim as sim_utils
+            from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+
+            look = sim_utils.PreviewSurfaceCfg(diffuse_color=MARKER_RGB)
+            return VisualizationMarkers(VisualizationMarkersCfg(
+                prim_path="/Visuals/navigate_goal",
+                markers={
+                    "disc": sim_utils.CylinderCfg(
+                        radius=MARKER_DISC[0], height=MARKER_DISC[1], visual_material=look
+                    ),
+                    "bar": sim_utils.CuboidCfg(size=MARKER_BAR, visual_material=look),
+                },
+            ))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[navigate] no goal marker, footage will not show the goal: {exc!r}")
+            return None
+
+    def _show_goal_marker(self) -> None:
+        """A disc on each env's goal spot and a bar from it along the goal
+        heading. Two markers per env, env-major, which is how the Newton
+        viewer splits a batch across envs."""
+        if self._goal_marker is None:
+            return
+        n, dev = self.num_envs, self.device
+        yaw = self._goal_yaw
+        ahead = 0.5 * MARKER_BAR[0] * torch.stack([torch.cos(yaw), torch.sin(yaw)], dim=-1)
+        z = (self._goal_z_w + MARKER_LIFT).unsqueeze(-1)
+        disc = torch.cat([self._goal_pos_w, z], dim=-1)
+        bar = torch.cat([self._goal_pos_w + ahead, z], dim=-1)
+        zero = torch.zeros_like(yaw)
+        quat = torch.stack([zero, zero, torch.sin(0.5 * yaw), torch.cos(0.5 * yaw)], dim=-1)    # xyzw
+        try:
+            self._goal_marker.visualize(
+                translations=torch.stack([disc, bar], dim=1).reshape(2 * n, 3),
+                orientations=torch.stack([quat, quat], dim=1).reshape(2 * n, 4),
+                marker_indices=torch.tensor([0, 1], device=dev).repeat(n),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[navigate] goal marker failed, footage will not show the goal: {exc!r}")
+            self._goal_marker = None
+
+    # ------------------------------------------------------------------
     # reset
     # ------------------------------------------------------------------
 
@@ -396,15 +467,16 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         n = env_ids.numel()
         dev = self.device
 
-        spots = self._goal_spots[
-            self.terrain.terrain_levels[env_ids], self.terrain.terrain_types[env_ids]
-        ]                                                                   # (n, P, 2)
+        cell = (self.terrain.terrain_levels[env_ids], self.terrain.terrain_types[env_ids])
+        spots = self._goal_spots[cell]                                      # (n, P, 2)
         reach = torch.linalg.norm(spots - spawn_xy.unsqueeze(1), dim=-1)   # (n, P)
         lo = c.goal_dist_range[0]
         want = lo + (self._goal_dist_hi - lo) * torch.rand(n, 1, device=dev)
         cost = (reach - want).abs() + (reach < lo).float() * 1.0e3
-        goal = spots[torch.arange(n, device=dev), cost.argmin(dim=1)]
+        rows, pick = torch.arange(n, device=dev), cost.argmin(dim=1)
+        goal = spots[rows, pick]
         self._goal_pos_w[env_ids] = goal
+        self._goal_z_w[env_ids] = self._goal_spots_z[cell][rows, pick]
 
         # Arrive facing roughly the way the machine drove in, which is what a
         # dig approach looks like. goal_yaw_random_frac of episodes draw a

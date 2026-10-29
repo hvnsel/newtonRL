@@ -216,22 +216,28 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
     # Where the playback camera sits and what it points at.
     #
-    # The machine can be anywhere in a disc the goal distance wide, so framing
-    # a 13 m goal means framing 26 m of ground. The visualizer's focal_length
-    # is 12 mm, which is a wide lens under any sensor convention -- between 82
-    # and 121 degrees horizontally depending on the aperture it assumes -- and
-    # at 20.5 m that 26 m fills 36% to 73% of the width. Comfortably inside the
-    # frame either way.
+    # The viewer turns the 12 mm focal_length into a vertical FOV on USD's
+    # 15.29 mm aperture: 65 deg, and 97 deg across a 1920 x 1080 frame. From
+    # 28 m up and 10 m back, looking at the cell centre, that holds every point
+    # of a 16 m disc around the centre in frame: a spawn up to 4.2 m off centre
+    # plus a 12 m goal, in any direction. The machine is ~100 px long.
     #
-    # The old eye=(6, 6, 4) sat 9.4 m out, closer to the subject than the
-    # subject travels: at the narrow end the action spanned 159% of the width
-    # and the machine drove off the edge.
+    # The old eye=(13, 13, 9) looked across the ground from the side, and
+    # clipped part of even a 13 m disc: the near side fell out of the bottom of
+    # the frame.
     #
-    # There is no setting that shows a 26 m traverse and a 3.4 m machine large
-    # at once; at this distance the machine is 5-10% of the width. Shorten the
-    # goals for a tighter shot.
-    camera_eye: tuple[float, float, float] = (13.0, 13.0, 9.0)
+    # Set these here, not with env.camera_eye= on the command line. Isaac Lab
+    # 3.0 runs play_mode() before it applies env.* overrides, and play_mode()
+    # is where the viewer cfg is built from these, so an override changes the
+    # field after the viewer has already copied it.
+    camera_eye: tuple[float, float, float] = (0.0, -10.0, 28.0)
     camera_lookat: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    # Draw the goal in the viewer: a disc on the goal spot and a bar from it
+    # along the goal heading, so footage shows where the machine is meant to
+    # stop and which way it is meant to face. Visual only; the scanners cast
+    # against the terrain mesh. play_mode() turns it on.
+    goal_marker: bool = False
 
     # --- trace ---
     # Per-step CSV of where the machine is, where the goal is, how far off
@@ -368,9 +374,9 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
         super().play_mode()
         self.scene.num_envs = min(self.scene.num_envs, 16)
+        self.goal_marker = True
         self.sim.visualizer_cfgs = [
             NewtonGLVisualizerCfg(
-                # tuple(): a Hydra override arrives as a list.
                 eye=tuple(self.camera_eye),
                 lookat=tuple(self.camera_lookat),
             )

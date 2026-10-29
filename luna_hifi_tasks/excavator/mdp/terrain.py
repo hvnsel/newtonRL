@@ -17,6 +17,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from .course import COURSE_LAYOUTS
 from .observations import (
     DIG_SCAN_CELL,
     DIG_SCAN_NX,
@@ -347,10 +348,7 @@ def hazard_relief_np(
         at = place(radius + rim_width)
         if at is None:
             continue
-        r = np.hypot(gx - at[0], gy - at[1])
-        bowl = -depth * (1.0 - (r / radius) ** crater_wall_power)
-        lip = rim * (1.0 - (r - radius) / rim_width)
-        relief += np.where(r < radius, bowl, np.where(r < radius + rim_width, lip, 0.0))
+        relief += crater_relief(gx, gy, *at, radius, depth, rim, rim_width, crater_wall_power)
 
     for _ in range(int(round(d * num_boulders))):
         radius = rng.uniform(*boulder_radius)
@@ -358,9 +356,53 @@ def hazard_relief_np(
         at = place(radius)
         if at is None:
             continue
-        r = np.hypot(gx - at[0], gy - at[1])
-        relief += np.where(r < radius, height, 0.0)
+        relief += boulder_relief(gx, gy, *at, radius, height)
 
+    return relief
+
+
+def crater_relief(
+    gx: np.ndarray, gy: np.ndarray, x: float, y: float,
+    radius: float, depth: float, rim: float, rim_width: float, wall_power: float,
+) -> np.ndarray:
+    """One crater centred on (x, y), in metres on the (gx, gy) grid: the bowl
+    and rim hazard_relief_np describes."""
+    r = np.hypot(gx - x, gy - y)
+    bowl = -depth * (1.0 - (r / radius) ** wall_power)
+    lip = rim * (1.0 - (r - radius) / rim_width)
+    return np.where(r < radius, bowl, np.where(r < radius + rim_width, lip, 0.0))
+
+
+def boulder_relief(
+    gx: np.ndarray, gy: np.ndarray, x: float, y: float, radius: float, height: float
+) -> np.ndarray:
+    """One flat-topped boulder centred on (x, y), in metres on the (gx, gy) grid."""
+    return np.where(np.hypot(gx - x, gy - y) < radius, height, 0.0)
+
+
+def course_relief_np(
+    width_pixels: int,
+    length_pixels: int,
+    horizontal_scale: float,
+    layout: str,
+    crater_wall_power: float = 16.0,
+    rim_width: float = 0.5,
+) -> np.ndarray:
+    """One COURSE_LAYOUTS entry, in metres, on hazard_relief_np's grid, with
+    each obstacle placed from the cell centre; see mdp/course.py."""
+    if layout not in COURSE_LAYOUTS:
+        raise ValueError(f"unknown course layout {layout!r}; the layouts are {sorted(COURSE_LAYOUTS)}")
+    xs = np.arange(width_pixels, dtype=np.float64) * horizontal_scale
+    ys = np.arange(length_pixels, dtype=np.float64) * horizontal_scale
+    gx, gy = np.meshgrid(xs, ys, indexing="ij")
+    cx, cy = xs.mean(), ys.mean()
+    relief = np.zeros((width_pixels, length_pixels), dtype=np.float64)
+    for kind, x, y, radius, *size in COURSE_LAYOUTS[layout]:
+        if kind == "crater":
+            depth, rim = size
+            relief += crater_relief(gx, gy, cx + x, cy + y, radius, depth, rim, rim_width, crater_wall_power)
+        else:
+            relief += boulder_relief(gx, gy, cx + x, cy + y, radius, size[0])
     return relief
 
 

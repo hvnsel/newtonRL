@@ -20,7 +20,7 @@ from isaaclab.terrains.height_field.hf_terrains_cfg import HfTerrainBaseCfg
 from isaaclab.terrains.height_field.utils import height_field_to_mesh
 from isaaclab.utils.configclass import configclass
 
-from .mdp.terrain import excavation_height_field_np, hazard_relief_np
+from .mdp.terrain import course_relief_np, excavation_height_field_np, hazard_relief_np
 
 # Name of the flat-patch set the navigate env draws its goals from.
 GOAL_PATCHES = "goal"
@@ -278,6 +278,86 @@ EXCAVATION_TERRAINS_CFG = TerrainGeneratorCfg(
         "hazards": HfHazardTerrainCfg(
             proportion=6 / 12,
             flat_patch_sampling={GOAL_PATCHES: _goal_patches(GOAL_PATCH_HAZARD_DIFF)},
+        ),
+    },
+)
+
+
+@height_field_to_mesh
+def course_terrain(
+    difficulty: float, cfg: "HfCourseTerrainCfg"
+) -> tuple[np.ndarray, np.ndarray]:
+    """Level ground with one COURSE_LAYOUTS entry on it; see mdp/course.py.
+    Same contract as excavation_terrain.
+
+    The origin is read off the ground before the obstacles go on. Layouts put
+    obstacles on the cell centre, and _terrain_origin takes the tallest point
+    there, which would spawn the machine a boulder's height in the air.
+    """
+    width_pixels = int(cfg.size[0] / cfg.horizontal_scale)
+    length_pixels = int(cfg.size[1] / cfg.horizontal_scale)
+    rng = np.random.default_rng(cfg.seed) if cfg.seed is not None else np.random.default_rng()
+    base = excavation_height_field_np(
+        width_pixels,
+        length_pixels,
+        cfg.horizontal_scale,
+        cfg.vertical_scale,
+        rng,
+        difficulty=difficulty,
+        num_pits=cfg.num_pits,
+        num_piles=cfg.num_piles,
+        pit_depth=cfg.pit_depth,
+        pile_height=cfg.pile_height,
+        feature_radius=cfg.feature_radius,
+        slope=cfg.slope,
+        noise=cfg.noise,
+    )
+    relief = course_relief_np(
+        width_pixels,
+        length_pixels,
+        cfg.horizontal_scale,
+        cfg.layout,
+        crater_wall_power=cfg.crater_wall_power,
+        rim_width=cfg.rim_width,
+    )
+    field = np.rint(base + relief / cfg.vertical_scale).astype(np.int16)
+    return field, _terrain_origin(base, cfg)
+
+
+@configclass
+class HfCourseTerrainCfg(HfHazardTerrainCfg):
+    """Level ground and one fixed obstacle layout, for the playback course.
+    The crater shape fields are the hazard cell's; its random-placement
+    fields go unused."""
+
+    function = course_terrain
+
+    layout: str = "boulder"
+    num_pits: int = 0
+    num_piles: int = 0
+    slope: float = 0.0
+
+
+# One cell of course, for Luna-Excavator-Navigate-Course. A single cell builds
+# in seconds, so it is not cached.
+COURSE_TERRAIN_CFG = TerrainGeneratorCfg(
+    size=(32.0, 32.0),
+    border_width=4.0,
+    num_rows=1,
+    num_cols=1,
+    # The env reads terrain_levels, which only a curriculum generator builds.
+    curriculum=True,
+    difficulty_range=(1.0, 1.0),
+    horizontal_scale=0.1,
+    vertical_scale=0.005,
+    slope_threshold=0.75,
+    use_cache=False,
+    sub_terrains={
+        # Goals come from the fixed route, but the env requires goal patches
+        # on every cell, so the course has them too.
+        "course": HfCourseTerrainCfg(
+            proportion=1.0,
+            flat_patch_sampling={GOAL_PATCHES: _goal_patches(GOAL_PATCH_ANY_DIFF)},
         ),
     },
 )

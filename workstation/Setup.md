@@ -163,6 +163,10 @@ python scripts/peek.py --tags goal_dist_hi reached mean_std learning_rate
 # goal drawn, a trace per clip, and the graphs (scripts/plot_nav.py), in ~/nav_media
 bash workstation/nav_videos.sh
 
+# the obstacle course (mdp/course.py): goal straight ahead, craters or boulders
+# on the line, one clip and graph per layout, in ~/nav_course
+bash workstation/nav_course.sh
+
 # watch it dig
 xhost +local:docker
 workstation/dev.sh isaaclab -p scripts/dig_demo.py

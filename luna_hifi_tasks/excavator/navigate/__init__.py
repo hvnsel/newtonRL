@@ -18,3 +18,15 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:ExcavatorNavigatePPORunnerCfg",
     },
 )
+
+# Playback only: the obstacle course of mdp/course.py, played with a navigate
+# checkpoint. See workstation/nav_course.sh.
+gym.register(
+    id="Luna-Excavator-Navigate-Course",
+    entry_point=f"{__name__}.navigate_env:ExcavatorNavigateEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.navigate_env_cfg:ExcavatorNavigateCourseEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:ExcavatorNavigatePPORunnerCfg",
+    },
+)

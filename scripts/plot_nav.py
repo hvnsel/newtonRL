@@ -18,6 +18,9 @@ Writes, into --out:
                  iteration: --run, else the newest navigate run under logs/
   summary.csv    one row per episode
 
+A trace named course_<layout>.csv, as workstation/nav_course.sh writes them,
+gets that layout's craters and boulders drawn under its path.
+
 Tolerances and the episode split are read_trace.py's, and the TensorBoard
 reader is peek.py's, so the three scripts agree on what an arrival is.
 Needs matplotlib, which Isaac Lab's venv carries.
@@ -27,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import math
 from collections import defaultdict
 from pathlib import Path
@@ -47,6 +51,19 @@ from read_trace import DIST_TOL, DT, HEAD_TOL_DEG, SPEED_TOL, TOP_SPEED, _episod
 MACHINE_LEN = 3.5
 MACHINE_W = 1.35
 GOAL_GREEN = "#1a9e3a"
+BOULDER_RED = "#b2182b"
+CRATER_BLUE = "#2166ac"
+RIM_WIDTH = 0.5                 # HfHazardTerrainCfg.rim_width, which the course uses
+
+
+def _course_layouts() -> dict:
+    """mdp/course.py's layouts, loaded by path: importing the package would
+    pull in Isaac Lab, and the file is plain data."""
+    path = Path(__file__).resolve().parents[1] / "luna_hifi_tasks/excavator/mdp/course.py"
+    spec = importlib.util.spec_from_file_location("nav_course_layouts", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.COURSE_LAYOUTS
 
 # Iterations averaged, centred, for the training curves; the raw series is
 # drawn faint behind. The goal ceiling is a staircase and is drawn raw.
@@ -137,11 +154,28 @@ def _goal(ax, ep):
     return gx, gy, gyaw
 
 
-def _episode_figure(name: str, eps: list[list[dict]], stats: list[dict], out: Path) -> None:
+def _obstacles(ax, obstacles) -> tuple[np.ndarray, np.ndarray]:
+    """Draw a course layout in the env frame; returns its xy extent."""
+    lo, hi = np.array([np.inf, np.inf]), np.array([-np.inf, -np.inf])
+    for kind, x, y, radius, *_ in obstacles:
+        if kind == "crater":
+            ax.add_patch(plt.Circle((x, y), radius + RIM_WIDTH, fill=False, ls="--", lw=1.0,
+                                    color=CRATER_BLUE, zorder=1))
+            ax.add_patch(plt.Circle((x, y), radius, color=CRATER_BLUE, alpha=0.45, zorder=1))
+            reach = radius + RIM_WIDTH
+        else:
+            ax.add_patch(plt.Circle((x, y), radius, color=BOULDER_RED, alpha=0.6, zorder=1))
+            reach = radius
+        lo = np.minimum(lo, [x - reach, y - reach])
+        hi = np.maximum(hi, [x + reach, y + reach])
+    return lo, hi
+
+
+def _episode_figure(name: str, eps: list[list[dict]], stats: list[dict], out: Path,
+                    obstacles=()) -> None:
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     (ax, bx), (cx, dx) = axes
-    lo = np.array([np.inf, np.inf])
-    hi = -lo
+    lo, hi = _obstacles(ax, obstacles)
 
     for k, (ep, st) in enumerate(zip(eps, stats)):
         x, y = _col(ep, "x"), _col(ep, "y")
@@ -175,7 +209,8 @@ def _episode_figure(name: str, eps: list[list[dict]], stats: list[dict], out: Pa
     ax.grid(alpha=0.3)
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
-    ax.set_title("path, coloured by time  (dashed box = start, solid = end, green = goal pose)")
+    ax.set_title("path, coloured by time  (dashed box = start, solid = end, green = goal pose)"
+                 + ("\nred = boulder, blue = crater with its rim dashed" if obstacles else ""))
     fig.colorbar(lc, ax=ax, label="time [s]", shrink=0.8)
 
     bx.axhline(DIST_TOL, color="red", ls="--", lw=1.3, label=f"{100 * DIST_TOL:.0f} cm tolerance")
@@ -331,6 +366,7 @@ def main(argv=None) -> int:
     stats: list[dict] = []
     runs: list[tuple[str, list[dict]]] = []
     wrote: list[str] = []
+    layouts = _course_layouts()
     for path in sorted(Path(p) for p in args.traces):
         eps = [ep for ep in _load(path) if len(ep) > 1]
         if not eps:
@@ -338,7 +374,9 @@ def main(argv=None) -> int:
             continue
         names = [path.stem] if len(eps) == 1 else [f"{path.stem}_ep{k}" for k in range(len(eps))]
         ep_stats = [_measure(n, ep) for n, ep in zip(names, eps)]
-        _episode_figure(path.stem, eps, ep_stats, out / f"{path.stem}.png")
+        layout = path.stem.removeprefix("course_") if path.stem.startswith("course_") else None
+        _episode_figure(path.stem, eps, ep_stats, out / f"{path.stem}.png",
+                        obstacles=layouts.get(layout, ()))
         wrote.append(f"{path.stem}.png")
         stats += ep_stats
         runs += list(zip(names, eps))

@@ -489,6 +489,15 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             free, (torch.rand(n, device=dev) * 2.0 - 1.0) * math.pi, yaw
         )
 
+    def _place_goals(self, env_ids: torch.Tensor, route) -> None:
+        """cfg.fixed_route's goal, in each env's frame. The marker sits at
+        the origin's height: the route's ground is level."""
+        origin = self.scene.env_origins[env_ids]
+        goal = torch.tensor([float(route[3]), float(route[4])], device=self.device)
+        self._goal_pos_w[env_ids] = origin[:, :2] + goal
+        self._goal_yaw[env_ids] = float(route[5])
+        self._goal_z_w[env_ids] = origin[:, 2]
+
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
@@ -504,14 +513,22 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         super()._reset_idx(env_ids)
 
         n = env_ids.numel()
-        yaw = (torch.rand(n, device=self.device) * 2.0 - 1.0) * math.pi
-        # Scattered inside the terrain cell, so envs sharing an origin see
-        # different ground.
-        j = self.cfg.spawn_xy_jitter
-        xy_off = (torch.rand(n, 2, device=self.device) * 2.0 - 1.0) * j if j > 0.0 else None
+        route = self.cfg.fixed_route
+        if route is None:
+            yaw = (torch.rand(n, device=self.device) * 2.0 - 1.0) * math.pi
+            # Scattered inside the terrain cell, so envs sharing an origin see
+            # different ground.
+            j = self.cfg.spawn_xy_jitter
+            xy_off = (torch.rand(n, 2, device=self.device) * 2.0 - 1.0) * j if j > 0.0 else None
+        else:
+            yaw = torch.full((n,), float(route[2]), device=self.device)
+            xy_off = torch.tensor([float(route[0]), float(route[1])], device=self.device).expand(n, 2)
         spawn_xy = self._reset_robot(env_ids, yaw, self.cfg.arm_hold_angle, xy_off)
 
-        self._sample_goals(env_ids, spawn_xy)
+        if route is None:
+            self._sample_goals(env_ids, spawn_xy)
+        else:
+            self._place_goals(env_ids, route)
         # Initial distance and pose potential from the written spawn.
         d0 = torch.linalg.norm(self._goal_pos_w[env_ids] - spawn_xy, dim=-1)
         e0 = self._goal_yaw[env_ids] - yaw

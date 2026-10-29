@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 
 import isaaclab.sim as sim_utils
@@ -44,7 +45,8 @@ from ..mdp.observations import (
     critic_state_spec,
     navigate_obs_spec,
 )
-from ..terrain_cfg import EXCAVATION_TERRAINS_CFG
+from ..mdp.course import COURSE_ROUTE
+from ..terrain_cfg import COURSE_TERRAIN_CFG, EXCAVATION_TERRAINS_CFG
 
 # Height the ray-caster origin sits above the chassis. Rays cast straight down
 # from here and the observation subtracts it back out, so the scan reads
@@ -161,6 +163,11 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     goal_dist_range = (1.5, 3.0)
     goal_dist_max = 18.0                 # curriculum ceiling
     spawn_xy_jitter = 3.0                # random offset inside the terrain cell
+
+    # (spawn x, y, yaw, goal x, y, yaw) in the env frame, replacing the random
+    # spawn and the drawn goal; None draws them. For constructed playback
+    # scenarios, such as the course below.
+    fixed_route: tuple[float, float, float, float, float, float] | None = None
 
     # --- arrival ---
     # Arriving is holding the pose: within goal_dist_tol of the point and
@@ -381,3 +388,32 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
                 lookat=tuple(self.camera_lookat),
             )
         ]
+
+
+@configclass
+class ExcavatorNavigateCourseEnvCfg(ExcavatorNavigateEnvCfg):
+    """Playback only: mdp/course.py's obstacle course on one cell.
+
+    The machine spawns facing a goal 11 m straight ahead with obstacles on the
+    line between, so getting there means steering round them. The layout is
+    chosen with env.scene.terrain.terrain_generator.sub_terrains.course.layout=.
+    Observations and actions are the navigate task's, so a navigate
+    checkpoint plays here unchanged.
+    """
+
+    fixed_route: tuple[float, float, float, float, float, float] | None = COURSE_ROUTE
+    # Parked on the goal until the episode times out, so a clip of the
+    # episode ends on the handover pose rather than a reset.
+    goal_hold_steps: int = 1000
+    # The course spans x -8 to 9 m and y +-6.5 m, spawn to the tip of the goal
+    # bar and round the far end of the gate, so it can be shot closer than the
+    # navigate disc: this frames it with 18% to spare and the machine ~210 px
+    # long. The lens is as described at camera_eye above.
+    camera_eye: tuple[float, float, float] = (0.5, -5.0, 13.0)
+    camera_lookat: tuple[float, float, float] = (0.5, 0.0, 0.0)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.scene.terrain.terrain_generator = copy.deepcopy(COURSE_TERRAIN_CFG)
+        # One row of terrain, so level 0 is the only level.
+        self.scene.terrain.max_init_terrain_level = 0

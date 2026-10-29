@@ -35,9 +35,9 @@ from ..mdp.sensors import drum_fill_mass, mpm_grid_particle_mass, mpm_particle_s
 from ..mdp.observations import DIG_SCAN_CELL
 from ..mdp.terrain import (
     degrade_scan,
+    dig_critic_far_pattern,
+    dig_critic_near_pattern,
     dig_scan_pattern,
-    nav_far_pattern,
-    nav_near_pattern,
     sample_height_grid,
     scan_from_heightfield,
     scan_points_world,
@@ -87,9 +87,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._fill_prev_kg = torch.zeros(E, 2, device=dev)
 
         self._dig_pattern = dig_scan_pattern(dev)
-        # The critic's window matches navigate's, so one critic layout serves both tiers.
-        self._far_pattern = nav_far_pattern(dev)
-        self._near_pattern = nav_near_pattern(dev)
+        # The critic's window is the one navigate used before its windows were
+        # centred; see DIG_CRITIC_FAR_NX.
+        self._far_pattern = dig_critic_far_pattern(dev)
+        self._near_pattern = dig_critic_near_pattern(dev)
 
         # Scan cells over the drum, in the drum's frame. 
         self._footprint = (

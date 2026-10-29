@@ -7,17 +7,23 @@
 #     velocities, attitude, the goal, the last action -- is normalised and
 #     goes straight to the MLP. The two terrain windows arrive as images and
 #     each goes through its own CNN encoder, trained by the PPO loss with
-#     everything else; no separate autoencoder. Two 3x3 stride-2 convolutions
-#     with zero padding halve a window twice: far, 8 x 16 at 0.45 m, comes out
-#     a 2 x 4 grid of 2 features, 16 numbers; near, 8 x 12 at 0.20 m, a 2 x 3
-#     grid of 3, 18 numbers. Each output cell covers about 1.8 m and 0.8 m of
-#     ground, so it still says where a hazard is; global pooling would average
-#     that away. The MLP reads 59 inputs, 34 of them terrain, where the raw
-#     scan was 224 of 249 and outnumbered the 6 that carry the goal.
+#     everything else; no separate autoencoder. Three 3x3 stride-2
+#     convolutions take each window down to a 3 x 3 grid of 4 features, 36
+#     numbers: far, 27 x 27 at 0.45 m, goes 27 -> 13 -> 6 -> 3, an output
+#     cell every 3.6 m; near, 25 x 25 at 0.20 m, goes 25 -> 12 -> 6 -> 3, one
+#     every 1.6 m. rsl_rl's "zeros" padding pads a layer only where the
+#     stride needs it, so an odd window loses its edge row rather than
+#     growing one. The grid still says on which side of the machine a hazard
+#     is, which global pooling would average away. The MLP reads 97 inputs,
+#     72 of them terrain.
 #   * the critic is an MLP over the policy group and the privileged "critic"
 #     group, which carries the clean scan, true slip and exact fill: the
 #     asymmetric actor-critic. It is discarded after training, so it may read
 #     what no rover could.
+#   * symmetry: every mini-batch is doubled with each sample turned 180
+#     degrees, mdp/symmetry.turn_around, so neither end of the machine is the
+#     front. The extra samples cost a second forward and backward pass per
+#     mini-batch, not simulation.
 #
 # gamma 0.997 is an effective horizon of 333 steps, 13 s at 25 Hz, against a
 # 750-step episode covering an 18 m traverse. A goal reached 400 steps out
@@ -30,10 +36,13 @@ from isaaclab_rl.rsl_rl import (
     RslRlMLPModelCfg,
     RslRlOnPolicyRunnerCfg,
     RslRlPpoAlgorithmCfg,
+    RslRlSymmetryCfg,
 )
 
-# The layer settings both encoders share; only the last layer's width differs.
-_ENCODER = dict(kernel_size=3, stride=2, padding="zeros", activation="elu")
+from ...mdp.symmetry import turn_around
+
+# The layer settings both encoders share.
+_ENCODER = dict(output_channels=[16, 16, 4], kernel_size=3, stride=2, padding="zeros", activation="elu")
 
 
 @configclass
@@ -51,8 +60,8 @@ class ExcavatorNavigatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         obs_normalization=True,
         distribution_cfg=RslRlCNNModelCfg.GaussianDistributionCfg(init_std=1.0),
         cnn_cfg={
-            "far_scan": RslRlCNNModelCfg.CNNCfg(output_channels=[16, 2], **_ENCODER),
-            "near_scan": RslRlCNNModelCfg.CNNCfg(output_channels=[16, 3], **_ENCODER),
+            "far_scan": RslRlCNNModelCfg.CNNCfg(**_ENCODER),
+            "near_scan": RslRlCNNModelCfg.CNNCfg(**_ENCODER),
         },
     )
     critic = RslRlMLPModelCfg(
@@ -77,4 +86,5 @@ class ExcavatorNavigatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
+        symmetry_cfg=RslRlSymmetryCfg(use_data_augmentation=True, data_augmentation_func=turn_around),
     )

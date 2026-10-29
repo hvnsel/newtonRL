@@ -6,12 +6,13 @@
 #   N=12 GPU=0 OUT=~/nav_media bash workstation/nav_videos.sh
 #   CKPT=logs/rsl_rl/excavator_navigate/<run>/model_1999.pt bash workstation/nav_videos.sh
 #
-# Each clip is a fresh single cell of hazard terrain at full difficulty -- six
-# craters and twelve boulders between 6.5 and 14 m from the centre -- with the
-# goal 8-12 m from the spawn, so the drive has to cross the hazard ring. The
-# camera (camera_eye in navigate_env_cfg.py) frames the whole cell from above,
+# Each clip is a fresh single cell of hazard terrain at full difficulty --
+# twelve craters and twenty-four boulders anywhere in the cell -- with the
+# machine spawned within 4.2 m of the centre (play_mode's spawn_radius) and the
+# goal 8-12 m from the spawn, so the drive has to get through the hazards. The
+# camera (camera_eye in navigate_env_cfg.py) frames the whole drive from above,
 # and the goal is drawn: a green disc where the machine should stop and a bar
-# along the heading it should face.
+# along the axis it should line up on, either end first.
 #
 # One clip is one episode. goal_hold_steps outlasts the episode, so after
 # arriving the machine stands parked on the goal, commands latched to zero,

@@ -12,18 +12,24 @@ import torch
 # sensor builds its patterns from it.
 # ---------------------------------------------------------------------------
 
-# Navigation, there are two resolutions: a coarse far one for routing and a fine near one for foot placement.
-
-NAV_FAR_NX, NAV_FAR_NY = 16, 8
+# Navigation, there are two resolutions: a coarse far one for routing and a
+# fine near one for wheel placement. Both are square and centred on the
+# chassis, so the machine sees as far behind and to either side as ahead: it
+# has no front. The rear assembly is the front turned 180 degrees, and the dig
+# leads with whichever drum faces the way it drives. Being centred is what
+# makes turning the machine round map each grid onto itself (see
+# mdp/symmetry.py); the odd counts put a cell under the chassis centre.
+#
+# far: 27 x 27 at 0.45 m, 5.85 m out in every direction, 4.1 m past either
+# drum. near: 25 x 25 at 0.20 m, 2.4 m out, one cell per 0.20 m wheel width.
+NAV_FAR_NX, NAV_FAR_NY = 27, 27
 NAV_FAR_CELL = 0.45
-NAV_FAR_BIAS = 2.40
+NAV_FAR_BIAS = 0.0
 NAV_FAR_CELLS = NAV_FAR_NX * NAV_FAR_NY
 
-# The near window is sized from the wheels: 12 x 8 at 0.20 m is 1.40 m wide
-# against a machine 1.35 m over the tyres, one cell per wheel width.
-NAV_NEAR_NX, NAV_NEAR_NY = 12, 8
+NAV_NEAR_NX, NAV_NEAR_NY = 25, 25
 NAV_NEAR_CELL = 0.20
-NAV_NEAR_BIAS = 1.30
+NAV_NEAR_BIAS = 0.0
 NAV_NEAR_CELLS = NAV_NEAR_NX * NAV_NEAR_NY
 
 # Total navigation scan width, which is also what the critic gets clean.
@@ -35,6 +41,17 @@ NAV_SCAN_CELLS = NAV_FAR_CELLS + NAV_NEAR_CELLS
 # x along the columns, from behind it to ahead of it: a picture of the ground.
 NAV_FAR_IMAGE = (1, NAV_FAR_NY, NAV_FAR_NX)
 NAV_NEAR_IMAGE = (1, NAV_NEAR_NY, NAV_NEAR_NX)
+
+# The dig critic's clean scan around the chassis. It was taken with the
+# navigate windows' old forward-biased geometry and keeps it, so the excavate
+# critic does not change shape with navigate's sensors.
+DIG_CRITIC_FAR_NX, DIG_CRITIC_FAR_NY = 16, 8
+DIG_CRITIC_FAR_CELL = 0.45
+DIG_CRITIC_FAR_BIAS = 2.40
+DIG_CRITIC_NEAR_NX, DIG_CRITIC_NEAR_NY = 12, 8
+DIG_CRITIC_NEAR_CELL = 0.20
+DIG_CRITIC_NEAR_BIAS = 1.30
+DIG_CRITIC_SCAN_CELLS = DIG_CRITIC_FAR_NX * DIG_CRITIC_FAR_NY + DIG_CRITIC_NEAR_NX * DIG_CRITIC_NEAR_NY
 
 # Excavation: the cutting face, at the front drum, which is the one meeting
 # fresh soil under symmetric arm control.
@@ -144,11 +161,15 @@ def navigate_obs_spec(num_arms: int = 2, num_wheels: int = 4) -> ObsSpec:
     The terrain is not in it. The actor gets two windows as image groups of
     their own, "far_scan" (NAV_FAR_IMAGE) and "near_scan" (NAV_NEAR_IMAGE),
     each through a small CNN encoder trained with the policy; see
-    navigate/agents/rsl_rl_ppo_cfg.py. far_scan reaches 4.0 m past the front
-    of the machine, at the scale of a line through the terrain; near_scan
-    resolves one wheel width, at the scale of a single wheel placement. A cell
-    the sensor did not measure reads scan_invalid, which sits outside the
-    clipped range of a real height.
+    navigate/agents/rsl_rl_ppo_cfg.py. Both are centred on the chassis:
+    far_scan reaches 4.1 m past either drum, at the scale of a route through
+    the terrain; near_scan resolves one wheel width, at the scale of a single
+    wheel placement. A cell the sensor did not measure reads scan_invalid,
+    which sits outside the clipped range of a real height.
+
+    goal_heading is the goal's axis rather than its direction: either end of
+    the machine may face along it, so the angle is doubled before (sin, cos),
+    which reads the same for the machine turned 180 degrees.
     """
     terms = [
         ObsTerm("base_lin_vel", 3, "body frame"),
@@ -156,15 +177,16 @@ def navigate_obs_spec(num_arms: int = 2, num_wheels: int = 4) -> ObsSpec:
         ObsTerm("projected_gravity", 3, "body frame; also the tip-over signal"),
         ObsTerm("goal_vec_b", 2, "goal xy in BODY frame, scaled"),
         ObsTerm("goal_vec_near", 2, "goal xy in BODY frame / max(dist, goal_near_range)"),
-        ObsTerm("goal_heading", 2, "(sin, cos) of heading error"),
+        ObsTerm("goal_heading", 2, "(sin, cos) of twice the heading error: the axis"),
         ObsTerm("wheel_vel", num_wheels, "joint velocities, scaled"),
         ObsTerm("arm_pos", num_arms, "held stowed here, but it moves the CG"),
         ObsTerm("drum_fill", num_arms, "0 on the rigid tier; keeps the layout"),
         ObsTerm("last_action", 2, "[forward, yaw]"),
     ]
-    # Concatenated in here, the two scans were 224 of 249 inputs against the 6
-    # that carry the goal, and the actor had to find the goal underneath
-    # them. Through the encoders they reach the MLP as 34 numbers.
+    # Concatenated in here, the forward scans were 224 of 249 inputs against
+    # the 6 that carry the goal, and the actor had to find the goal underneath
+    # them. Through the encoders the centred windows, 1354 cells, reach the
+    # MLP as 72 numbers.
     return ObsSpec(terms)
 
 

@@ -186,10 +186,11 @@ class ExcavatorEnvBase(DirectRLEnv):
         arm_angle: float | torch.Tensor,
         xy_offset: torch.Tensor | None = None,
         drum_angle: torch.Tensor | None = None,
+        z_offset: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Put the machine at its env origin (+ `xy_offset`) facing `yaw`,
-        arms at `arm_angle`, everything else at rest. Returns the world xy
-        written.
+        """Put the machine at its env origin (+ `xy_offset`, + `z_offset`)
+        facing `yaw`, arms at `arm_angle`, everything else at rest. Returns the
+        world xy written.
 
         Anything else in the same reset that needs the new pose (goal
         sampling, initial distances) takes this return value. The data buffers
@@ -200,6 +201,8 @@ class ExcavatorEnvBase(DirectRLEnv):
         root[:, :3] += self.scene.env_origins[env_ids]
         if xy_offset is not None:
             root[:, :2] += xy_offset
+        if z_offset is not None:
+            root[:, 2] += z_offset
         # yaw-only orientation, (x, y, z, w)
         root[:, 3] = 0.0
         root[:, 4] = 0.0

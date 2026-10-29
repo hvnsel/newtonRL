@@ -142,14 +142,16 @@ def _footprint(ax, x, y, yaw, **kw):
 
 
 def _goal(ax, ep):
-    """The goal pose. Its heading is the machine's yaw plus the heading
+    """The goal pose: its spot, and a bar along its axis, either end of which
+    the machine may face. The axis is the machine's yaw plus the heading
     error, on any row; the first is as good as the last."""
     r = ep[0]
     gx, gy = r["goal_x"], r["goal_y"]
     gyaw = r["yaw"] + math.radians(r["herr"])
+    dx, dy = 2.0 * math.cos(gyaw), 2.0 * math.sin(gyaw)
     ax.add_patch(plt.Circle((gx, gy), 0.25, color=GOAL_GREEN, alpha=0.35, zorder=3))
-    ax.annotate("", xy=(gx + 2.0 * math.cos(gyaw), gy + 2.0 * math.sin(gyaw)), xytext=(gx, gy),
-                arrowprops=dict(arrowstyle="-|>", color=GOAL_GREEN, lw=2.2), zorder=4)
+    ax.plot([gx - dx, gx + dx], [gy - dy, gy + dy], color=GOAL_GREEN, lw=2.2,
+            solid_capstyle="round", zorder=4)
     ax.plot(gx, gy, "+", ms=12, mew=2, color=GOAL_GREEN, zorder=5)
     return gx, gy, gyaw
 

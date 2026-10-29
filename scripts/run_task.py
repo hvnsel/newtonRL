@@ -219,6 +219,19 @@ def main(argv=None) -> int:
             print(f"  {name:<11} min {scan.min():.3f} max {scan.max():.3f} std {scan.std():.4f}")
             _check(float(scan.std()) > 1e-4,
                    f"{name} varies across cells (sensor is seeing the ground)", failures)
+        if not is_dig:
+            # The critic's clean copy, free of the actor's noise and dropout,
+            # which alone make the check above pass. A cell is the chassis
+            # height above the ground under it, about +0.3 m on the flat; a
+            # scan measured from the wrong height pins every cell at
+            # -scan_clip.
+            from luna_hifi_tasks.excavator.navigate.navigate_env_cfg import NAV_CRITIC
+
+            clean = obs["critic"][:, NAV_CRITIC.slice_of("terrain_scan_true")]
+            pinned = float((clean <= -u.cfg.scan_clip + 1e-3).float().mean())
+            print(f"  clean       min {clean.min():.3f} max {clean.max():.3f} "
+                  f"median {clean.median():.3f}, {100.0 * pinned:.1f}% of cells at -scan_clip")
+            _check(pinned < 0.5, "clean scan reads the ground: under half its cells at -scan_clip", failures)
 
         if is_dig:
             print("\n=== dig: lower arms, spin drums, drive slowly ===")

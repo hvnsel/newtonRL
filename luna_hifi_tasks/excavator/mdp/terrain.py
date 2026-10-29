@@ -19,6 +19,14 @@ import torch
 
 from .course import COURSE_LAYOUTS
 from .observations import (
+    DIG_CRITIC_FAR_BIAS,
+    DIG_CRITIC_FAR_CELL,
+    DIG_CRITIC_FAR_NX,
+    DIG_CRITIC_FAR_NY,
+    DIG_CRITIC_NEAR_BIAS,
+    DIG_CRITIC_NEAR_CELL,
+    DIG_CRITIC_NEAR_NX,
+    DIG_CRITIC_NEAR_NY,
     DIG_SCAN_CELL,
     DIG_SCAN_NX,
     DIG_SCAN_NY,
@@ -62,6 +70,14 @@ def nav_far_pattern(device="cpu") -> torch.Tensor:
 
 def nav_near_pattern(device="cpu") -> torch.Tensor:
     return scan_pattern(NAV_NEAR_NX, NAV_NEAR_NY, NAV_NEAR_CELL, NAV_NEAR_BIAS, device)
+
+
+def dig_critic_far_pattern(device="cpu") -> torch.Tensor:
+    return scan_pattern(DIG_CRITIC_FAR_NX, DIG_CRITIC_FAR_NY, DIG_CRITIC_FAR_CELL, DIG_CRITIC_FAR_BIAS, device)
+
+
+def dig_critic_near_pattern(device="cpu") -> torch.Tensor:
+    return scan_pattern(DIG_CRITIC_NEAR_NX, DIG_CRITIC_NEAR_NY, DIG_CRITIC_NEAR_CELL, DIG_CRITIC_NEAR_BIAS, device)
 
 
 def degrade_scan(
@@ -202,19 +218,22 @@ def scan_from_heightfield(
 
 
 def scan_from_raycaster(
-    sensor_pos_w: torch.Tensor,     # (E, 3)  RayCasterData.pos_w
+    chassis_pos_w: torch.Tensor,    # (E, 3)  the chassis the scanner rides on
     ray_hits_w: torch.Tensor,       # (E, N, 3)  RayCasterData.ray_hits_w
-    sensor_height_offset: float,    # the z of RayCasterCfg.offset.pos
     clip: float = 1.0,
 ) -> torch.Tensor:
-    """Rigid tier, live. Same output as the other two backends.
+    """Rigid tier, live. Same output as the other two backends: chassis_z
+    minus ground_z under each ray.
 
-    Isaac Lab's height_scan observation is sensor_z - hit_z - offset, which
-    with the sensor mounted `sensor_height_offset` above the chassis is
-    chassis_z - ground_z. A ray that hits nothing returns an infinite hit,
-    which the clip absorbs.
+    The chassis height comes from the articulation, not RayCasterData.pos_w.
+    Isaac Lab 3.0 adds RayCasterCfg.offset to the ray starts alone, so pos_w
+    is the chassis frame, not the point the rays start from. This used to
+    subtract the 20 m offset from pos_w as well, so every cell came out near
+    -19.7 m and clipped to -clip: the scan read the same everywhere and the
+    policy drove blind.
+    A ray that hits nothing returns an infinite hit, which the clip absorbs.
     """
-    h = sensor_pos_w[:, 2:3] - ray_hits_w[..., 2] - sensor_height_offset
+    h = chassis_pos_w[:, 2:3] - ray_hits_w[..., 2]
     return torch.nan_to_num(h, nan=clip, posinf=clip, neginf=-clip).clamp(-clip, clip)
 
 
@@ -312,11 +331,11 @@ def hazard_relief_np(
                deck clears.
 
     Counts scale with `difficulty`, which the generator ties to the curriculum
-    row; the sizes do not, so any hazard present is a real one. None sits
-    within clear_radius of the cell centre, where the env spawns the machine,
-    and every pair stands min_gap apart edge to edge, so a route between any
-    two always exists. A hazard that finds no free spot in max_attempts draws
-    is skipped rather than forced in.
+    row; the sizes do not, so any hazard present is a real one. None reaches
+    within clear_radius of the cell centre, and every pair stands min_gap
+    apart edge to edge, so a route between any two always exists. A hazard
+    that finds no free spot in max_attempts draws is skipped rather than
+    forced in.
     """
     xs = np.arange(width_pixels, dtype=np.float64) * horizontal_scale
     ys = np.arange(length_pixels, dtype=np.float64) * horizontal_scale

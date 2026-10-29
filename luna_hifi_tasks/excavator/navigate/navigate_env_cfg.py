@@ -48,9 +48,9 @@ from ..mdp.observations import (
 from ..mdp.course import COURSE_ROUTE
 from ..terrain_cfg import COURSE_TERRAIN_CFG, EXCAVATION_TERRAINS_CFG
 
-# Height the ray-caster origin sits above the chassis. Rays cast straight down
-# from here and the observation subtracts it back out, so the scan reads
-# chassis-relative ground height, as Isaac's height_scan does.
+# How far above the chassis the rays start, so they start above any terrain
+# and cast straight down. Isaac Lab adds it to the ray starts alone, so the
+# scan reads chassis z minus hit z; see mdp/terrain.scan_from_raycaster.
 SCANNER_HEIGHT = 20.0
 
 NAV_OBS = navigate_obs_spec()
@@ -81,11 +81,13 @@ class NavigateSceneCfg(InteractiveSceneCfg):
 
     excavator: ArticulationCfg = EXCAVATOR_CFG
 
-    # Two windows, rotated by yaw only. The sizes are (NX-1)*cell, since
-    # GridPatternCfg puts a ray at both ends of each axis.
+    # Two windows, rotated by yaw only and centred on the chassis, so the
+    # machine sees behind and to either side as far as ahead; see
+    # NAV_FAR_NX. The sizes are (NX-1)*cell, since GridPatternCfg puts a ray
+    # at both ends of each axis.
     #
-    # far: 16 x 8 at 0.45 m, 2.40 m forward, reaching x = 5.775, four metres
-    # past the front of the machine.
+    # far: 27 x 27 at 0.45 m, reaching 5.85 m in every direction, 4.1 m past
+    # either drum.
     far_scanner = RayCasterCfg(
         prim_path=CHASSIS_PRIM,
         offset=RayCasterCfg.OffsetCfg(pos=(NAV_FAR_BIAS, 0.0, SCANNER_HEIGHT)),
@@ -98,7 +100,8 @@ class NavigateSceneCfg(InteractiveSceneCfg):
         global_world_only=True,
     )
 
-    # near: 12 x 8 at 0.20 m, 1.30 m forward. 1.40 m wide, the wheel track.
+    # near: 25 x 25 at 0.20 m, reaching 2.4 m in every direction, one cell per
+    # wheel width.
     near_scanner = RayCasterCfg(
         prim_path=CHASSIS_PRIM,
         offset=RayCasterCfg.OffsetCfg(pos=(NAV_NEAR_BIAS, 0.0, SCANNER_HEIGHT)),
@@ -141,7 +144,7 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # "far_scan" and "near_scan", through CNN encoders; the critic reads the
     # clean scan in its own group.
     observation_space = NAV_OBS.dim      # 25
-    state_space = NAV_CRITIC.dim         # 231, critic only
+    state_space = NAV_CRITIC.dim         # 1361: both windows clean, and the rest; critic only
 
     # --- goals ---
     # The initial sampling band, metres. This is the curriculum's bottom rung
@@ -162,7 +165,26 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # hazard cells no spot has a crater or boulder within 2 m.
     goal_dist_range = (1.5, 3.0)
     goal_dist_max = 18.0                 # curriculum ceiling
-    spawn_xy_jitter = 3.0                # random offset inside the terrain cell
+
+    # --- spawn ---
+    # The machine starts on a random spawn spot anywhere in its cell
+    # (SPAWN_PATCHES in terrain_cfg.py), facing a random way, so it starts
+    # among the hazards rather than in a clear middle. spawn_candidates spots
+    # are drawn and the ground under the machine's footprint ray-cast at
+    # each; the first whose ground spans less than spawn_max_step is taken.
+    # On generated hazard cells 0.4% of spots had a boulder or crater under
+    # the footprint that the flat-patch rings missed between two directions;
+    # after this check, none of 3072 spawns at difficulty 0.9-1 had boulder
+    # ground under the wheels or deck. The machine is set down on the highest
+    # point under its tyres, and the lowest tyre drops 3 cm (median) on
+    # hazard cells, 6-8 cm on worked ones, at most 23 cm. Set down at the
+    # spot's centre height instead, a tyre sat up to 23 cm into the ground.
+    spawn_candidates = 4
+    spawn_max_step = 0.30                # m; a boulder stands 0.35+, a crater sinks 0.40+
+    # Draw spawns only from spots within this of the cell centre; None is the
+    # whole cell. play_mode sets it, so the machine starts inside the frame
+    # of the fixed playback camera (see camera_eye).
+    spawn_radius: float | None = None
 
     # (spawn x, y, yaw, goal x, y, yaw) in the env frame, replacing the random
     # spawn and the drawn goal; None draws them. For constructed playback
@@ -180,6 +202,10 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # The pose tolerances are the dig's start state: excavate spawns the
     # machine jittered by up to 5 cm along each axis and 0.05 rad, at rest,
     # and only drives straight from there.
+    #
+    # The heading is the goal's axis, and either end may face along it. The
+    # machine is a 180-degree copy of itself and the dig cuts with whichever
+    # drum leads (excavate's dig_lead_deadband), so neither end is the front.
     goal_dist_tol = 0.05                 # m
     goal_heading_tol_rad = math.radians(3.0)
     # Stopped, as far as training noise allows. Every action is sampled with
@@ -240,10 +266,10 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     camera_eye: tuple[float, float, float] = (0.0, -10.0, 28.0)
     camera_lookat: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
-    # Draw the goal in the viewer: a disc on the goal spot and a bar from it
-    # along the goal heading, so footage shows where the machine is meant to
-    # stop and which way it is meant to face. Visual only; the scanners cast
-    # against the terrain mesh. play_mode() turns it on.
+    # Draw the goal in the viewer: a disc on the goal spot and a bar through it
+    # along the goal's axis, so footage shows where the machine is meant to
+    # stop and which way it is meant to line up. Visual only; the scanners
+    # cast against the terrain mesh. play_mode() turns it on.
     goal_marker: bool = False
 
     # --- trace ---
@@ -271,9 +297,8 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # curriculum_dist_tol of the goal and slower than curriculum_speed_tol at
     # any point: navigation, not parking. The held arrival pays w_goal but
     # does not gate the curriculum. If it did and held arrivals plateaued
-    # under curriculum_success_rate, the band would stay at 1.5-3 m from a
-    # spawn at most 4.24 m from the cell centre, every goal within ~7.2 m of
-    # it, and the hazards from 6.5 m out would almost never stand in a path.
+    # under curriculum_success_rate, the band would stay at 1.5-3 m and the
+    # long drives through the hazards would never come.
     curriculum_dist_tol = 0.5            # m
     curriculum_speed_tol = 0.25          # m/s
     # An episode that ended without getting near the goal and closed less
@@ -332,6 +357,18 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # --- termination ---
     max_tilt_rad = math.radians(60.0)
     max_env_excursion = 24.0             # metres from the env origin
+    # Stuck: away from the goal (beyond goal_near_range), the machine has to
+    # move stuck_min_move or turn stuck_min_turn in all over any
+    # stuck_window_steps in a row, or the episode ends as a failure and w_fail
+    # is charged. Pushing into a boulder or a crater wall does neither; before
+    # this it cost only w_time, and the policy pushed into one on the course
+    # until the clip ran out. Moving is net displacement, so backing off and
+    # driving back in is still stuck; turning is summed, so reorienting on the
+    # spot is not. 0 turns it off, which play_mode does so a clip shows the
+    # whole episode.
+    stuck_window_steps = 125             # 5 s at 25 Hz
+    stuck_min_move = 0.5                 # m
+    stuck_min_turn = math.radians(15.0)
 
     # --- arms ---
     arm_hold_angle = ARM_STOW_ANGLE
@@ -382,6 +419,8 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
         super().play_mode()
         self.scene.num_envs = min(self.scene.num_envs, 16)
         self.goal_marker = True
+        self.stuck_window_steps = 0
+        self.spawn_radius = 4.2
         self.sim.visualizer_cfgs = [
             NewtonGLVisualizerCfg(
                 eye=tuple(self.camera_eye),

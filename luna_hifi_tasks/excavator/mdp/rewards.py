@@ -84,13 +84,15 @@ def bearing_alignment(
 ) -> torch.Tensor:
     """Alignment with the goal, scaled by how fast the machine is closing on it.
 
-    The cosine of the bearing times forward speed, clamped to [0, 1] of the
-    machine's top speed, so the term is zero for a stationary machine and for
-    one reversing away.
+    The cosine of the bearing times body-frame x speed as a fraction of the
+    machine's top speed, so the term is zero for a stationary machine,
+    positive driving along its axis towards the goal and negative driving
+    away. Either end first: reversing at a goal behind it scores what driving
+    at one ahead does, since the machine has no front.
     """
     dist = torch.linalg.norm(goal_vec_b, dim=-1)
     cos = torch.where(dist > 1e-3, goal_vec_b[:, 0] / dist.clamp_min(1e-3), torch.zeros_like(dist))
-    return cos * (forward_speed / speed_scale).clamp(0.0, 1.0)
+    return cos * (forward_speed / speed_scale).clamp(-1.0, 1.0)
 
 
 def fade_in(x: torch.Tensor, start: float, full: float) -> torch.Tensor:
@@ -105,7 +107,8 @@ def goal_pose_ok(
     heading_tol: float,
 ) -> torch.Tensor:
     """Within `dist_tol` metres of the goal point and `heading_tol` radians of
-    the goal heading. `heading_err` is signed, in (-pi, pi]."""
+    the goal heading. `heading_err` is signed; navigate passes the error to
+    the goal's axis, in (-pi/2, pi/2] (see axis_heading_error)."""
     return (dist < dist_tol) & (heading_err.abs() < heading_tol)
 
 
@@ -181,6 +184,24 @@ def heading_error_sin_cos(goal_yaw: torch.Tensor, base_yaw: torch.Tensor) -> tor
     """(sin, cos) of the yaw error, (E, 2), so nothing wraps at +-pi."""
     err = goal_yaw - base_yaw
     return torch.stack([torch.sin(err), torch.cos(err)], dim=-1)
+
+
+def axis_heading_sin_cos(goal_yaw: torch.Tensor, base_yaw: torch.Tensor) -> torch.Tensor:
+    """(sin, cos) of twice the yaw error, (E, 2): the goal heading as an axis.
+
+    A machine with a drum at each end has no front, so facing along the goal
+    heading and facing against it are the same pose. Doubling the angle makes
+    the two read the same.
+    """
+    err = 2.0 * (goal_yaw - base_yaw)
+    return torch.stack([torch.sin(err), torch.cos(err)], dim=-1)
+
+
+def axis_heading_error(goal_yaw: torch.Tensor, base_yaw: torch.Tensor) -> torch.Tensor:
+    """Yaw error to the goal's axis, whichever end faces along it: in
+    (-pi/2, pi/2], 0 facing either way along the goal heading. (E,)."""
+    s = axis_heading_sin_cos(goal_yaw, base_yaw)
+    return 0.5 * torch.atan2(s[:, 0], s[:, 1])
 
 
 def body_to_world_xy(vec_b: torch.Tensor, base_yaw: torch.Tensor) -> torch.Tensor:

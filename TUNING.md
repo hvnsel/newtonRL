@@ -103,16 +103,18 @@ weights look like.
 
 | what | where | now | note |
 |---|---|---|---|
-| far scan | `NAV_FAR_*` | 16x8 @ 0.45, bias 2.40 | 4.0 m past the front of the machine |
-| near scan | `NAV_NEAR_*` | 12x8 @ 0.20, bias 1.30 | 1.40 m wide, the wheel track |
+| far scan | `NAV_FAR_*` | 27x27 @ 0.45, centred | 5.85 m out every way, 4.1 m past either drum |
+| near scan | `NAV_NEAR_*` | 25x25 @ 0.20, centred | 2.4 m out every way, a cell per wheel width |
 | dig scan | `DIG_SCAN_*` | 16x8 @ 0.125 | drum-centred |
 | sensor noise | `scan_noise_std`, `scan_dropout` | `0.02` / `0.02` nav | both scale with range; a dropped cell reads `scan_invalid` |
 | load sensor | `fill_sensor_*` | tau 0.3 s, 5% | the actor's `drum_fill`; the critic keeps the exact figure |
 
-The far window is sized from stopping distance. With the arms stowed the front
-of the machine reaches x = 1.78 m and it halts in 1.10 m from 1.5 m/s, so the
-window has to end well past 2.9 m. Shorten the bias or the cell and check that
-number again.
+The far window is sized from stopping distance, in both directions, since the
+machine drives either end first. With the arms stowed either end reaches 1.78 m
+from the centre and it halts in 1.10 m from 1.5 m/s, so the window has to reach
+well past 2.9 m each way. Shrink the count or the cell and check that number
+again. Keep both windows centred (bias 0): that is what lets the 180-degree
+symmetry (mdp/symmetry.py) map each window onto itself.
 
 ## The rotor
 

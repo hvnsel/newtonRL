@@ -121,8 +121,8 @@ def hazard_terrain(
     """Gentle worked ground with craters and boulders on it; see
     mdp/terrain.hazard_relief_np. Same contract as excavation_terrain.
 
-    The hazards stay clear of the cell centre, so _terrain_origin's tallest
-    point near the centre is the base ground's.
+    The origin is read off the ground before the hazards go on: they may sit
+    on the cell centre, where _terrain_origin takes the tallest point.
     """
     width_pixels = int(cfg.size[0] / cfg.horizontal_scale)
     length_pixels = int(cfg.size[1] / cfg.horizontal_scale)
@@ -162,7 +162,7 @@ def hazard_terrain(
         min_gap=cfg.min_gap,
     )
     field = np.rint(base + relief / cfg.vertical_scale).astype(np.int16)
-    return field, _terrain_origin(field, cfg)
+    return field, _terrain_origin(base, cfg)
 
 
 @configclass
@@ -175,9 +175,12 @@ class HfHazardTerrainCfg(HfExcavationTerrainCfg):
     0.11 m of tilt across a 4 m disc and 0.05 m pits and piles, so a 2 m
     radius around any point spans about 0.22 m at worst.
 
-    clear_radius covers where the env spawns the machine: spawn_xy_jitter of
-    3 m reaches 4.24 m out on the diagonal, plus 1.8 m of machine
-    half-length, plus margin.
+    The hazards cover the whole cell. Ringed round a clear centre that the
+    machine spawned in, 6 craters and 12 boulders put one on the straight line
+    to the goal in 4.8% of training episodes, and the policy learned to drive
+    straight: 0 of 6 on the obstacle course. Over the whole cell at twice the
+    count, with the machine spawned anywhere (SPAWN_PATCHES), the measured
+    share on generated cells is 31% at difficulty 0.5 and 59% at 0.95.
     """
 
     function = hazard_terrain
@@ -189,17 +192,17 @@ class HfHazardTerrainCfg(HfExcavationTerrainCfg):
     slope: float = 0.02
     noise: float = 0.005
 
-    num_craters: int = 6                 # at difficulty 1
+    num_craters: int = 12                # at difficulty 1
     crater_radius: tuple[float, float] = (1.0, 1.8)
     crater_depth: tuple[float, float] = (0.40, 0.70)
     crater_wall_power: float = 16.0
     rim_height: tuple[float, float] = (0.10, 0.20)
     rim_width: float = 0.5
-    num_boulders: int = 12               # at difficulty 1
+    num_boulders: int = 24               # at difficulty 1
     boulder_radius: tuple[float, float] = (0.40, 0.70)
     boulder_height: tuple[float, float] = (0.35, 0.60)
-    clear_radius: float = 6.5
-    hazard_extent: float = 14.0          # hazard centres within this of the cell centre
+    clear_radius: float = 0.0
+    hazard_extent: float = 15.0          # hazard centres within this of the cell centre
     min_gap: float = 1.8                 # edge to edge, more than the 1.35 m machine width
 
 
@@ -237,6 +240,30 @@ GOAL_PATCH_ANY_DIFF = 100.0
 # stands at least 0.35 m and a crater sinks at least 0.40 m.
 GOAL_PATCH_HAZARD_DIFF = 0.25
 
+# Spawn spots, drawn from by ExcavatorNavigateEnv._reset_idx: the machine
+# starts anywhere in its cell, among the hazards rather than in a clear
+# middle. Rings every 0.3 m out to 1.5 m, past the wheels' 1.2 m reach, so a
+# hazard edge cannot fall between two rings under a wheel; the drums ride
+# stowed 0.7 m up, above any boulder.
+SPAWN_PATCHES = "spawn"
+_SPAWN_PATCH_RADII = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5]
+_SPAWN_PATCH_COUNT = 256
+
+
+def _spawn_patches(max_height_diff: float) -> FlatPatchSamplingCfg:
+    return FlatPatchSamplingCfg(
+        num_patches=_SPAWN_PATCH_COUNT,
+        patch_radius=list(_SPAWN_PATCH_RADII),
+        x_range=(-_GOAL_PATCH_HALF, _GOAL_PATCH_HALF),
+        y_range=(-_GOAL_PATCH_HALF, _GOAL_PATCH_HALF),
+        max_height_diff=max_height_diff,
+    )
+
+
+def _patches(max_height_diff: float) -> dict[str, FlatPatchSamplingCfg]:
+    """Goal and spawn spots for one sub-terrain, each a fresh cfg."""
+    return {GOAL_PATCHES: _goal_patches(max_height_diff), SPAWN_PATCHES: _spawn_patches(max_height_diff)}
+
 
 # Four sub-terrain types, so a single row mixes easy and hard cells. Cells
 # are 32 m against a 3.4 m machine and goal distances up to 18 m. Ten rows is
@@ -264,20 +291,20 @@ EXCAVATION_TERRAINS_CFG = TerrainGeneratorCfg(
         "worked_light": HfExcavationTerrainCfg(
             proportion=2 / 12, num_pits=2, num_piles=2,
             pit_depth=(0.03, 0.12), pile_height=(0.03, 0.10), noise=0.005,
-            flat_patch_sampling={GOAL_PATCHES: _goal_patches(GOAL_PATCH_ANY_DIFF)},
+            flat_patch_sampling=_patches(GOAL_PATCH_ANY_DIFF),
         ),
         "worked": HfExcavationTerrainCfg(
             proportion=2 / 12,
-            flat_patch_sampling={GOAL_PATCHES: _goal_patches(GOAL_PATCH_ANY_DIFF)},
+            flat_patch_sampling=_patches(GOAL_PATCH_ANY_DIFF),
         ),
         "worked_heavy": HfExcavationTerrainCfg(
             proportion=2 / 12, num_pits=5, num_piles=5,
             pit_depth=(0.10, 0.22), pile_height=(0.10, 0.20), slope=0.06,
-            flat_patch_sampling={GOAL_PATCHES: _goal_patches(GOAL_PATCH_ANY_DIFF)},
+            flat_patch_sampling=_patches(GOAL_PATCH_ANY_DIFF),
         ),
         "hazards": HfHazardTerrainCfg(
             proportion=6 / 12,
-            flat_patch_sampling={GOAL_PATCHES: _goal_patches(GOAL_PATCH_HAZARD_DIFF)},
+            flat_patch_sampling=_patches(GOAL_PATCH_HAZARD_DIFF),
         ),
     },
 )
@@ -353,11 +380,11 @@ COURSE_TERRAIN_CFG = TerrainGeneratorCfg(
     slope_threshold=0.75,
     use_cache=False,
     sub_terrains={
-        # Goals come from the fixed route, but the env requires goal patches
-        # on every cell, so the course has them too.
+        # Spawn and goal come from the fixed route, but the env requires spawn
+        # and goal patches on every cell, so the course has them too.
         "course": HfCourseTerrainCfg(
             proportion=1.0,
-            flat_patch_sampling={GOAL_PATCHES: _goal_patches(GOAL_PATCH_ANY_DIFF)},
+            flat_patch_sampling=_patches(GOAL_PATCH_ANY_DIFF),
         ),
     },
 )

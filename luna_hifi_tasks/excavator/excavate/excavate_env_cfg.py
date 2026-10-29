@@ -52,7 +52,7 @@ from ..excavator_cfg import (
     WHEEL_CONTACT_BODIES_REGEX,
 )
 from ..mdp.observations import (
-    NAV_SCAN_CELLS,
+    DIG_CRITIC_SCAN_CELLS,
     critic_state_spec,
     excavate_obs_spec,
 )
@@ -128,7 +128,7 @@ BORE_VOLUME = math.pi * BORE_RADIUS ** 2 * (2.0 * BORE_HALF_LEN)
 DRUM_CAPACITY_KG = BORE_VOLUME * SOIL_MATERIAL.density
 
 DIG_OBS = excavate_obs_spec()
-DIG_CRITIC = critic_state_spec(terrain_cells=NAV_SCAN_CELLS)
+DIG_CRITIC = critic_state_spec(terrain_cells=DIG_CRITIC_SCAN_CELLS)
 
 
 def particles_per_env(lower, upper, voxel: float, per_cell: float) -> int:

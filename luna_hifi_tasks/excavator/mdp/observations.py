@@ -186,7 +186,7 @@ def navigate_obs_spec(num_arms: int = 2, num_wheels: int = 4) -> ObsSpec:
     # Concatenated in here, the forward scans were 224 of 249 inputs against
     # the 6 that carry the goal, and the actor had to find the goal underneath
     # them. Through the encoders the centred windows, 1354 cells, reach the
-    # MLP as 72 numbers.
+    # MLP as 288 numbers.
     return ObsSpec(terms)
 
 

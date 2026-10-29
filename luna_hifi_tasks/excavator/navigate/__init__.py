@@ -1,6 +1,6 @@
 # Navigation skill: drive to a goal pose over already-worked terrain.
 #
-#   isaaclab train --rl_library rsl_rl --task Luna-Excavator-Navigate --num_envs 1024
+#   isaaclab train --rl_library rsl_rl --task Luna-Excavator-Navigate --num_envs 256
 #   isaaclab play  --rl_library rsl_rl --task Luna-Excavator-Navigate --num_envs 4 --checkpoint latest --viz newton
 #
 # Entry points are strings, so importing this package needs only gymnasium.

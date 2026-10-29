@@ -54,6 +54,15 @@ FOOTPRINT_XY = TYRE_XY + tuple(
 # Isaac Lab's flat-patch search.
 RAY_TOP = 100.0
 
+# Blocked-route goals, see cfg.goal_blocked_frac: how many candidate goals are
+# tested per env, the spots whose distance from the spawn is nearest the drawn
+# one; the lines along each route the ground is read on, across the machine's
+# 1.35 m width; and the samples along each line, 0.25 m apart over the
+# longest goal.
+GOAL_CANDIDATES = 32
+ROUTE_LANES = (-0.6, 0.0, 0.6)
+ROUTE_SAMPLES = 73
+
 
 class ExcavatorNavigateEnv(ExcavatorEnvBase):
     cfg: ExcavatorNavigateEnvCfg
@@ -91,13 +100,14 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._failed_now = torch.zeros(E, dtype=torch.bool, device=dev)
 
         # Stuck check, see cfg.stuck_window_steps: the last window of positions
-        # and of turn per step, as ring buffers, and steps since the reset.
+        # and headings, as ring buffers, and steps since the reset.
         W = max(int(cfg.stuck_window_steps), 1)
         self._win_pos = torch.zeros(E, W, 2, device=dev)
-        self._win_turn = torch.zeros(E, W, device=dev)
+        self._win_yaw = torch.zeros(E, W, device=dev)
         self._win_steps = torch.zeros(E, dtype=torch.long, device=dev)
-        self._prev_yaw = torch.zeros(E, device=dev)
         self._stuck = torch.zeros(E, dtype=torch.bool, device=dev)
+        # Whether this episode's straight route to its goal is blocked.
+        self._route_is_blocked = torch.zeros(E, dtype=torch.bool, device=dev)
 
         # The terrain as a Warp mesh, for setting spawns down on it; built on
         # the first reset, once the scene is on the stage.
@@ -389,30 +399,31 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
 
     def _stuck_now(self, dist: torch.Tensor) -> torch.Tensor:
         """Away from the goal, and over the last stuck_window_steps steps
-        neither moved stuck_min_move nor turned stuck_min_turn in all.
+        neither moved stuck_min_move nor turned stuck_min_turn, both net.
 
         The window slides: each step overwrites the slot it wrote
         stuck_window_steps steps before, and until then the slots hold the
-        spawn, so the first test comes a whole window after the reset.
-        Moving is net displacement, so driving back and forth into a boulder
-        counts as stuck; turning is summed, so turning round on the spot does
-        not.
+        spawn, so the first test comes a whole window after the reset. Both
+        are net changes across the window, so driving back and forth into a
+        boulder counts as stuck, and so does steering jitter: training samples
+        every action with noise, which summed turning counted as turning. A
+        real turn still counts.
         """
         c = self.cfg
         rows = torch.arange(self.num_envs, device=self.device)
         slot = self._win_steps % c.stuck_window_steps
         pos = self.robot.data.root_pos_w.torch[:, :2]
         yaw = self._base_yaw()
-        turn = yaw - self._prev_yaw
-        self._prev_yaw[:] = yaw
         moved = torch.linalg.norm(pos - self._win_pos[rows, slot], dim=-1)
+        turn = yaw - self._win_yaw[rows, slot]
+        turned = torch.atan2(torch.sin(turn), torch.cos(turn)).abs()
         self._win_pos[rows, slot] = pos
-        self._win_turn[rows, slot] = torch.atan2(torch.sin(turn), torch.cos(turn)).abs()
+        self._win_yaw[rows, slot] = yaw
         self._win_steps += 1
         return (
             (self._win_steps >= c.stuck_window_steps)
             & (moved < c.stuck_min_move)
-            & (self._win_turn.sum(dim=1) < c.stuck_min_turn)
+            & (turned < c.stuck_min_turn)
             & (dist > c.goal_near_range)
             & ~self._arrived
         )
@@ -545,6 +556,11 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         than the band's low end lose to any other. With 512 spots across the
         cell the winner is usually within a decimetre of the drawn distance,
         and which spot on that ring wins is as good as a random bearing.
+
+        For cfg.goal_blocked_frac of envs the winner is instead the nearest
+        of the GOAL_CANDIDATES closest spots whose straight route from the
+        spawn is blocked (_route_blocked). Where none is, which on the worked
+        cells is always, the usual winner stands.
         """
         c = self.cfg
         n = env_ids.numel()
@@ -556,7 +572,19 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         lo = c.goal_dist_range[0]
         want = lo + (self._goal_dist_hi - lo) * torch.rand(n, 1, device=dev)
         cost = (reach - want).abs() + (reach < lo).float() * 1.0e3
-        rows, pick = torch.arange(n, device=dev), cost.argmin(dim=1)
+        rows = torch.arange(n, device=dev)
+        if c.goal_blocked_frac > 0.0:
+            k = min(GOAL_CANDIDATES, spots.shape[1])
+            cand_cost, cand = cost.topk(k, dim=1, largest=False)            # nearest first
+            ends = torch.gather(spots, 1, cand.unsqueeze(-1).expand(n, k, 2))
+            blocked = self._route_blocked(spawn_xy, ends) & (cand_cost < 1.0e3)
+            use = (torch.rand(n, device=dev) < c.goal_blocked_frac) & blocked.any(dim=1)
+            first = torch.where(blocked, cand_cost, torch.full_like(cand_cost, float("inf"))).argmin(dim=1)
+            pick = torch.where(use, cand[rows, first], cand[:, 0])
+            self._route_is_blocked[env_ids] = use | blocked[:, 0]
+        else:
+            pick = cost.argmin(dim=1)
+            self._route_is_blocked[env_ids] = False
         goal = spots[rows, pick]
         self._goal_pos_w[env_ids] = goal
         self._goal_z_w[env_ids] = self._goal_spots_z[cell][rows, pick]
@@ -606,6 +634,28 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         down[:, 2] = -1.0
         z = raycast_mesh(starts, down, self._ground_mesh())[0][:, 2]
         return torch.where(torch.isfinite(z), z, torch.full_like(z, float("nan"))).reshape(xy.shape[:-1])
+
+    def _route_blocked(self, start: torch.Tensor, ends: torch.Tensor) -> torch.Tensor:
+        """(n, K): whether the machine's straight drive from start (n, 2) to
+        each of ends (n, K, 2) meets a step in the ground taller than
+        cfg.goal_blocked_step between neighbouring samples, read off the
+        terrain mesh along ROUTE_LANES. A boulder's side and a crater's wall
+        are steps of 0.35 m and more; the worked ground's pits and piles are
+        far gentler."""
+        n, k = ends.shape[:2]
+        d = ends - start.unsqueeze(1)                                       # (n, K, 2)
+        length = torch.linalg.norm(d, dim=-1, keepdim=True).clamp_min(1.0e-6)
+        side = torch.stack([-d[..., 1], d[..., 0]], dim=-1) / length        # unit left of the route
+        t = torch.linspace(0.0, 1.0, ROUTE_SAMPLES, device=self.device)
+        lanes = torch.tensor(ROUTE_LANES, device=self.device)
+        pts = (
+            start[:, None, None, None, :]
+            + d[:, :, None, None, :] * t[None, None, None, :, None]
+            + side[:, :, None, None, :] * lanes[None, None, :, None, None]
+        )                                                                   # (n, K, lanes, samples, 2)
+        z = self._ground_heights(pts)
+        step = torch.nan_to_num((z[..., 1:] - z[..., :-1]).abs(), nan=0.0)
+        return (step > self.cfg.goal_blocked_step).flatten(2).any(dim=-1)
 
     def _draw_spawns(self, env_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """A spawn for each env: world xy (n, 2), the ground height to set the
@@ -665,6 +715,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         exits["Episode/near"] = float(self._near[env_ids].float().mean())
         exits["Episode/failed"] = float(self._failed_now[env_ids].float().mean())
         exits["Episode/stuck"] = float(self._stuck[env_ids].float().mean())
+        exits["Episode/blocked"] = float(self._route_is_blocked[env_ids].float().mean())
         exits["Episode/end_dist"] = float(self._prev_dist[env_ids].mean())
         exits["Episode/end_heading_deg"] = float(torch.rad2deg(self._last_herr[env_ids].abs()).mean())
         # Reads last episode's outcome, before it is cleared below.
@@ -693,9 +744,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._prev_pose_pot[env_ids] = self._pose_potential(d0, R.axis_heading_error(self._goal_yaw[env_ids], yaw))
         self._last_herr[env_ids] = 0.0
         self._win_pos[env_ids] = spawn_xy.unsqueeze(1)
-        self._win_turn[env_ids] = 0.0
+        self._win_yaw[env_ids] = yaw.unsqueeze(1)
         self._win_steps[env_ids] = 0
-        self._prev_yaw[env_ids] = yaw
         self._stuck[env_ids] = False
         self._in_box[env_ids] = False
         self._held[env_ids] = 0

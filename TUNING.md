@@ -69,9 +69,9 @@ beds already do, because a scripted demo needs the same pile each time.
 |---|---|---|---|
 | control rate | `decimation` | `4` dig, `8` nav | both 25 Hz; sim stays 100/200 Hz |
 | episode | `episode_length_s` | `20.0` | 500 steps |
-| discount | `gamma` | `0.997` dig, `0.995` nav | horizon 333 / 200 steps |
-| rollout | `num_steps_per_env` | `256` dig, `64` nav | 4096 / 65536 samples per update |
-| envs | `scene.num_envs` | `16` dig, `1024` nav | dig is capped at `max_num_envs` 32 by the grid capacities |
+| discount | `gamma` | `0.997` dig and nav | horizon 333 steps |
+| rollout | `num_steps_per_env` | `256` dig, `128` nav | 4096 / 32768 samples per update |
+| envs | `scene.num_envs` | `16` dig, `256` nav | dig is capped at `max_num_envs` 32 by the grid capacities; nav was 1024 until the workstation began rebooting under full GPU load |
 
 `gamma` and `decimation` are bound together. The effective horizon is
 `1/(1-gamma)` steps, which has to reach across the task: a cut takes 10-20 s,

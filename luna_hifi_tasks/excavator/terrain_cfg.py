@@ -268,10 +268,11 @@ def _patches(max_height_diff: float) -> dict[str, FlatPatchSamplingCfg]:
 # Four sub-terrain types, so a single row mixes easy and hard cells. Cells
 # are 32 m against a 3.4 m machine and goal distances up to 18 m. Ten rows is
 # the difficulty ladder and twelve columns the variations at each rung: 120
-# cells, about 8 envs per cell at 1024. The generator gives each type whole
-# columns in proportion, here 2 / 2 / 2 / 6, and an env keeps its column for
-# the run while its row moves with the curriculum, so half the envs drive
-# among hazards whose count grows with their level.
+# cells, about 2 envs per cell at 256. The generator gives each type whole
+# columns in proportion, here 1 / 1 / 1 / 9, and an env keeps its column for
+# the run while its row moves with the curriculum, so three quarters of the
+# envs drive among hazards whose count grows with their level. The worked
+# cells keep a column each for rough ground without obstacles.
 #
 # At a 0.1 m horizontal scale a cell is 320 x 320 px, so this is ~24M
 # triangles built on the CPU at startup. use_cache keeps that to the first run.
@@ -289,21 +290,21 @@ EXCAVATION_TERRAINS_CFG = TerrainGeneratorCfg(
     use_cache=True,
     sub_terrains={
         "worked_light": HfExcavationTerrainCfg(
-            proportion=2 / 12, num_pits=2, num_piles=2,
+            proportion=1 / 12, num_pits=2, num_piles=2,
             pit_depth=(0.03, 0.12), pile_height=(0.03, 0.10), noise=0.005,
             flat_patch_sampling=_patches(GOAL_PATCH_ANY_DIFF),
         ),
         "worked": HfExcavationTerrainCfg(
-            proportion=2 / 12,
+            proportion=1 / 12,
             flat_patch_sampling=_patches(GOAL_PATCH_ANY_DIFF),
         ),
         "worked_heavy": HfExcavationTerrainCfg(
-            proportion=2 / 12, num_pits=5, num_piles=5,
+            proportion=1 / 12, num_pits=5, num_piles=5,
             pit_depth=(0.10, 0.22), pile_height=(0.10, 0.20), slope=0.06,
             flat_patch_sampling=_patches(GOAL_PATCH_ANY_DIFF),
         ),
         "hazards": HfHazardTerrainCfg(
-            proportion=6 / 12,
+            proportion=9 / 12,
             flat_patch_sampling=_patches(GOAL_PATCH_HAZARD_DIFF),
         ),
     },

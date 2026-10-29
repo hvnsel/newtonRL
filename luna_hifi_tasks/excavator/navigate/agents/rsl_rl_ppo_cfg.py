@@ -7,15 +7,16 @@
 #     velocities, attitude, the goal, the last action -- is normalised and
 #     goes straight to the MLP. The two terrain windows arrive as images and
 #     each goes through its own CNN encoder, trained by the PPO loss with
-#     everything else; no separate autoencoder. Three 3x3 stride-2
-#     convolutions take each window down to a 3 x 3 grid of 4 features, 36
-#     numbers: far, 27 x 27 at 0.45 m, goes 27 -> 13 -> 6 -> 3, an output
-#     cell every 3.6 m; near, 25 x 25 at 0.20 m, goes 25 -> 12 -> 6 -> 3, one
-#     every 1.6 m. rsl_rl's "zeros" padding pads a layer only where the
-#     stride needs it, so an odd window loses its edge row rather than
-#     growing one. The grid still says on which side of the machine a hazard
-#     is, which global pooling would average away. The MLP reads 97 inputs,
-#     72 of them terrain.
+#     everything else; no separate autoencoder. Two 3x3 stride-2
+#     convolutions take each window down to a 6 x 6 grid of 4 features, 144
+#     numbers: far, 27 x 27 at 0.45 m, goes 27 -> 13 -> 6, an output cell
+#     every 1.8 m; near, 25 x 25 at 0.20 m, goes 25 -> 12 -> 6, one every
+#     0.8 m. rsl_rl's "zeros" padding pads a layer only where the stride
+#     needs it, so an odd window loses its edge row rather than growing one.
+#     A third convolution took both to 3 x 3, cells 3.6 m and 1.6 m apart,
+#     coarser than the gaps the machine has to find; global pooling would
+#     lose where a hazard is altogether. The MLP reads 313 inputs, 288 of
+#     them terrain.
 #   * the critic is an MLP over the policy group and the privileged "critic"
 #     group, which carries the clean scan, true slip and exact fill: the
 #     asymmetric actor-critic. It is discarded after training, so it may read
@@ -24,6 +25,11 @@
 #     degrees, mdp/symmetry.turn_around, so neither end of the machine is the
 #     front. The extra samples cost a second forward and backward pass per
 #     mini-batch, not simulation.
+#
+# 256 envs (the workstation reboots under a full GPU load) with 128-step
+# rollouts: 32,768 samples an update. 4000 iterations of that is 131M steps,
+# the same experience as the earlier 2000 at 1024 x 64. A checkpoint every 25
+# iterations, so a reboot costs at most 25 iterations.
 #
 # gamma 0.997 is an effective horizon of 333 steps, 13 s at 25 Hz, against a
 # 750-step episode covering an 18 m traverse. A goal reached 400 steps out
@@ -42,14 +48,14 @@ from isaaclab_rl.rsl_rl import (
 from ...mdp.symmetry import turn_around
 
 # The layer settings both encoders share.
-_ENCODER = dict(output_channels=[16, 16, 4], kernel_size=3, stride=2, padding="zeros", activation="elu")
+_ENCODER = dict(output_channels=[16, 4], kernel_size=3, stride=2, padding="zeros", activation="elu")
 
 
 @configclass
 class ExcavatorNavigatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 64
-    max_iterations = 2000
-    save_interval = 100
+    num_steps_per_env = 128
+    max_iterations = 4000
+    save_interval = 25
     experiment_name = "excavator_navigate"
     obs_groups = {"actor": ["policy", "far_scan", "near_scan"], "critic": ["policy", "critic"]}
     clip_actions = 1.0

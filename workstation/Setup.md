@@ -152,9 +152,10 @@ python scripts/check_excavator.py
 ## 5. Run
 
 ```bash
-# navigate: measured 13.3 GB at 1024 envs, so this fits 24 GB with room
+# navigate: 256 envs, 4000 iterations, a checkpoint every 25 (the cfg
+# defaults). 13.3 GB was measured at 1024 envs, so this fits 24 GB easily
 workstation/dev.sh isaaclab train --rl_library rsl_rl \
-  --task Luna-Excavator-Navigate --num_envs 1024 --max_iterations 2000
+  --task Luna-Excavator-Navigate --num_envs 256
 
 # telemetry, from the host, no container needed
 python scripts/peek.py --tags goal_dist_hi reached mean_std learning_rate

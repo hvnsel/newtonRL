@@ -131,8 +131,12 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
     # With generator terrain the origins come from the sub-terrain grid.
     # env_spacing is a required field on InteractiveSceneCfg.
+    #
+    # 256 machines, a quarter of the earlier 1024: the workstation reboots
+    # under a full GPU load. The agent's longer rollouts keep each update at
+    # 32,768 samples; see agents/rsl_rl_ppo_cfg.py.
     scene: NavigateSceneCfg = NavigateSceneCfg(
-        num_envs=1024,
+        num_envs=256,
         env_spacing=8.0,
         replicate_physics=True,
     )
@@ -185,6 +189,19 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # whole cell. play_mode sets it, so the machine starts inside the frame
     # of the fixed playback camera (see camera_eye).
     spawn_radius: float | None = None
+
+    # --- blocked routes ---
+    # For goal_blocked_frac of resets the goal is chosen from those whose
+    # straight route from the spawn is blocked: somewhere along it the ground
+    # steps by more than goal_blocked_step, a boulder's side or a crater's
+    # wall, so the machine has to steer round to get there. Left to chance,
+    # half the cells had no obstacles and the hazard cells blocked the
+    # straight route in a third to three fifths of episodes, and the policy
+    # drove straight into the course's obstacles. Where no candidate is
+    # blocked, which on the worked cells is always, the usual goal stands.
+    # Episode/blocked logs the share.
+    goal_blocked_frac = 0.75
+    goal_blocked_step = 0.25             # m, between samples at most 0.25 m apart
 
     # (spawn x, y, yaw, goal x, y, yaw) in the env frame, replacing the random
     # spawn and the drawn goal; None draws them. For constructed playback
@@ -288,8 +305,8 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # Two independent ladders. Goal distance widens globally on the success
     # rate over a window of finished episodes; terrain difficulty is per-env
     # and moves through TerrainImporter.update_env_origins on every reset.
-    # A reset batch at 1024 envs can be most of the batch at once, so the
-    # window spans about two reset waves.
+    # At 256 envs and 128-step rollouts about 60 episodes finish per
+    # iteration, so the window spans some 35 iterations.
     curriculum_window = 2048             # episodes averaged for the success rate
     curriculum_success_rate = 0.7        # widen the band above this ...
     curriculum_step = 1.5                # ... by this many metres
@@ -358,14 +375,15 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     max_tilt_rad = math.radians(60.0)
     max_env_excursion = 24.0             # metres from the env origin
     # Stuck: away from the goal (beyond goal_near_range), the machine has to
-    # move stuck_min_move or turn stuck_min_turn in all over any
-    # stuck_window_steps in a row, or the episode ends as a failure and w_fail
-    # is charged. Pushing into a boulder or a crater wall does neither; before
-    # this it cost only w_time, and the policy pushed into one on the course
-    # until the clip ran out. Moving is net displacement, so backing off and
-    # driving back in is still stuck; turning is summed, so reorienting on the
-    # spot is not. 0 turns it off, which play_mode does so a clip shows the
-    # whole episode.
+    # move stuck_min_move or turn stuck_min_turn over any stuck_window_steps
+    # in a row, or the episode ends as a failure and w_fail is charged.
+    # Pushing into a boulder or a crater wall does neither; before this it
+    # cost only w_time, and the policy pushed into one on the course until
+    # the clip ran out. Both are net changes across the window: backing off
+    # and driving back in is still stuck, and so is steering jitter, which
+    # training's action noise supplies on every step and which summed turning
+    # had counted as turning. Reorienting on the spot still counts. 0 turns
+    # it off, which play_mode does so a clip shows the whole episode.
     stuck_window_steps = 125             # 5 s at 25 Hz
     stuck_min_move = 0.5                 # m
     stuck_min_turn = math.radians(15.0)

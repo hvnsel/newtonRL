@@ -122,6 +122,13 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         # Playback only: steps still to run after arriving.
         self._hold_left = torch.zeros(E, dtype=torch.long, device=dev)
 
+        # The clean scan's mean height and share of cells at -scan_clip on the
+        # last step, for the log: a scan that sees the ground reads about the
+        # chassis height, +0.3 m, and almost none at the clip; a blind one
+        # reads -scan_clip everywhere.
+        self._scan_mean = torch.zeros((), device=dev)
+        self._scan_at_clip = torch.zeros((), device=dev)
+
         self._trace = None
         self._trace_step = 0
         if cfg.goal_trace_envs > 0:
@@ -272,8 +279,11 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             R.wheel_slip(wheel_vel[:, self._left_ids], v_fwd, WHEEL_RADIUS),
             R.wheel_slip(wheel_vel[:, self._right_ids], v_fwd, WHEEL_RADIUS),
         ], dim=-1)
+        clean = torch.cat([far, near], dim=-1)
+        self._scan_mean = clean.mean()
+        self._scan_at_clip = (clean <= -c.scan_clip).float().mean()
         critic = NAV_CRITIC.assemble({
-            "terrain_scan_true": torch.cat([far, near], dim=-1),
+            "terrain_scan_true": clean,
             "drum_fill_mass": self._drum_fill,
             "base_lin_vel_w": self.robot.data.root_lin_vel_w.torch,
             "slip": slip,
@@ -703,3 +713,5 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self.extras["log"]["Curriculum/terrain_level"] = float(
             self.terrain.terrain_levels.float().mean()
         )
+        self.extras["log"]["Scan/mean_height"] = float(self._scan_mean)
+        self.extras["log"]["Scan/at_clip"] = float(self._scan_at_clip)

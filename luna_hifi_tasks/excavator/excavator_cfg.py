@@ -122,7 +122,7 @@ SPIN_LIMIT = math.sqrt(LUNAR_G / ROTOR_TIP_R)
 
 # Actuator effort ceilings. The actuator cfgs below take these, and the
 # observation divides measured joint torque by them.
-WHEEL_EFFORT = 120.0
+WHEEL_EFFORT = 2000.0
 # 800 let the arms jack the whole machine off its wheels. Commanded to a cut
 # depth, the shroud reached soil, the actuator found that lifting a 797 N rover
 # was cheaper than cutting, and the chassis ROSE 53 mm with all four wheels
@@ -230,15 +230,17 @@ EXCAVATOR_CFG = ArticulationCfg(
         joint_vel={".*": 0.0},
     ),
     actuators={
-        # Velocity drive, traction-sized for lunar gravity. ~123 kg per wheel
-        # is ~199 N of normal force at 1.62 m/s^2, so ~60 N-m at r = 0.30
-        # before slip, and the 120 ceiling is a 2x margin.
+        # Velocity drive, with the ceiling set by turning on the spot rather
+        # than by traction. Full yaw for 5 s at 994 kg turned the machine
+        # 8.7, 19.8 and 51 deg with ceilings of 120, 240 and 1000 N-m,
+        # against 859 deg commanded, and driving forward at 0.3 while turning
+        # did no better.
         #
         # With stiffness 0 the damping is the gain: torque is damping times
-        # the velocity error. At 400 the drive reaches the effort limit at a
-        # 0.3 rad/s error, so it acts as a torque source up to the ceiling at
-        # any commanded speed, including the crawl a cut runs at. Tractive
-        # force is bounded by effort_limit_sim and the ground.
+        # the velocity error. At 400 the drive reaches the 2000 ceiling at a
+        # 5 rad/s error. Full yaw asks each wheel for 5.75 rad/s, so on the
+        # spot no ceiling above 2300 changes anything. Tractive force is
+        # bounded by effort_limit_sim and the ground.
         "wheels": ImplicitActuatorCfg(
             joint_names_expr=JOINT_WHEELS,
             effort_limit_sim=WHEEL_EFFORT,

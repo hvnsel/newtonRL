@@ -19,6 +19,7 @@ import torch
 from ..excavator import AXLE_X, TRACK, WHEEL_HALF_W, WHEEL_RADIUS, WHEEL_Y
 from ..excavator_cfg import MAX_WHEEL_SPEED
 from ..excavator_env_base import ExcavatorEnvBase
+from ..mdp import paths as P
 from ..mdp import rewards as R
 from ..mdp.terrain import degrade_scan, nav_far_pattern, nav_near_pattern, scan_from_raycaster
 from ..mdp.observations import NAV_FAR_IMAGE, NAV_NEAR_IMAGE, navigate_obs_spec
@@ -53,6 +54,11 @@ FOOTPRINT_XY = TYRE_XY + tuple(
 # Where the spawn ray-casts start, straight down: above any terrain, as in
 # Isaac Lab's flat-patch search.
 RAY_TOP = 100.0
+
+# The outline a collision is judged inside, body frame half-extents: the
+# footprint's, past the wheels to the stowed arms' roots and across the tyres'
+# outer faces. See _rammed_now.
+RAM_OUTLINE = (1.25, _REACH_Y)
 
 # Blocked-route goals, see cfg.goal_blocked_frac: how many candidate goals are
 # tested per env, the spots whose distance from the spawn is nearest the drawn
@@ -108,6 +114,29 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._stuck = torch.zeros(E, dtype=torch.bool, device=dev)
         # Whether this episode's straight route to its goal is blocked.
         self._route_is_blocked = torch.zeros(E, dtype=torch.bool, device=dev)
+
+        # Path progress, see cfg.path_res: each cell's travel cost, built on
+        # the first reset; each env's cost-to-goal over its cell, built when
+        # its goal is; the cell centre that map is laid on; the map's value at
+        # the goal itself, which the potential is measured from; and last
+        # step's potential.
+        size = cfg.scene.terrain.terrain_generator.size
+        self._path_axis = P.grid_axis(size[0], cfg.path_res, dev)
+        G = self._path_axis.numel()
+        self._path_cost = None
+        self._path = torch.zeros(E, G, G, device=dev)
+        self._path_origin = torch.zeros(E, 2, device=dev)
+        self._path_at_goal = torch.zeros(E, device=dev)
+        self._prev_path = torch.zeros(E, device=dev)
+        # Path over straight distance from the spawn, for the log.
+        self._detour = torch.ones(E, device=dev)
+
+        # Collision check, see _rammed_now: neighbouring near-scan cells that
+        # both lie inside RAM_OUTLINE, along each grid axis.
+        near = nav_near_pattern(dev).reshape(NAV_NEAR_IMAGE[1], NAV_NEAR_IMAGE[2], 2)
+        inside = (near[..., 0].abs() <= RAM_OUTLINE[0]) & (near[..., 1].abs() <= RAM_OUTLINE[1])
+        self._ram_pairs = (inside[1:, :] & inside[:-1, :], inside[:, 1:] & inside[:, :-1])
+        self._rammed = torch.zeros(E, dtype=torch.bool, device=dev)
 
         # The terrain as a Warp mesh, for setting spawns down on it; built on
         # the first reset, once the scene is on the stage.
@@ -321,11 +350,16 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         torque = d.applied_torque.torch[:, self._wheel_ids]
         speed = torch.linalg.norm(p["base_lin_vel"][:, :2], dim=-1)
         pose_pot = self._pose_potential(dist, herr)
+        # Progress and bearing go by the way round the obstacles, not the
+        # straight line; see _path_potential.
+        pos = d.root_pos_w.torch[:, :2]
+        path = self._path_potential(pos)
+        way_b = R.world_to_body_xy(self._path_direction(pos), self._base_yaw())
 
         reward = L.add_all({
-            "progress": c.w_progress * R.progress_reward(self._prev_dist, dist),
+            "progress": c.w_progress * R.progress_reward(self._prev_path, path),
             "bearing": c.w_bearing * R.fade_in(dist, *c.bearing_fade) * R.bearing_alignment(
-                vec_b, p["base_lin_vel"][:, 0], MAX_WHEEL_SPEED * WHEEL_RADIUS
+                way_b, p["base_lin_vel"][:, 0], MAX_WHEEL_SPEED * WHEEL_RADIUS
             ),
             "goal": c.w_goal * self._reached.float(),
             # Weighted inside the potential; see pose_potential.
@@ -347,6 +381,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             "fill_change": -c.w_fill_change * torch.zeros_like(dist),
         })
         self._prev_dist[:] = dist
+        self._prev_path[:] = path
         self._prev_pose_pot[:] = pose_pot
         return reward
 
@@ -379,6 +414,9 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         if c.stuck_window_steps > 0:
             self._stuck = self._stuck_now(dist)
             self._failed_now |= self._stuck
+        self._rammed = self._rammed_now() & ~self._arrived
+        if c.ram_ends_episode:
+            self._failed_now |= self._rammed
         if self._trace is not None:
             self._write_trace(dist, herr, time_out)
 
@@ -427,6 +465,19 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             & (dist > c.goal_near_range)
             & ~self._arrived
         )
+
+    def _rammed_now(self) -> torch.Tensor:
+        """Ground inside the machine's outline steps by more than
+        cfg.ram_step between neighbouring near-scan cells, 0.2 m apart: a
+        boulder's side or a crater's wall has come inside RAM_OUTLINE, which
+        reaches 0.25 m past the wheels. Worked ground's pits and piles step a
+        few centimetres between cells; read off the clean scan."""
+        _, near = self._terrain_scan()
+        h = near.reshape(-1, NAV_NEAR_IMAGE[1], NAV_NEAR_IMAGE[2])
+        along0, along1 = self._ram_pairs
+        step0 = ((h[:, 1:, :] - h[:, :-1, :]).abs() > self.cfg.ram_step) & along0
+        step1 = ((h[:, :, 1:] - h[:, :, :-1]).abs() > self.cfg.ram_step) & along1
+        return step0.flatten(1).any(dim=1) | step1.flatten(1).any(dim=1)
 
     def _write_trace(self, dist: torch.Tensor, herr: torch.Tensor, time_out: torch.Tensor) -> None:
         """One CSV row per env per step, in the env frame.
@@ -657,6 +708,68 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         step = torch.nan_to_num((z[..., 1:] - z[..., :-1]).abs(), nan=0.0)
         return (step > self.cfg.goal_blocked_step).flatten(2).any(dim=-1)
 
+    # ------------------------------------------------------------------
+    # path progress
+    # ------------------------------------------------------------------
+
+    def _cell_path_cost(self) -> torch.Tensor:
+        """(rows, cols, G, G) travel cost of every cell, mdp/paths.obstacle_cost
+        over the terrain mesh ray-cast on each cell's grid. Built on first use,
+        once the mesh is on the stage."""
+        if self._path_cost is None:
+            c = self.cfg
+            origins = self.terrain.terrain_origins
+            rows, cols = origins.shape[:2]
+            gx, gy = torch.meshgrid(self._path_axis, self._path_axis, indexing="ij")
+            local = torch.stack([gx, gy], dim=-1)                               # (G, G, 2)
+            cost = []
+            for r in range(rows):
+                pts = origins[r, :, None, None, :2] + local                     # (cols, G, G, 2)
+                cost.append(P.obstacle_cost(
+                    self._ground_heights(pts), c.path_res, c.goal_blocked_step,
+                    c.path_margin, c.path_margin_cost, c.path_obstacle_cost,
+                ))
+            self._path_cost = torch.stack(cost)
+            share = float((self._path_cost >= c.path_obstacle_cost).float().mean())
+            print(f"[navigate] path maps: {rows} x {cols} cells of {gx.shape[0]} x {gx.shape[1]} "
+                  f"at {c.path_res} m, {100 * share:.1f}% obstacle")
+        return self._path_cost
+
+    def _build_paths(self, env_ids: torch.Tensor) -> None:
+        """Each env's cost-to-goal over its cell, from the goal just placed."""
+        cell = (self.terrain.terrain_levels[env_ids], self.terrain.terrain_types[env_ids])
+        origin = self.terrain.terrain_origins[cell][:, :2]
+        goal_uv = (self._goal_pos_w[env_ids] - origin - self._path_axis[0]) / self.cfg.path_res
+        field = P.path_field(self._cell_path_cost()[cell], goal_uv, self.cfg.path_res, self.cfg.path_max_iters)
+        self._path[env_ids] = field
+        self._path_origin[env_ids] = origin
+        self._path_at_goal[env_ids] = P.sample_field(field, goal_uv, self.cfg.path_res)
+
+    def _path_potential(self, xy_w: torch.Tensor, env_ids: torch.Tensor | None = None) -> torch.Tensor:
+        """Cost to the goal from world xy, metres of open ground, 0 at the
+        goal: the env's map, bilinear between grid points."""
+        if env_ids is None:
+            field, origin, at_goal = self._path, self._path_origin, self._path_at_goal
+        else:
+            field, origin, at_goal = self._path[env_ids], self._path_origin[env_ids], self._path_at_goal[env_ids]
+        uv = (xy_w - origin - self._path_axis[0]) / self.cfg.path_res
+        return P.sample_field(field, uv, self.cfg.path_res) - at_goal
+
+    def _path_direction(self, xy_w: torch.Tensor) -> torch.Tensor:
+        """(E, 2) world unit vector the env's map falls along fastest at xy,
+        the way round; straight at the goal where the map is flat."""
+        h = self.cfg.path_res
+        ex = torch.tensor([h, 0.0], device=self.device)
+        ey = torch.tensor([0.0, h], device=self.device)
+        grad = torch.stack([
+            self._path_potential(xy_w + ex) - self._path_potential(xy_w - ex),
+            self._path_potential(xy_w + ey) - self._path_potential(xy_w - ey),
+        ], dim=-1)
+        norm = torch.linalg.norm(grad, dim=-1, keepdim=True)
+        straight = self._goal_pos_w - xy_w
+        straight = straight / torch.linalg.norm(straight, dim=-1, keepdim=True).clamp_min(1.0e-6)
+        return torch.where(norm > 1.0e-6, -grad / norm.clamp_min(1.0e-6), straight)
+
     def _draw_spawns(self, env_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """A spawn for each env: world xy (n, 2), the ground height to set the
         tyres on (n,), and a yaw (n,).
@@ -715,7 +828,9 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         exits["Episode/near"] = float(self._near[env_ids].float().mean())
         exits["Episode/failed"] = float(self._failed_now[env_ids].float().mean())
         exits["Episode/stuck"] = float(self._stuck[env_ids].float().mean())
+        exits["Episode/rammed"] = float(self._rammed[env_ids].float().mean())
         exits["Episode/blocked"] = float(self._route_is_blocked[env_ids].float().mean())
+        exits["Episode/detour"] = float(self._detour[env_ids].mean())
         exits["Episode/end_dist"] = float(self._prev_dist[env_ids].mean())
         exits["Episode/end_heading_deg"] = float(torch.rad2deg(self._last_herr[env_ids].abs()).mean())
         # Reads last episode's outcome, before it is cleared below.
@@ -739,6 +854,11 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             self._place_goals(env_ids, route)
         # Initial distance and pose potential from the written spawn.
         d0 = torch.linalg.norm(self._goal_pos_w[env_ids] - spawn_xy, dim=-1)
+        self._build_paths(env_ids)
+        path0 = self._path_potential(spawn_xy, env_ids)
+        self._prev_path[env_ids] = path0
+        self._detour[env_ids] = path0 / d0.clamp_min(1.0e-3)
+        self._rammed[env_ids] = False
         self._prev_dist[env_ids] = d0
         self._start_dist[env_ids] = d0.clamp_min(1e-3)
         self._prev_pose_pot[env_ids] = self._pose_potential(d0, R.axis_heading_error(self._goal_yaw[env_ids], yaw))

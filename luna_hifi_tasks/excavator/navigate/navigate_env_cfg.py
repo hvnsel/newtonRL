@@ -203,6 +203,35 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     goal_blocked_frac = 0.75
     goal_blocked_step = 0.25             # m, between samples at most 0.25 m apart
 
+    # --- path progress ---
+    # Progress pays for closing the distance to the goal the way the machine
+    # can drive it, round the craters and boulders, and bearing for speed
+    # along that way; see mdp/paths.py. Paid on the straight line, both
+    # rewarded driving at the goal right up to an obstacle on the line, and a
+    # detour paid less than ramming: the policy drove into the course's
+    # obstacles head on. Each cell's ground is read on a path_res grid at the
+    # first reset; a grid point is an obstacle where it steps by more than
+    # goal_blocked_step to a neighbour, and costs path_obstacle_cost per
+    # metre, path_margin_cost within path_margin of one (half the machine's
+    # width), 1 elsewhere. Each reset spreads the cost to the new goal over
+    # the env's cell. The policy never sees any of it: it still has to find
+    # the way round from its scans.
+    path_res = 0.25                      # m
+    path_margin = 0.7                    # m
+    path_margin_cost = 5.0
+    path_obstacle_cost = 50.0
+    path_max_iters = 256                 # relaxation sweeps; stops early once settled
+
+    # --- collisions ---
+    # A crater wall or boulder side inside the machine's outline ends the
+    # episode as a failure, w_fail, on that step; see
+    # ExcavatorNavigateEnv._rammed_now. The stuck rule took 5 s to notice,
+    # and wiggling against the obstacle escaped it. Episode/rammed logs the
+    # share either way; play_mode turns the ending off so a clip shows the
+    # whole episode.
+    ram_step = 0.25                      # m between near-scan cells 0.2 m apart
+    ram_ends_episode = True
+
     # (spawn x, y, yaw, goal x, y, yaw) in the env frame, replacing the random
     # spawn and the drawn goal; None draws them. For constructed playback
     # scenarios, such as the course below.
@@ -438,6 +467,7 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
         self.scene.num_envs = min(self.scene.num_envs, 16)
         self.goal_marker = True
         self.stuck_window_steps = 0
+        self.ram_ends_episode = False
         self.spawn_radius = 4.2
         self.sim.visualizer_cfgs = [
             NewtonGLVisualizerCfg(

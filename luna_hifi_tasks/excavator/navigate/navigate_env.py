@@ -22,7 +22,7 @@ from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import paths as P
 from ..mdp import rewards as R
 from ..mdp.terrain import degrade_scan, nav_far_pattern, nav_near_pattern, scan_from_raycaster
-from ..mdp.observations import NAV_FAR_IMAGE, NAV_NEAR_IMAGE, navigate_obs_spec
+from ..mdp.observations import NAV_FAR_IMAGE, NAV_NEAR_CELL, NAV_NEAR_IMAGE, navigate_obs_spec
 from ..terrain_cfg import GOAL_PATCHES, SPAWN_PATCHES
 from .navigate_env_cfg import NAV_CRITIC, ExcavatorNavigateEnvCfg
 
@@ -120,6 +120,12 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         # its goal is; the cell centre that map is laid on; the map's value at
         # the goal itself, which the potential is measured from; and last
         # step's potential.
+        near_reach = 0.5 * (NAV_NEAR_IMAGE[2] - 1) * NAV_NEAR_CELL
+        if cfg.path_zone > near_reach:
+            raise ValueError(
+                f"path_zone {cfg.path_zone} m charges for obstacles the near scan cannot see; "
+                f"it reaches {near_reach:.2f} m"
+            )
         size = cfg.scene.terrain.terrain_generator.size
         self._path_axis = P.grid_axis(size[0], cfg.path_res, dev)
         G = self._path_axis.numel()
@@ -185,7 +191,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._goal_marker = self._make_goal_marker() if cfg.goal_marker else None
 
         self._log = R.TermLogger(
-            ["progress", "bearing", "goal", "pose", "settle", "fail", "upright", "slip",
+            ["progress", "bearing", "goal", "pose", "settle", "fail", "ram", "upright", "slip",
              "action_rate", "energy", "time", "fill_change"],
             E, dev,
         )
@@ -355,6 +361,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         pos = d.root_pos_w.torch[:, :2]
         path = self._path_potential(pos)
         way_b = R.world_to_body_xy(self._path_direction(pos), self._base_yaw())
+        rammed_out = self._rammed & self._failed_now if c.ram_ends_episode else torch.zeros_like(self._rammed)
 
         reward = L.add_all({
             "progress": c.w_progress * R.progress_reward(self._prev_path, path),
@@ -370,7 +377,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             # Every other penalty is per-step, so ending an episode early
             # avoids the rest of them. This is the one-time charge that makes
             # tipping over cost more than the stream it escapes.
-            "fail": -c.w_fail * self._failed_now.float(),
+            "fail": -c.w_fail * (self._failed_now & ~rammed_out).float(),
+            "ram": -c.w_ram * rammed_out.float(),
             "upright": -c.w_upright * R.upright_penalty(p["projected_gravity"]),
             "slip": -c.w_slip * R.wheel_slip(wheel_vel, p["base_lin_vel"][:, 0], WHEEL_RADIUS),
             "action_rate": -c.w_action_rate * R.action_rate_penalty(self._actions, self._prev_actions),
@@ -727,7 +735,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
                 pts = origins[r, :, None, None, :2] + local                     # (cols, G, G, 2)
                 cost.append(P.obstacle_cost(
                     self._ground_heights(pts), c.path_res, c.goal_blocked_step,
-                    c.path_margin, c.path_margin_cost, c.path_obstacle_cost,
+                    c.path_zone, c.path_zone_cost, c.path_obstacle_cost,
                 ))
             self._path_cost = torch.stack(cost)
             share = float((self._path_cost >= c.path_obstacle_cost).float().mean())

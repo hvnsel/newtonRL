@@ -5,10 +5,10 @@
 #
 # Each cell's ground is read on a square grid. A grid point is an obstacle
 # where the ground steps to a neighbour by more than a threshold: a boulder's
-# side, a crater's wall. Every grid point gets a travel cost per metre: 1 on
-# open ground, more within a margin of an obstacle, a lot on one. Costs are
-# finite, so a machine that has clipped a margin, or worse, still reads a
-# distance with a slope that leads out.
+# side, a crater's wall. Every grid point gets a travel cost per metre: a lot
+# on an obstacle, rising towards it across a zone round it, 1 on open ground
+# beyond. Costs are finite, so a machine that has come into a zone, or
+# worse, still reads a distance with a slope that leads out.
 #
 # path_field spreads the cheapest cost to the goal over the whole grid from
 # the goal outwards: Bellman-Ford over a 16-neighbour stencil, every grid
@@ -55,13 +55,14 @@ def obstacle_cost(
     heights: torch.Tensor,       # (B, G, G) ground height on the grid, NaN where unknown
     res: float,
     step: float,
-    margin: float,
-    margin_cost: float,
+    zone: float,
+    zone_cost: float,
     obstacle_cost: float,
 ) -> torch.Tensor:
     """(B, G, G) travel cost per metre: obstacle_cost on both sides of every
-    step taller than `step` between axis neighbours, margin_cost within
-    `margin` of one, 1 elsewhere."""
+    step taller than `step` between axis neighbours; across `zone` metres
+    round one, falling linearly from zone_cost beside it to 1 at the zone's
+    edge; 1 beyond."""
     h = heights
     dx = torch.nan_to_num((h[:, 1:, :] - h[:, :-1, :]).abs(), nan=0.0) > step
     dy = torch.nan_to_num((h[:, :, 1:] - h[:, :, :-1]).abs(), nan=0.0) > step
@@ -71,14 +72,22 @@ def obstacle_cost(
     obst[:, :, 1:] |= dy
     obst[:, :, :-1] |= dy
 
-    r = margin / res
-    k = int(math.ceil(r))
-    off = torch.arange(-k, k + 1, device=h.device, dtype=torch.float32)
-    disk = ((off[:, None] ** 2 + off[None, :] ** 2) <= r * r + 1e-6).float()[None, None]
-    near = F.conv2d(obst.float().unsqueeze(1), disk, padding=k).squeeze(1) > 0.5
+    # Distance to the nearest obstacle point, out to the zone's edge: the
+    # nearest of every offset within it at which one sits.
+    k = int(math.ceil(zone / res))
+    pad = F.pad(obst.float(), (k, k, k, k)).bool()
+    gx, gy = h.shape[1], h.shape[2]
+    near = torch.full_like(h, float("inf"))
+    for di in range(-k, k + 1):
+        for dj in range(-k, k + 1):
+            r = math.hypot(di, dj) * res
+            if r > zone:
+                continue
+            hit = pad[:, k + di:k + di + gx, k + dj:k + dj + gy]
+            near = torch.where(hit, torch.minimum(near, torch.full_like(near, r)), near)
 
-    cost = torch.ones_like(h)
-    cost = torch.where(near, torch.full_like(cost, margin_cost), cost)
+    rise = (1.0 - near / zone).clamp(0.0, 1.0)
+    cost = 1.0 + (zone_cost - 1.0) * rise
     return torch.where(obst, torch.full_like(cost, obstacle_cost), cost)
 
 

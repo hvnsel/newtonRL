@@ -212,19 +212,29 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # obstacles head on. Each cell's ground is read on a path_res grid at the
     # first reset; a grid point is an obstacle where it steps by more than
     # goal_blocked_step to a neighbour, and costs path_obstacle_cost per
-    # metre, path_margin_cost within path_margin of one (half the machine's
-    # width), 1 elsewhere. Each reset spreads the cost to the new goal over
-    # the env's cell. The policy never sees any of it: it still has to find
-    # the way round from its scans.
+    # metre; across path_zone round one the cost falls from path_zone_cost
+    # beside it to 1, and it is 1 beyond. Each reset spreads the cost to the
+    # new goal over the env's cell. The policy never sees any of it: it still
+    # has to find the way round from its scans.
+    #
+    # The zone is what makes closing on an obstacle cost progress before the
+    # wheels touch it. A flat 5 within 0.7 m, half the machine's width, never
+    # reached a head-on approach, whose chassis is still 1.0 m back at
+    # contact: driving straight at a boulder paid progress up to contact, and
+    # 450 iterations on, the policy rammed as often as when it started. 2 m
+    # starts a head-on approach paying about 1 m before contact. It stays
+    # inside the near scan's 2.4 m, so what the zone charges for is always in
+    # view; ExcavatorNavigateEnv refuses a wider one. Between two hazards at
+    # their closest, 1.8 m apart, the gap's middle costs about 3 per metre.
     path_res = 0.25                      # m
-    path_margin = 0.7                    # m
-    path_margin_cost = 5.0
+    path_zone = 2.0                      # m
+    path_zone_cost = 5.0
     path_obstacle_cost = 50.0
     path_max_iters = 256                 # relaxation sweeps; stops early once settled
 
     # --- collisions ---
     # A crater wall or boulder side inside the machine's outline ends the
-    # episode as a failure, w_fail, on that step; see
+    # episode as a failure, w_ram, on that step; see
     # ExcavatorNavigateEnv._rammed_now. The stuck rule took 5 s to notice,
     # and wiggling against the obstacle escaped it. Episode/rammed logs the
     # share either way; play_mode turns the ending off so a clip shows the
@@ -391,6 +401,9 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     # Charged once on _failed(), never on a timeout or an arrival. A fresh
     # policy's per-step penalties come to about 24 over a full episode.
     w_fail = 20.0
+    # Charged instead of w_fail when a collision ends the episode (see
+    # ram_ends_episode). At 20 the policy kept ramming at the rate it began.
+    w_ram = 50.0
     w_upright = 2.0
     w_slip = 0.006
     w_action_rate = 0.005                # ~12% of a fresh policy's penalties

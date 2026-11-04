@@ -1,5 +1,2 @@
-# importing for the tricycle demo
-from . import tricycle  # noqa: F401
-
-# importing for the rover excavator
-from . import excavator  # noqa: F401
+# Registers the Luna-* gym tasks.
+from . import excavator, tricycle  # noqa: F401

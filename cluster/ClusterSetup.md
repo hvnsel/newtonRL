@@ -2,25 +2,19 @@
 
 ---
 
-## 0. Log in with username
+## 0. Log in
 
 ```bash
 ssh hzhang993@login-phoenix.pace.gatech.edu
-```
-
-And then:
-
-```bash
-unset SSH_ASKPASS SSH_ASKPASS_REQUIRE
+unset SSH_ASKPASS SSH_ASKPASS_REQUIRE      # git prompts in the terminal
 export GIT_TERMINAL_PROMPT=1
 ```
-
-PACE points `SSH_ASKPASS` at a GTK helper that cannot work over SSH, so
-anything that prompts fails with "cannot open display" instead of asking.
 
 ---
 
 ## 1. Environment
+
+Run in every new shell, including the one `salloc` opens.
 
 ```bash
 mkdir -p /storage/scratch1/5/$USER/luna
@@ -39,7 +33,7 @@ mkdir -p $XDG_CACHE_HOME $APPTAINER_CACHEDIR $APPTAINER_TMPDIR $TMPDIR
 
 ## 2. Build the container (once, ~47 min)
 
-Get a **CPU** node — this is a download and a compression, no GPU needed:
+On a CPU node, building on node-local `/tmp`:
 
 ```bash
 salloc -A gts-jmcnabb3 -N1 -n8 --mem=48G -t2:00:00
@@ -48,8 +42,8 @@ apptainer pull isaaclab.sif docker://nvcr.io/nvidia/isaac-lab:3.0.0-rc1
 cp isaaclab.sif $LUNA_SCRATCH/isaaclab.sif
 ```
 
-Build on `/tmp`, not scratch — mksquashfs on Lustre quoted 22 hours, `/tmp`
-took 47 minutes. Pulls anonymously; no NGC account needed.
+The image pulls anonymously. Once the repo is cloned (step 8),
+`sbatch cluster/build_sif.sbatch` does the same as a batch job.
 
 ---
 
@@ -64,8 +58,7 @@ nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
 
 ## 4. Copy the image to node-local disk
 
-Re-run the step 1 exports first — `salloc` gives you a fresh shell and
-`$LUNA_SCRATCH` will be empty otherwise.
+Re-run the step 1 exports in this shell, then:
 
 ```bash
 cp $LUNA_SCRATCH/isaaclab.sif /tmp/isaaclab.sif
@@ -75,6 +68,8 @@ export SIF=/tmp/isaaclab.sif
 ---
 
 ## 5. Set up writable cache binds
+
+Binds Kit's cache paths inside the read-only image to scratch.
 
 ```bash
 export OV=$LUNA_SCRATCH/cache/ov-container
@@ -93,25 +88,26 @@ apptainer exec --nv $BINDS $SIF \
   --max_steps 200 --collider wedge --device cuda:0
 ```
 
-A healthy run prints ~40 `OmniHub: Hub failed to launch` warnings, a protobuf
+Harmless output: ~40 `OmniHub: Hub failed to launch` warnings, a protobuf
 `File already exists in database` error, and `failed to open the default
-display`. All normal. The `CUDA graph took: 40 s` line is one-time capture,
-not per-step.
+display`. `CUDA graph took: 40 s` is a one-time capture.
 
 ---
 
+## 7. Save demo frames as PNGs
 
-## 7. Get pictures out
-
+Copy `cluster/patch_demo_frames.py` to the cluster, then:
 
 ```bash
+# extract the demo from the image
 apptainer exec $SIF cat \
   /workspace/isaaclab/scripts/demos/mpm/newton_mpm_granular.py \
   > $LUNA_SCRATCH/mpm_frames.py
 
-# copy cluster/patch_demo_frames.py over too, then:
+# add PNG capture to it
 python3 patch_demo_frames.py $LUNA_SCRATCH/mpm_frames.py
 
+# run it; writes every 10th frame to $LUNA_SCRATCH/frames
 FRAME_DIR=$LUNA_SCRATCH/frames FRAME_EVERY=10 \
 apptainer exec --nv $BINDS $SIF \
   /workspace/isaaclab/isaaclab.sh -p $LUNA_SCRATCH/mpm_frames.py \
@@ -119,6 +115,8 @@ apptainer exec --nv $BINDS $SIF \
 
 ls $LUNA_SCRATCH/frames
 ```
+
+From your own machine:
 
 ```bash
 scp "hzhang993@login-phoenix.pace.gatech.edu:/storage/scratch1/5/hzhang993/luna/frames/*.png" .
@@ -128,8 +126,7 @@ scp "hzhang993@login-phoenix.pace.gatech.edu:/storage/scratch1/5/hzhang993/luna/
 
 ## 8. Clone the repo
 
-Into scratch, not `$HOME` -- `$HOME` is 20 GB and Omniverse writes there
-regardless of `XDG_CACHE_HOME`.
+Into scratch:
 
 ```bash
 cd $LUNA_SCRATCH
@@ -138,37 +135,19 @@ cd Luna_HiFi
 export REPO=$LUNA_SCRATCH/Luna_HiFi
 ```
 
-For a private repo git asks for a username and password over HTTPS; the
-password is a GitHub personal access token with `repo` scope, not the account
-password. The `GIT_TERMINAL_PROMPT=1` and `unset SSH_ASKPASS` from step 0 are
-what let it ask at all.
-
-To avoid retyping the token every pull, without writing it into `.git/config`
-where a `git remote -v` would print it:
+For a private repo git prompts for a username and password; the password is
+a GitHub personal access token with `repo` scope. Cache it for 10 hours:
 
 ```bash
 git config --global credential.helper 'cache --timeout=36000'
-```
-
-`assets/excavator/` is committed, so the clone carries the converted USD and
-nothing here needs the MJCF converter or `isaacsim`.
-
-Clear the staleness guard. A clone writes every file at checkout time, so
-`excavator.py` and `excavator.usda` land within the same second and
-`usd_status()` compares them with a strict `>` -- whether it fires is down to
-file ordering:
-
-```bash
-touch $REPO/assets/excavator/excavator.usda
 ```
 
 ---
 
 ## 9. Install the package into the container
 
-The `.sif` is read-only, so the install goes to a writable directory on
-scratch that is bound into the container. `--user` puts it in
-`$PYTHONUSERBASE`, which Python adds to `sys.path` on its own:
+`--user` installs into `$PYTHONUSERBASE` on scratch, bound into the
+container. `--no-deps` leaves the image's torch, warp and rsl_rl untouched.
 
 ```bash
 export PYTHONUSERBASE=$LUNA_SCRATCH/pyuser
@@ -179,17 +158,9 @@ apptainer exec --nv $BINDS $SIF \
   /workspace/isaaclab/isaaclab.sh -p -m pip install --user --no-deps -e $REPO
 ```
 
-`--no-deps` because the image already has torch, warp and rsl_rl at the
-versions its solvers were built against, and resolving `dependencies = []`
-against PyPI can only disturb that.
+Every later `apptainer exec` needs `PYTHONUSERBASE` exported and bound.
 
-`-m pip`, not a bare `pip`: the image has no `python` or `pip` on `PATH`.
-
-Both `PYTHONUSERBASE` and the repo must stay bound on every later `exec`, or
-the import resolves to nothing.
-
-Check it registered. This needs the entry point from `pyproject.toml` as well
-as the import, so it tests the port's two config edits at once:
+Check the tasks are registered:
 
 ```bash
 apptainer exec --nv $BINDS $SIF \
@@ -197,24 +168,36 @@ apptainer exec --nv $BINDS $SIF \
   "import luna_hifi_tasks, gymnasium as gym; print(luna_hifi_tasks.__file__); print([k for k in gym.registry if 'Luna-' in k])"
 ```
 
-Expect the path under `$REPO` and five ids: the tricycle and the four
-excavator tasks. No excavator ids means `luna_hifi_tasks/__init__.py` is
-missing its `from . import excavator`.
+Prints a path under `$REPO`, `Luna-Tricycle-Direct` and the
+`Luna-Excavator-*` ids.
 
 ---
 
-## 10. Run
+## 10. Build the excavator asset
 
-Smoke test first -- builds the scene and steps it with no policy, so it
-separates a scene problem from a training problem:
+The converted excavator USD is not in git. Write the MJCF, remove the old
+output, and convert to `assets/excavator.usd` (the converter writes
+`assets/excavator/excavator.usda`):
 
 ```bash
-apptainer exec --nv $BINDS $SIF \
-  /workspace/isaaclab/isaaclab.sh -p $REPO/scripts/run_task.py \
-  --task Luna-Excavator-Excavate-Micro --num_envs 1 --steps 200
+apptainer exec --nv $BINDS $SIF /workspace/isaaclab/isaaclab.sh -p -c \
+  "from luna_hifi_tasks.excavator.excavator import write_mjcf; print(write_mjcf())"
+rm -rf $REPO/assets/excavator
+apptainer exec --nv $BINDS $SIF /workspace/isaaclab/isaaclab.sh -p \
+  /workspace/isaaclab/scripts/tools/convert_mjcf.py <path printed above> $REPO/assets/excavator.usd
 ```
 
-Then navigate, which is the rigid tier and carries no MPM grid:
+---
+
+## 11. Run
+
+Logs are written under the current directory:
+
+```bash
+cd $REPO
+```
+
+Navigate (rigid only, no MPM grid):
 
 ```bash
 apptainer exec --nv $BINDS $SIF \
@@ -224,70 +207,60 @@ apptainer exec --nv $BINDS $SIF \
   physics=newton_mjwarp
 ```
 
-Then excavate, starting small. The MPM grid is a step function in env count --
-`next_pow2(8 * envs * 161001) * 192` bytes, so 26 envs is 6.4 GB and 52 is
-12.9 GB. `gpu-rtx6000` has 24 GB, so 26 is the ceiling there; `max_num_envs`
-is set to 104 for an 80 GB H100:
+Excavate. `--num_envs` is capped by `max_num_envs` in
+`excavate/excavate_env_cfg.py` (4):
 
 ```bash
 apptainer exec --nv $BINDS $SIF \
   /workspace/isaaclab/isaaclab.sh -p \
   /workspace/isaaclab/scripts/reinforcement_learning/rsl_rl/train.py \
-  --task Luna-Excavator-Excavate --num_envs 8 --max_iterations 10 \
+  --task Luna-Excavator-Excavate --num_envs 4 --max_iterations 10 \
   physics=newton_mjwarp
 ```
 
-Logs land in the working directory, so `cd $REPO` first if you want them
-under the repo rather than wherever you launched from.
-
-Measure throughput before committing to an env count:
+Scripted dig, no policy; prints the drum fill and throughput:
 
 ```bash
 apptainer exec --nv $BINDS $SIF \
   /workspace/isaaclab/isaaclab.sh -p $REPO/scripts/dig_demo.py
 ```
 
-Sections 8 to 10 are written from the repo and the container's documented
-behaviour, not from a run on PACE. Sections 0 to 7 were measured.
+Unattended navigate training:
+
+```bash
+sbatch cluster/train_navigate.sbatch              # as its own job
+bash cluster/run_navigate_bg.sh runA              # detached, inside an allocation you hold
+```
 
 ---
 
 ## Reference
 
-Measured on PACE Phoenix, 2026-09-22, `gpu-rtx6000`, driver 575.57.08.
+PACE Phoenix, `gpu-rtx6000`, driver 575.57.08.
 
 | | |
 |---|---|
-| image | `nvcr.io/nvidia/isaac-lab:3.0.0-rc1`, 12 GB `.sif`, pulls anonymously |
-| build | 47 min on `/tmp`; 22 h quoted on Lustre |
+| image | `nvcr.io/nvidia/isaac-lab:3.0.0-rc1`, 12 GB `.sif` |
 | isaaclab | 17.0.2 |
 | torch / warp | 2.11.0+cu128 / 1.16.0, CUDA 12.9 |
-| `isaaclab_newton` | present -- MPM and MJWarp solver configs |
-| `isaaclab_contrib.coupling` | present -- `CouplerProxyCfg`, `CouplerEntryCfg` |
-| particles | 48,000 in `newton_mpm_granular.py` |
+| `isaaclab_newton` | MPM and MJWarp solver configs |
+| `isaaclab_contrib.coupling` | `CouplerProxyCfg`, `CouplerEntryCfg` |
 | Kit cold start | ~131 s |
 | rendering | headless via EGL |
 
-The 48,000 is MPM headroom with almost no rigid bodies in the scene. The
-excavator's own ceiling is set by the rigid solver's contact buffers and has
-not been measured on this hardware.
+### Notes
 
-### Things that are true and not discoverable
-
-- **Apptainer is on compute nodes only**, at `/usr/bin/apptainer`. On a login
-  node `module avail`, `module spider` and `command -v` all come back empty.
-- **`$HOME` is 20 GB** and Omniverse and Warp write to fixed paths under it,
-  ignoring `XDG_CACHE_HOME`. A full quota surfaces as a corrupt download.
-- **`--nv` is mandatory.** Without it a GPU node reports `cuda available:
-  False` and Kit dies on "Found no NVIDIA driver".
-- **There is no `python` on `PATH`** in the image. Use
-  `/workspace/isaaclab/isaaclab.sh -p`, which warns that it is deprecated in
-  favour of `uv run isaaclab` from 3.1.
-- **`--headless` does not exist in 3.x.** `--viz` takes `kit`, `newton_gl`,
-  `newton_rtx`, `rerun`, `viser` or `none`; headless is the default and `none`
-  is the off switch. `--video` and `--enable_cameras` are gone with it.
-- **Kit's caches live inside the read-only image.** Unbound, every launch
-  recompiles its shaders and logs `Failed to acquire exclusive lock to data
-  store`.
-- Only `gpu-rtx6000`, `gpu-l40s` and `gpu-rtxpro-blackwell` have RT cores. A
-  bare `--gres=gpu:1` lands on `gpu-v100`, which does not.
+- Apptainer is at `/usr/bin/apptainer` on compute nodes only; login nodes
+  have none.
+- `$HOME` has a 20 GB quota. Omniverse and Warp write to fixed paths under
+  it, ignoring `XDG_CACHE_HOME`; a full quota shows up as a corrupt download.
+- `--nv` exposes the GPU to the container. Without it Kit fails with "Found no
+  NVIDIA driver".
+- The image has no `python` or `pip` on `PATH`; use
+  `/workspace/isaaclab/isaaclab.sh -p`.
+- 3.x has no `--headless`. `--viz` takes `kit`, `newton_gl`, `newton_rtx`,
+  `rerun`, `viser` or `none`; headless is the default.
+- Kit's caches are inside the read-only image; the step 5 binds redirect them.
+- `gpu-rtx6000`, `gpu-l40s` and `gpu-rtxpro-blackwell` have RT cores. A bare
+  `--gres=gpu:1` can land on `gpu-v100` (compute capability 7.0), which the
+  image does not support (it needs >= 7.5).

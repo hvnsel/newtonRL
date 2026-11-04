@@ -1,34 +1,14 @@
 #!/usr/bin/env python3
-"""Port Newton 1.7.0's colour-buffer capacity fix into the installed solver.
+"""Apply Newton 1.7.0's colour-buffer capacity fix to the installed
+solver_implicit_mpm.py.
 
-Why this exists. With strain_basis="pic8" the solver raises, during
-SolverImplicitMPM construction:
+SolverImplicitMPM.allocate_temporaries sizes color_indices from
+strain_node_count; the patch sizes it from
 
-    RuntimeError: Keys and values array storage must be large enough to
-                  contain 2*count elements
-      newton/_src/solvers/implicit_mpm/solver_implicit_mpm.py
-        _compute_coloring -> wp.utils.radix_sort_pairs
+    max(strain_node_count, partition_cell_count)
 
-_compute_coloring sorts one entry per PARTITION CELL, but allocate_temporaries
-sizes color_indices from strain_node_count, which for a particle strain basis
-counts PARTICLES. Cells without particles make the cell count exceed it, the
-radix sort needs 2*count, and the buffer is only 2*strain_node_count. A grid
-strain basis like the P0 default hides this because its node count tracks
-cells, which is why this only shows up on pic*.
-
-Newton 1.7.0 fixes it by taking the larger of the two:
-
-    partition_cell_count = self._strain_space_restriction.space_partition.geo_partition.cell_count()
-    color_block_capacity = max(strain_node_count, partition_cell_count)
-
-This workstation runs a hybrid install -- Newton 1.6.1 with 1.7.0's
-implicit_mpm/ grafted in MINUS solver_implicit_mpm.py, which was dropped
-because 1.7.0's copy calls validate_observables on a base class 1.6.1 does not
-have. The colour-capacity fix is in the file that was dropped, so it is
-missing. This applies just that change.
-
-Idempotent, backs the file up once, and verifies afterwards. Reverse with
-  --revert   (restores the .bak)
+which a particle strain basis (pic*) needs. Idempotent; backs the file up to
+.bak once and checks the result parses. --revert restores the .bak.
 
 Usage:
   ~/IsaacLab/.venv/bin/python scripts/patch_newton_mpm.py
@@ -96,9 +76,8 @@ def main() -> int:
         return 0
     if ANCHOR not in src:
         sys.exit(
-            "the expected allocation was not found, so this install differs from\n"
-            "1.6.1 in this region. Do NOT force it -- look at allocate_temporaries\n"
-            "in the file above and port the two lines by hand:\n"
+            "the expected color_indices allocation was not found in allocate_temporaries;\n"
+            "port by hand:\n"
             "  partition_cell_count = "
             "self._strain_space_restriction.space_partition.geo_partition.cell_count()\n"
             "  color_block_capacity = max(strain_node_count, partition_cell_count)\n"

@@ -1,26 +1,15 @@
 #!/bin/bash
-# Navigate playback footage: N clips of one episode each, a per-step trace of
-# every clip, and the graphs drawn from them.
+# Plays the navigate checkpoint for N one-episode clips on a single
+# full-difficulty hazard cell, goals DMIN-DMAX m from a spawn within 4.2 m of
+# the centre, the machine parked on the goal after arriving. Writes a trace
+# per clip and the plots. CKPT defaults to the newest navigate run's last
+# checkpoint; clips already in OUT are skipped.
 #
 #   bash workstation/nav_videos.sh
 #   N=12 GPU=0 OUT=~/nav_media bash workstation/nav_videos.sh
 #   CKPT=logs/rsl_rl/excavator_navigate/<run>/model_1999.pt bash workstation/nav_videos.sh
 #
-# Each clip is a fresh single cell of hazard terrain at full difficulty --
-# twelve craters and twenty-four boulders anywhere in the cell -- with the
-# machine spawned within 4.2 m of the centre (play_mode's spawn_radius) and the
-# goal 8-12 m from the spawn, so the drive has to get through the hazards. The
-# camera (camera_eye in navigate_env_cfg.py) frames the whole drive from above,
-# and the goal is drawn: a green disc where the machine should stop and a bar
-# along the axis it should line up on, either end first.
-#
-# One clip is one episode. goal_hold_steps outlasts the episode, so after
-# arriving the machine stands parked on the goal, commands latched to zero,
-# until the clip ends; the clip ends 5 steps short of the 750-step timeout so
-# the reset to the next spawn never shows.
-#
-# A clip already in OUT is skipped, so an interrupted run picks up where it
-# stopped. Into OUT:
+# Into OUT:
 #
 #   nav_01.mp4 ...   the clips, 25 fps, 1920 x 1080
 #   nav_01.csv ...   per-step pose, goal, errors and speed (scripts/read_trace.py)
@@ -38,9 +27,8 @@ SEED0="${SEED0:-0}"             # clip i plays seed SEED0 + i
 OUT="${OUT:-$HOME/nav_media}"
 DMIN="${DMIN:-8.0}"
 DMAX="${DMAX:-12.0}"
-STEPS=745
+STEPS=745                       # 5 short of the 750-step episode
 
-# Newest navigate run by its timestamped name, and its last checkpoint.
 if [ -z "${CKPT:-}" ]; then
   RUN="$(ls -d "$REPO"/logs/rsl_rl/excavator_navigate/20*/ 2>/dev/null | sort | tail -1)"
   CKPT="$(ls "${RUN:-.}"/model_*.pt 2>/dev/null | sort -V | tail -1)"
@@ -49,7 +37,6 @@ if [ -z "$CKPT" ] || [ ! -f "$CKPT" ]; then
   echo "no checkpoint found under $REPO/logs/rsl_rl/excavator_navigate; set CKPT=<model_N.pt>" >&2
   exit 1
 fi
-# Absolute, since train.sh runs from the repo root.
 CKPT="$(cd "$(dirname "$CKPT")" && pwd)/$(basename "$CKPT")"
 RUN="$(dirname "$CKPT")"
 VID="$RUN/videos/play"
@@ -86,8 +73,7 @@ for i in $(seq 1 "$N"); do
       env.scene.terrain.terrain_generator.sub_terrains.worked_heavy.proportion=0.0 \
       env.scene.terrain.max_init_terrain_level=0 \
       > "$OUT/$tag.log" 2>&1
-  # The recorder numbers its clips; the one this run wrote is the one newer
-  # than the stamp.
+  # The clip this run wrote: the one newer than the stamp.
   clip="$(find "$VID" -maxdepth 1 -name '*.mp4' -newer "$stamp" 2>/dev/null | sort | tail -1)"
   rm -f "$stamp"
   if [ -n "$clip" ]; then

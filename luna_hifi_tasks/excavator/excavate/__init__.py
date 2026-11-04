@@ -1,21 +1,17 @@
-# Excavation skill: fill both drums from an MPM regolith bed.
+# Excavation: cut a commanded plane from an MPM regolith bed and carry the
+# spoil in both drums.
 #
-#   isaaclab train --rl_library rsl_rl --task Luna-Excavator-Excavate --num_envs 104
-#
-# Luna-Excavator-Excavate-Small is the same task on a 0.9 x 1.1 x 0.16 m pile
-# (6,882 particles/env against the full bed's 161,001), for watching the MPM
-# coupling work on a laptop:
-#
-#   isaaclab -p scripts/dig_demo.py
+#   isaaclab train --rl_library rsl_rl --task Luna-Excavator-Excavate --num_envs 4
 #   isaaclab play  --rl_library rsl_rl --task Luna-Excavator-Excavate --num_envs 1 --checkpoint latest --viz newton
+#   isaaclab -p scripts/dig_demo.py
 #
-# Entry points are strings, so importing this package needs only gymnasium.
+# -Small is the same task on a 0.9 x 1.1 x 0.16 m pile in front of the machine,
+# -Micro on a 1.0 x 1.0 x 0.21 m pile.
 
 import gymnasium as gym
 
 from . import agents
 
-# Register the excavation environments with Gymnasium
 gym.register(
     id="Luna-Excavator-Excavate",
     entry_point=f"{__name__}.excavate_env:ExcavatorExcavateEnv",
@@ -26,7 +22,6 @@ gym.register(
     },
 )
 
-# Register the small excavation environment with Gymnasium
 gym.register(
     id="Luna-Excavator-Excavate-Small",
     entry_point=f"{__name__}.excavate_env:ExcavatorExcavateEnv",
@@ -37,9 +32,6 @@ gym.register(
     },
 )
 
-# Same task at a 0.03 m voxel on a small pad under the front drum, which is
-# the spacing at which the drum's entry channel passes regolith. See
-# ExcavatorExcavateMicroEnvCfg.
 gym.register(
     id="Luna-Excavator-Excavate-Micro",
     entry_point=f"{__name__}.excavate_env:ExcavatorExcavateEnv",

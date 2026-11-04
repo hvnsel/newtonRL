@@ -1,18 +1,10 @@
-"""Read a goal_trace.csv and say what the policy actually did.
+"""Per-episode summary of a navigate goal_trace.csv: start and end distance,
+distance closed, steps, path length, end speed and heading error, outcome;
+then position, heading and speed errors at arrival (the step the hold
+completes). --plot draws paths, distance, speed and bearing (needs matplotlib).
 
     python scripts/read_trace.py goal_trace.csv
     python scripts/read_trace.py goal_trace.csv --plot traj.png
-
-Splits the trace into episodes and reports, per episode, how far the goal was,
-how much of that got closed, how long it took, and how far off the machine
-finished in position and heading.
-
-Arrival is holding the pose for a second: within goal_dist_tol and
-goal_heading_tol_rad, slower than goal_speed_tol. `reached` reads 1 from the
-step the hold completes, so the arrival summary reads that step: where a
-digging policy would be handed the machine.
-
-Needs nothing but the standard library. --plot additionally wants matplotlib.
 """
 
 from __future__ import annotations
@@ -37,12 +29,9 @@ def _parse(argv=None):
     p.add_argument("--episodes", type=int, nargs="*", default=None,
                    help="episode indices to plot; default is all of them")
     p.add_argument("--include-cut", action="store_true",
-                   help="also plot the episode Ctrl+C interrupted; by default the "
-                        "figure shows only episodes that ran to an arrival or a timeout")
+                   help="also plot episodes that ended in neither arrival nor timeout")
     p.add_argument("--frame", choices=("goal", "terrain"), default="goal",
-                   help="goal: every path normalised so the setpoint is the origin, "
-                        "which makes episodes comparable. terrain: absolute env "
-                        "coordinates, which shows where the goals actually were.")
+                   help="goal: paths relative to their goal; terrain: env coordinates")
     return p.parse_args(argv)
 
 
@@ -69,10 +58,6 @@ def main(argv=None) -> int:
         for raw in csv.DictReader(fh):
             r = {k: (int(v) if k in ("step", "ep_step", "env", "reached", "timeout")
                      else float(v)) for k, v in raw.items()}
-            # Traces written before `speed` existed only carry body-frame x,
-            # and before `herr` no heading error at all.
-            r.setdefault("speed", abs(r["speed_fwd"]))
-            r.setdefault("herr", float("nan"))
             by_env[r["env"]].append(r)
 
     if not by_env:
@@ -89,14 +74,9 @@ def main(argv=None) -> int:
                 math.dist((a["x"], a["y"]), (b["x"], b["y"]))
                 for a, b in zip(ep, ep[1:])
             )
-            # |speed|, not body-frame x: this machine drives either way, and a
-            # signed max reads ~0.00 for an episode run entirely in reverse --
-            # ep 6 above covered 18 m of path and reported a peak of 0.07.
             peak = max(abs(r["speed"]) for r in ep)
             outcome = "reached" if last["reached"] else ("timeout" if last["timeout"] else "cut")
             if last["reached"]:
-                # The step the hold completed, not the last one: playback runs
-                # on past it with the commands cut.
                 arrivals.append(next(r for r in ep if r["reached"]))
             print(f"{env:>4} {k:>4} {first['dist']:>8.2f} {last['dist']:>7.2f} "
                   f"{first['dist'] - last['dist']:>7.2f} {len(ep):>6} {path:>7.2f} "
@@ -105,9 +85,6 @@ def main(argv=None) -> int:
     print()
     if arrivals:
         n = len(arrivals)
-        # speed_fwd is body-frame x and therefore SIGNED: reversing reads
-        # negative. Magnitude is the only thing that answers "was it still
-        # moving".
         mag = [r["speed"] for r in arrivals]
         dist = [r["dist"] for r in arrivals]
         head = [abs(r["herr"]) for r in arrivals]
@@ -122,24 +99,14 @@ def main(argv=None) -> int:
         print("no episode in this trace ended in an arrival")
 
     if args.plot:
-        try:
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-        except ImportError:
-            print("\n--plot needs matplotlib:")
-            print("  uv pip install --python <isaaclab>/.venv/bin/python matplotlib")
-            print("Everything above needed nothing extra.")
-            return 0
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
 
         eps = _episodes(by_env.get(args.env, []))
         if args.episodes:
             eps = [eps[i] for i in args.episodes if i < len(eps)]
         if not args.include_cut:
-            # Whichever episode was in flight when the run was interrupted ends
-            # neither reached nor timed out. Its truncated path and whatever
-            # speed it happened to hold at that instant are artefacts of when
-            # Ctrl+C landed, so they do not belong on a plot of behaviour.
             whole = [e for e in eps if e[-1]["reached"] or e[-1]["timeout"]]
             if len(whole) != len(eps):
                 print(f"  ({len(eps) - len(whole)} interrupted episode(s) left out of "
@@ -151,10 +118,7 @@ def main(argv=None) -> int:
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         (ax, bx), (cx, dx) = axes
 
-        # 1. the path. In the goal's frame every episode overlays and is
-        #    comparable; in the terrain frame you see where the goals actually
-        #    were, which is the only way to tell a policy that favours a
-        #    direction from bearings that simply came up similar.
+        # 1. paths, in the goal frame or the env frame
         terrain = args.frame == "terrain"
         for k, ep in enumerate(eps):
             ox, oy = (0.0, 0.0) if terrain else (ep[0]["goal_x"], ep[0]["goal_y"])
@@ -184,7 +148,7 @@ def main(argv=None) -> int:
         if len(eps) <= 8:
             ax.legend(fontsize=8, loc="best")
 
-        # 2. the error signal the policy is actually closing
+        # 2. distance to the goal
         for ep in eps:
             bx.plot([r["ep_step"] * DT for r in ep], [r["dist"] for r in ep], lw=1.3,
                     alpha=0.85 if ep[-1]["reached"] else 0.45)
@@ -194,8 +158,7 @@ def main(argv=None) -> int:
         bx.set_title("tracking error")
         bx.grid(alpha=0.3)
 
-        # 3. speed against the gate. Planar magnitude, which is what
-        #    goal_reached tests; body-frame x would read negative in reverse.
+        # 3. planar speed against the settle gate
         for ep in eps:
             cx.plot([r["ep_step"] * DT for r in ep], [r["speed"] for r in ep], lw=1.3,
                     alpha=0.85 if ep[-1]["reached"] else 0.45)
@@ -206,9 +169,7 @@ def main(argv=None) -> int:
         cx.set_title(f"speed  (dashed = {SPEED_TOL} m/s gate, dotted = {TOP_SPEED} m/s cap)")
         cx.grid(alpha=0.3)
 
-        # 4. where it is pointing versus where the goal is. Near 180 means it
-        #    is driving the traverse in reverse, which this machine is built to
-        #    do -- a drum at each end.
+        # 4. |bearing to the goal|: near 0 nose first, near 180 reversing
         for ep in eps:
             err = []
             for r in ep:
@@ -218,8 +179,6 @@ def main(argv=None) -> int:
             dx.plot([r["ep_step"] * DT for r in ep], err, lw=1.3,
                     alpha=0.85 if ep[-1]["reached"] else 0.45)
         dx.axhline(90, ls=":", lw=1.2, color="grey")
-        # A reverse traverse sits at exactly 180, which ylim(0, 180) draws on
-        # the top spine and hides -- the one thing this panel exists to show.
         dx.axhline(180, ls="--", lw=1.2, color="red", alpha=0.6)
         dx.set_ylim(-6, 192)
         dx.set_yticks([0, 45, 90, 135, 180])

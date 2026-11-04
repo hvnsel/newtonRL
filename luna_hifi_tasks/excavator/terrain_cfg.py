@@ -1,15 +1,7 @@
-# terrain_cfg.py
-#
-# The rigid-tier terrain: procedurally generated ground that looks like this
-# machine has already worked it over, as an Isaac Lab TerrainGeneratorCfg.
-#
-# The generator builds every sub-terrain as a trimesh once at startup,
-# TerrainImporter lays them out in a rows x cols grid and assigns environments
-# to cells, the Newton backend collides with the mesh, and the RayCasters in
-# the navigate scene scan it.
-#
-# Rows are curriculum levels: the importer starts envs low and moves them up
-# as they succeed, and `difficulty` scales feature amplitude with the row.
+# The rigid-tier terrain as Isaac Lab TerrainGeneratorCfgs: worked ground,
+# craters and boulders built as one trimesh at startup, laid out in a
+# rows x cols grid. Rows are curriculum levels; `difficulty` scales feature
+# amplitude with the row.
 
 from __future__ import annotations
 
@@ -22,35 +14,18 @@ from isaaclab.utils.configclass import configclass
 
 from .mdp.terrain import course_relief_np, excavation_height_field_np, hazard_relief_np
 
-# Name of the flat-patch set the navigate env draws its goals from.
+# Names of the flat-patch sets the navigate env draws goals and spawns from.
 GOAL_PATCHES = "goal"
+SPAWN_PATCHES = "spawn"
 
 
-def _terrain_origin(
-    height_field: np.ndarray, cfg: HfTerrainBaseCfg, height: int | None = None
-) -> np.ndarray:
-    """The origin [m] in the generated height field's local frame.
-
-    z is the tallest point within about a metre of the centre, which is what
-    puts a machine spawned there on top of the terrain instead of inside it.
-    x and y are half the physical span, so they use (N - 1) where the height
-    window uses `// 2`; for an odd pixel count the two differ by a fraction of
-    a pixel, which is Isaac Lab's own behaviour and not worth diverging from.
-
-    Duplicated from isaaclab.terrains.height_field.hf_terrains, which keeps it
-    private, on the same grounds as mdp/sensors.quat_apply_inverse: depending
-    on a private name across a package boundary is worse than eight lines.
-    """
+def _terrain_origin(height_field: np.ndarray, cfg: HfTerrainBaseCfg) -> np.ndarray:
+    """The origin [m] in the height field's local frame: the centre in xy, and
+    the tallest point within 1 m of the centre in z (as Isaac Lab's hf_terrains)."""
     cx = height_field.shape[0] // 2
     cy = height_field.shape[1] // 2
-    if height is None:
-        radius = max(1, int(1.0 / cfg.horizontal_scale))
-        height = np.max(
-            height_field[
-                max(0, cx - radius) : cx + radius,
-                max(0, cy - radius) : cy + radius,
-            ]
-        )
+    radius = max(1, int(1.0 / cfg.horizontal_scale))
+    height = np.max(height_field[max(0, cx - radius) : cx + radius, max(0, cy - radius) : cy + radius])
     return np.array([
         (height_field.shape[0] - 1) * cfg.horizontal_scale / 2,
         (height_field.shape[1] - 1) * cfg.horizontal_scale / 2,
@@ -58,26 +33,12 @@ def _terrain_origin(
     ])
 
 
-@height_field_to_mesh
-def excavation_terrain(
-    difficulty: float, cfg: "HfExcavationTerrainCfg"
-) -> tuple[np.ndarray, np.ndarray]:
-    """Height-field function in the form Isaac Lab's decorator takes.
-
-    By the time this runs the decorator has shrunk `cfg.size` by the border,
-    so the pixel counts below are the inner region and the returned array goes
-    straight into the padded buffer, as in Isaac's random_uniform_terrain.
-
-    Returns (field, origin), which is what height_field_to_mesh unpacks on
-    Isaac Lab 3.0: it writes the field into the padded buffer and shifts the
-    origin's xy by the border width. The 3.0.0-rc1 the cluster image was
-    built from took the bare field instead, so returning one array there
-    raises "too many values to unpack" as the decorator tries to unpack the
-    array's rows.
-    """
+def _base_field(difficulty: float, cfg: "HfExcavationTerrainCfg") -> tuple[np.ndarray, np.random.Generator, int, int]:
+    """The worked-ground field for cfg's inner region (the decorator has already
+    taken the border off cfg.size), with the rng and the pixel counts."""
     width_pixels = int(cfg.size[0] / cfg.horizontal_scale)
     length_pixels = int(cfg.size[1] / cfg.horizontal_scale)
-    rng = np.random.default_rng(cfg.seed) if cfg.seed is not None else np.random.default_rng()
+    rng = np.random.default_rng(cfg.seed)
     field = excavation_height_field_np(
         width_pixels,
         length_pixels,
@@ -93,14 +54,19 @@ def excavation_terrain(
         slope=cfg.slope,
         noise=cfg.noise,
     )
+    return field, rng, width_pixels, length_pixels
+
+
+@height_field_to_mesh
+def excavation_terrain(difficulty: float, cfg: "HfExcavationTerrainCfg") -> tuple[np.ndarray, np.ndarray]:
+    """Worked ground. Returns (field, origin) for height_field_to_mesh."""
+    field, _, _, _ = _base_field(difficulty, cfg)
     return field, _terrain_origin(field, cfg)
 
 
 @configclass
 class HfExcavationTerrainCfg(HfTerrainBaseCfg):
-    """Pits, spoil piles, a gentle tilt and surface noise, with amplitudes
-    capped near what the excavator itself produces: 0.19 m of cut.
-    """
+    """Pits, spoil piles, a tilt and surface noise."""
 
     function = excavation_terrain
 
@@ -115,33 +81,10 @@ class HfExcavationTerrainCfg(HfTerrainBaseCfg):
 
 
 @height_field_to_mesh
-def hazard_terrain(
-    difficulty: float, cfg: "HfHazardTerrainCfg"
-) -> tuple[np.ndarray, np.ndarray]:
-    """Gentle worked ground with craters and boulders on it; see
-    mdp/terrain.hazard_relief_np. Same contract as excavation_terrain.
-
-    The origin is read off the ground before the hazards go on: they may sit
-    on the cell centre, where _terrain_origin takes the tallest point.
-    """
-    width_pixels = int(cfg.size[0] / cfg.horizontal_scale)
-    length_pixels = int(cfg.size[1] / cfg.horizontal_scale)
-    rng = np.random.default_rng(cfg.seed) if cfg.seed is not None else np.random.default_rng()
-    base = excavation_height_field_np(
-        width_pixels,
-        length_pixels,
-        cfg.horizontal_scale,
-        cfg.vertical_scale,
-        rng,
-        difficulty=difficulty,
-        num_pits=cfg.num_pits,
-        num_piles=cfg.num_piles,
-        pit_depth=cfg.pit_depth,
-        pile_height=cfg.pile_height,
-        feature_radius=cfg.feature_radius,
-        slope=cfg.slope,
-        noise=cfg.noise,
-    )
+def hazard_terrain(difficulty: float, cfg: "HfHazardTerrainCfg") -> tuple[np.ndarray, np.ndarray]:
+    """Worked ground with craters and boulders (mdp/terrain.hazard_relief_np).
+    The origin is taken from the ground without the hazards."""
+    base, rng, width_pixels, length_pixels = _base_field(difficulty, cfg)
     relief = hazard_relief_np(
         width_pixels,
         length_pixels,
@@ -167,21 +110,8 @@ def hazard_terrain(
 
 @configclass
 class HfHazardTerrainCfg(HfExcavationTerrainCfg):
-    """Ground the machine has to steer around: craters it cannot climb out of
-    and boulders it cannot climb over, on a base gentle enough that a flat
-    patch test tells the two apart (see GOAL_PATCH_HAZARD_DIFF).
-
-    The base fields are HfExcavationTerrainCfg's, overridden gentle: at most
-    0.11 m of tilt across a 4 m disc and 0.05 m pits and piles, so a 2 m
-    radius around any point spans about 0.22 m at worst.
-
-    The hazards cover the whole cell. Ringed round a clear centre that the
-    machine spawned in, 6 craters and 12 boulders put one on the straight line
-    to the goal in 4.8% of training episodes, and the policy learned to drive
-    straight: 0 of 6 on the obstacle course. Over the whole cell at twice the
-    count, with the machine spawned anywhere (SPAWN_PATCHES), the measured
-    share on generated cells is 31% at difficulty 0.5 and 59% at 0.95.
-    """
+    """Craters and boulders over the whole cell on gentle base ground (at most
+    about 0.22 m of relief within 2 m of any point)."""
 
     function = hazard_terrain
 
@@ -203,87 +133,51 @@ class HfHazardTerrainCfg(HfExcavationTerrainCfg):
     boulder_height: tuple[float, float] = (0.35, 0.60)
     clear_radius: float = 0.0
     hazard_extent: float = 15.0          # hazard centres within this of the cell centre
-    min_gap: float = 1.8                 # edge to edge, more than the 1.35 m machine width
+    min_gap: float = 1.8                 # m, edge to edge
 
 
-# Goal spots for the navigate env, found per cell at startup by Isaac Lab's
-# flat-patch sampler and drawn from by ExcavatorNavigateEnv._sample_goals.
-# They span what goals did before, the cell less a 3 m margin: +-13 m of a
-# 32 m cell. 512 per cell puts a spot every ~1.15 m on average.
-#
-# A spot is tested by ray-casting rings around it, nine directions 40 deg
-# apart at each radius (the sampler's linspace repeats the first as a tenth),
-# and rejected if the hits span more than max_height_diff. 2.0 m covers the
-# machine at any heading. Rings that sparse can miss the edge of a hazard
-# between two hits; on generated hazard cells no accepted spot had a crater
-# or boulder closer than 0.68 m, and 0.35% had one within 1.0 m, about where
-# the wheels reach.
+# Goal and spawn spots, found per cell at startup by Isaac Lab's flat-patch
+# sampler within +-13 m of the cell centre. A spot is kept when ray hits on
+# rings of the given radii around it span less than max_height_diff.
+_PATCH_HALF = 13.0
 _GOAL_PATCH_RADII = [0.0, 0.5, 1.0, 1.5, 2.0]
 _GOAL_PATCH_COUNT = 512
-_GOAL_PATCH_HALF = 13.0
-
-
-def _goal_patches(max_height_diff: float) -> FlatPatchSamplingCfg:
-    """A fresh cfg per sub-terrain, so an override on one cannot reach another."""
-    return FlatPatchSamplingCfg(
-        num_patches=_GOAL_PATCH_COUNT,
-        patch_radius=list(_GOAL_PATCH_RADII),
-        x_range=(-_GOAL_PATCH_HALF, _GOAL_PATCH_HALF),
-        y_range=(-_GOAL_PATCH_HALF, _GOAL_PATCH_HALF),
-        max_height_diff=max_height_diff,
-    )
-
-
-# Worked cells reject nothing, so their goals are spread as they always were.
-GOAL_PATCH_ANY_DIFF = 100.0
-# Hazard cells: the base ground spans 0.22 m at worst within 2 m, a boulder
-# stands at least 0.35 m and a crater sinks at least 0.40 m.
-GOAL_PATCH_HAZARD_DIFF = 0.25
-
-# Spawn spots, drawn from by ExcavatorNavigateEnv._reset_idx: the machine
-# starts anywhere in its cell, among the hazards rather than in a clear
-# middle. Rings every 0.3 m out to 1.5 m, past the wheels' 1.2 m reach, so a
-# hazard edge cannot fall between two rings under a wheel; the drums ride
-# stowed 0.7 m up, above any boulder.
-SPAWN_PATCHES = "spawn"
 _SPAWN_PATCH_RADII = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5]
 _SPAWN_PATCH_COUNT = 256
 
-
-def _spawn_patches(max_height_diff: float) -> FlatPatchSamplingCfg:
-    return FlatPatchSamplingCfg(
-        num_patches=_SPAWN_PATCH_COUNT,
-        patch_radius=list(_SPAWN_PATCH_RADII),
-        x_range=(-_GOAL_PATCH_HALF, _GOAL_PATCH_HALF),
-        y_range=(-_GOAL_PATCH_HALF, _GOAL_PATCH_HALF),
-        max_height_diff=max_height_diff,
-    )
+# Worked cells accept every spot. Hazard cells reject any spot near a boulder
+# (at least 0.35 m tall) or a crater (at least 0.40 m deep).
+GOAL_PATCH_ANY_DIFF = 100.0
+GOAL_PATCH_HAZARD_DIFF = 0.25
 
 
 def _patches(max_height_diff: float) -> dict[str, FlatPatchSamplingCfg]:
-    """Goal and spawn spots for one sub-terrain, each a fresh cfg."""
-    return {GOAL_PATCHES: _goal_patches(max_height_diff), SPAWN_PATCHES: _spawn_patches(max_height_diff)}
+    """Goal and spawn spot samplers for one sub-terrain."""
+    def sampler(count: int, radii: list[float]) -> FlatPatchSamplingCfg:
+        return FlatPatchSamplingCfg(
+            num_patches=count,
+            patch_radius=list(radii),
+            x_range=(-_PATCH_HALF, _PATCH_HALF),
+            y_range=(-_PATCH_HALF, _PATCH_HALF),
+            max_height_diff=max_height_diff,
+        )
+
+    return {
+        GOAL_PATCHES: sampler(_GOAL_PATCH_COUNT, _GOAL_PATCH_RADII),
+        SPAWN_PATCHES: sampler(_SPAWN_PATCH_COUNT, _SPAWN_PATCH_RADII),
+    }
 
 
-# Four sub-terrain types, so a single row mixes easy and hard cells. Cells
-# are 32 m against a 3.4 m machine and goal distances up to 18 m. Ten rows is
-# the difficulty ladder and twelve columns the variations at each rung: 120
-# cells, about 2 envs per cell at 256. The generator gives each type whole
-# columns in proportion, here 1 / 1 / 1 / 9, and an env keeps its column for
-# the run while its row moves with the curriculum, so three quarters of the
-# envs drive among hazards whose count grows with their level. The worked
-# cells keep a column each for rough ground without obstacles.
-#
-# At a 0.1 m horizontal scale a cell is 320 x 320 px, so this is ~24M
-# triangles built on the CPU at startup. use_cache keeps that to the first run.
+# Training terrain: 10 difficulty rows x 12 columns of 32 m cells. Columns go
+# to sub-terrain types in proportion (1 / 1 / 1 / 9); an env keeps its column
+# while the curriculum moves its row. About 24M triangles, cached after the
+# first build.
 EXCAVATION_TERRAINS_CFG = TerrainGeneratorCfg(
     size=(32.0, 32.0),
     border_width=4.0,
     num_rows=10,
     num_cols=12,
-    # Orders the rows by difficulty, which is what max_init_terrain_level and
-    # the importer's level promotion index into.
-    curriculum=True,
+    curriculum=True,                     # rows ordered by difficulty
     horizontal_scale=0.1,
     vertical_scale=0.005,
     slope_threshold=0.75,
@@ -312,34 +206,10 @@ EXCAVATION_TERRAINS_CFG = TerrainGeneratorCfg(
 
 
 @height_field_to_mesh
-def course_terrain(
-    difficulty: float, cfg: "HfCourseTerrainCfg"
-) -> tuple[np.ndarray, np.ndarray]:
-    """Level ground with one COURSE_LAYOUTS entry on it; see mdp/course.py.
-    Same contract as excavation_terrain.
-
-    The origin is read off the ground before the obstacles go on. Layouts put
-    obstacles on the cell centre, and _terrain_origin takes the tallest point
-    there, which would spawn the machine a boulder's height in the air.
-    """
-    width_pixels = int(cfg.size[0] / cfg.horizontal_scale)
-    length_pixels = int(cfg.size[1] / cfg.horizontal_scale)
-    rng = np.random.default_rng(cfg.seed) if cfg.seed is not None else np.random.default_rng()
-    base = excavation_height_field_np(
-        width_pixels,
-        length_pixels,
-        cfg.horizontal_scale,
-        cfg.vertical_scale,
-        rng,
-        difficulty=difficulty,
-        num_pits=cfg.num_pits,
-        num_piles=cfg.num_piles,
-        pit_depth=cfg.pit_depth,
-        pile_height=cfg.pile_height,
-        feature_radius=cfg.feature_radius,
-        slope=cfg.slope,
-        noise=cfg.noise,
-    )
+def course_terrain(difficulty: float, cfg: "HfCourseTerrainCfg") -> tuple[np.ndarray, np.ndarray]:
+    """Level ground with one COURSE_LAYOUTS entry (mdp/course.py). The origin
+    is taken from the ground without the obstacles."""
+    base, _, width_pixels, length_pixels = _base_field(difficulty, cfg)
     relief = course_relief_np(
         width_pixels,
         length_pixels,
@@ -354,9 +224,7 @@ def course_terrain(
 
 @configclass
 class HfCourseTerrainCfg(HfHazardTerrainCfg):
-    """Level ground and one fixed obstacle layout, for the playback course.
-    The crater shape fields are the hazard cell's; its random-placement
-    fields go unused."""
+    """Level ground and one fixed obstacle layout, for the playback course."""
 
     function = course_terrain
 
@@ -366,14 +234,14 @@ class HfCourseTerrainCfg(HfHazardTerrainCfg):
     slope: float = 0.0
 
 
-# One cell of course, for Luna-Excavator-Navigate-Course. A single cell builds
-# in seconds, so it is not cached.
+# One course cell, for Luna-Excavator-Navigate-Course. The env reads
+# terrain_levels, which needs curriculum=True, and spawn and goal patches on
+# every cell.
 COURSE_TERRAIN_CFG = TerrainGeneratorCfg(
     size=(32.0, 32.0),
     border_width=4.0,
     num_rows=1,
     num_cols=1,
-    # The env reads terrain_levels, which only a curriculum generator builds.
     curriculum=True,
     difficulty_range=(1.0, 1.0),
     horizontal_scale=0.1,
@@ -381,8 +249,6 @@ COURSE_TERRAIN_CFG = TerrainGeneratorCfg(
     slope_threshold=0.75,
     use_cache=False,
     sub_terrains={
-        # Spawn and goal come from the fixed route, but the env requires spawn
-        # and goal patches on every cell, so the course has them too.
         "course": HfCourseTerrainCfg(
             proportion=1.0,
             flat_patch_sampling=_patches(GOAL_PATCH_ANY_DIFF),

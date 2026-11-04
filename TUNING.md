@@ -1,203 +1,131 @@
 # Where the knobs are
 
-Two files, and which one you touch decides whether you have to rebuild the USD.
-
-| | |
+| file | holds |
 |---|---|
-| **`luna_hifi_tasks/excavator/excavator.py`** | the machine itself. **Changing anything here means re-running the converter** before the change reaches a run. |
-| **`luna_hifi_tasks/excavator/excavate/excavate_env_cfg.py`** | the scene: soil, bed, solver, rewards. Takes effect on the next run. |
-| **`.../navigate/navigate_env_cfg.py`** | the rigid tier: terrain, goals, curriculum, scans. |
-| **`.../*/agents/rsl_rl_ppo_cfg.py`** | the learner: rollout length, discount, network. |
-| **`luna_hifi_tasks/excavator/mdp/observations.py`** | every observation width, and the scan geometry both tiers share. **Changing a term invalidates every checkpoint** -- the spec hashes for that reason. |
+| `luna_hifi_tasks/excavator/excavator.py` | the machine. A change to the MJCF needs the asset rebuilt (README.md, "Assets"). |
+| `.../excavate/excavate_env_cfg.py` | excavate: soil, bed, solver, rewards |
+| `.../navigate/navigate_env_cfg.py` | navigate: terrain, goals, curriculum, scans, rewards |
+| `.../*/agents/rsl_rl_ppo_cfg.py` | PPO: rollout length, discount, networks |
+| `.../excavator_cfg.py` | actuators and speed limits |
+| `.../mdp/observations.py` | observation layouts and scan geometry. A changed layout does not load old checkpoints. |
 
-`scripts/dig_demo.py` exposes the most-swept scene knobs as flags so you do not
-have to edit anything to try a value.
+`scripts/dig_demo.py` takes `--cohesion`, `--friction`, `--density`, `--voxel`,
+`--cut`, `--drum` and `--drive` as flags.
 
----
+## Soil (excavate_env_cfg.py)
 
-## Soil and particles
-
-Particle size and particle spacing are the same number: the MPM voxel. Particles
-are spawned one voxel apart and the coupler inflates every collider by half a
-voxel per side, so the voxel sets both how big a grain is and how much it eats
-out of every passage.
-
-| what | where | now | note |
+| what | field | value | note |
 |---|---|---|---|
-| voxel / grain size | `voxel_size` | `0.03` | `--voxel` on dig_demo. Halving it multiplies particle count by 8 |
-| particles per cell | `particles_per_cell` | `1.0` | 2.0 quadruples the count for the same bed |
-| density | `soil_density` | `1800` | `--density` |
-| friction | `soil_friction` | `0.84` | ~tan(phi). `--friction` |
-| cohesion | `soil_cohesion` | `800` | yield_stress in Pa. `--cohesion`. 0 sprays, ~800 holds a cut together |
-| compaction cap | `soil_yield_pressure` | `1e12` | packed ground, not a sandbox |
+| bed height-grid cell | `voxel_size` | `0.04` m | scans and cut depth are quantised to it |
+| MPM grid cell | `mpm_voxel_size` | `0.08` m | `--voxel` |
+| particles per cell, per axis | `particles_per_cell` | `2.0` | 8 per cell |
+| density | `soil_density` | `1500` kg/m³ | `--density` |
+| friction | `soil_friction` | `0.84` | about tan(phi); `--friction` |
+| cohesion | `soil_cohesion` | `150` Pa (Small/Micro `800`) | `yield_stress`; `--cohesion` |
+| compression cap | `soil_yield_pressure` | `1e12` Pa | |
 
-All in `excavate_env_cfg.py`. A soil field set after `__post_init__` must be
-followed by `cfg.apply_soil_material()`, which is why these are explicit flags
-rather than Hydra overrides.
+A soil field changed after `__post_init__` takes effect through
+`cfg.apply_soil_material()`.
 
-## The bed
+## Bed
 
-| what | where | Small | Micro |
-|---|---|---|---|
-| extent along x | `bed_x` | `(1.80, 2.70)` | `(1.80, 2.80)` |
-| extent along y | `bed_y` | `(-0.55, 0.55)` | `(-0.50, 0.50)` |
-| depth | `bed_depth` | `0.16` | `0.21` |
-| on the bed or beside it | `spawn_on_bed` | `False` | `False` |
+| what | field | Excavate | Small | Micro |
+|---|---|---|---|---|
+| x extent | `bed_x` | `(-1.92, 2.64)` | `(1.80, 2.70)` | `(1.80, 2.80)` |
+| y extent | `bed_y` | `(-0.80, 0.80)` | `(-0.55, 0.55)` | `(-0.50, 0.50)` |
+| depth | `bed_depth` | `0.25` | `0.16` | `0.21` |
+| machine spawns on the bed | `spawn_on_bed` | `True` | `False` | `False` |
+| episodes between soil resets | `soil_reset_every` | `1` | `1` | `1` |
+| envs the MPM grid is sized for | `max_num_envs` | `4` | `1` | `1` |
 
-The near edge is not arbitrary. At the dig angle the drum axis sits at
-`PIVOT_X + ARM_LEN*cos(arm)` = 1.65 m with its leading edge at 1.86, so a bed
-starting much before 1.80 puts the machine most of the way across it before it
-has begun. dig_demo prints the drum's position against the bed and how long the
-crawl takes to clear it.
-
-Crawl speed is `--drive` x `MAX_WHEEL_SPEED` x `WHEEL_RADIUS`, so `--drive 0.05`
-is 0.075 m/s and crosses a 0.9 m bed in twelve seconds. Anything above about
-0.1 leaves the soil before the drum has filled.
-
-In training the bed is *not* restored every episode. `soil_reset_every` (8)
-episodes pass before an env's particles go back to their spawn cells, so what
-the machine digs in between is ground it has already worked -- the MPM grid is
-one spawner shared by every env, so that is the only thing making one env's bed
-differ from another's. Set it to 1 for a repeatable run. The Small and Micro
-beds already do, because a scripted demo needs the same pile each time.
-
----
+dig_demo's crawl speed is `--drive` × `MAX_WHEEL_SPEED` × `WHEEL_RADIUS`:
+`--drive 0.05` is 0.075 m/s.
 
 ## Training
 
-| what | where | now | note |
+| what | field | excavate | navigate |
 |---|---|---|---|
-| control rate | `decimation` | `4` dig, `8` nav | both 25 Hz; sim stays 100/200 Hz |
-| episode | `episode_length_s` | `20.0` | 500 steps |
-| discount | `gamma` | `0.997` dig and nav | horizon 333 steps |
-| rollout | `num_steps_per_env` | `256` dig, `128` nav | 4096 / 32768 samples per update |
-| envs | `scene.num_envs` | `16` dig, `256` nav | dig is capped at `max_num_envs` 32 by the grid capacities; nav was 1024 until the workstation began rebooting under full GPU load |
+| physics rate | `sim.dt` | 100 Hz | 200 Hz |
+| policy rate | `decimation` | `4` (25 Hz) | `8` (25 Hz) |
+| episode | `episode_length_s` | `24` s (Small/Micro `30`) | `30` s |
+| discount | `gamma` | `0.997` | `0.997` |
+| rollout | `num_steps_per_env` | `256` | `128` |
+| envs | `scene.num_envs` | `16` | `256` |
+| checkpoint every | `save_interval` | `5` | `25` |
 
-`gamma` and `decimation` are bound together. The effective horizon is
-`1/(1-gamma)` steps, which has to reach across the task: a cut takes 10-20 s,
-which is 250-500 steps at 25 Hz. At 50 Hz and `gamma` 0.99 the horizon was 100
-steps, 2 s, and the end of a cut was outside what the value function could see.
-Change one and recompute the other.
+The value horizon is `1 / (1 - gamma)` policy steps: 333 steps, 13 s at 25 Hz.
 
-### Reward weights
+Reward weights are the `w_<term>` fields of each env cfg; `Episode_Reward/<term>`
+in the training log is each term's episode total.
 
-All on `excavate_env_cfg.py` / `navigate_env_cfg.py` as `w_<term>`. Do not read
-them on their own -- what the policy optimises is the sum over an episode:
-
-```
-isaaclab -p scripts/reward_audit.py --task Luna-Excavator-Excavate --episodes 40
-```
-
-That prints every term's episode total under a do-nothing policy and under a
-random walk. If doing nothing scores higher, the reward is broken whatever the
-weights look like.
-
-| what | where | now | note |
-|---|---|---|---|
-| what a full drum is | `target_load_kg` | `40` | normalises fill everywhere. NOT the swept volume, which an open-rimmed pocket never fills |
-| a nominal cut | `cut_volume_ref` | derived | footprint area x mean `cut_depth_range`; `w_depth` is points per cut |
-| commanded depth | `cut_depth_range` | `(0.04, 0.12)` | sampled per episode below the local surface |
-| success threshold | `fill_success_fraction` | `0.6` | of `target_load_kg`, front drum only. Ends the episode |
-
-### Sensing
-
-| what | where | now | note |
-|---|---|---|---|
-| far scan | `NAV_FAR_*` | 27x27 @ 0.45, centred | 5.85 m out every way, 4.1 m past either drum |
-| near scan | `NAV_NEAR_*` | 25x25 @ 0.20, centred | 2.4 m out every way, a cell per wheel width |
-| dig scan | `DIG_SCAN_*` | 16x8 @ 0.125 | drum-centred |
-| sensor noise | `scan_noise_std`, `scan_dropout` | `0.02` / `0.02` nav | both scale with range; a dropped cell reads `scan_invalid` |
-| load sensor | `fill_sensor_*` | tau 0.3 s, 5% | the actor's `drum_fill`; the critic keeps the exact figure |
-
-The far window is sized from stopping distance, in both directions, since the
-machine drives either end first. With the arms stowed either end reaches 1.78 m
-from the centre and it halts in 1.10 m from 1.5 m/s, so the window has to reach
-well past 2.9 m each way. Shrink the count or the cell and check that number
-again. Keep both windows centred (bias 0): that is what lets the 180-degree
-symmetry (mdp/symmetry.py) map each window onto itself.
-
-## The rotor
-
-All in `excavator.py`. **Rebuild the USD after changing any of these.**
-
-| what | constant | now |
+| excavate | field | value |
 |---|---|---|
-| vanes | `ROTOR_VANES` | `6` |
-| rake | `ROTOR_RAKE` | `radians(32)` |
-| hub and tip radius | `ROTOR_HUB_R`, `ROTOR_TIP_R` | `0.045`, `0.185` |
-| half-length | `ROTOR_HALF_LEN` | `0.475` |
-| blade thickness | `VANE_HALF_T` | `0.006` |
-| boxes per blade | `VANE_SEGMENTS` | `5` |
-| handedness | `RAKE_SIGN` | `1.0` |
+| full drum | `target_load_kg` | `40` kg |
+| nominal cut volume | `cut_volume_ref` | `0.0304` m³ |
+| commanded depth below the surface | `cut_depth_range` | `(0.04, 0.04)` m |
+| success, ends the episode | `fill_success_fraction` | `0.6` of `target_load_kg`, front drum |
 
-Two constraints bound `ROTOR_VANES` and `ROTOR_RAKE` together, and
-`check_excavator.py` fails on either:
+## Sensing
 
-- a blade sweeps `ln(TIP/HUB) * tan(rake)` radians and must fit inside one
-  `360/vanes` pocket, or adjacent vanes shadow each other. Six vanes cap the
-  rake near 35 degrees.
-- the chord between adjacent vane tips is the way into a pocket, and it needs
-  four grains. Six vanes give 0.185 m, which is 5.2 grains at a 0.03 voxel.
-  Eight give 3.7 and arch.
-
-## The shroud
-
-| what | constant | now |
+| what | where | value |
 |---|---|---|
-| inlet width | `SHROUD_INLET` | `radians(100)` |
-| inner and outer radius | `SHROUD_IN_R`, `SHROUD_OUT_R` | `0.195`, `0.212` |
-| end plate thickness | `SHROUD_END_T` | `0.012` |
-| aiming range | `SHROUD_RANGE` | `(-1.10, 1.10)` |
+| navigate far scan | `NAV_FAR_*` | 27 × 27 at 0.45 m, centred: 5.85 m each way |
+| navigate near scan | `NAV_NEAR_*` | 25 × 25 at 0.20 m, centred: 2.4 m each way |
+| excavate scan | `DIG_SCAN_*` | 16 × 8 at 0.125 m, centred on the front drum |
+| scan noise, dropout | `scan_noise_std`, `scan_dropout` | navigate `0.02` / `0.02`, excavate `0.015` / `0.02`; both grow with range; a dropped cell reads `scan_invalid` |
+| actor's drum load sensor | `fill_sensor_*` | 0.3 s lag, 5% noise; the critic reads the exact mass |
 
-`SHROUD_IN_R - ROTOR_TIP_R` is the running clearance, currently 10 mm nominal
-and 7 mm measured. It has to be **smaller than one voxel** or the coupler leaves
-it open and regolith escapes round the whole circumference instead of staying in
-a pocket. Drop the voxel below 10 mm and this needs tightening with it.
+Both navigate scans are centred, so the 180-degree symmetry (mdp/symmetry.py)
+maps each onto itself.
 
-## The machine
+## Rotor (excavator.py)
 
-| what | constant | now |
+| what | constant | value |
 |---|---|---|
-| wheelbase, track | `WHEELBASE`, `TRACK` | `1.40`, `1.15` |
-| wheel radius, width | `WHEEL_RADIUS`, `WHEEL_HALF_W` | `0.30`, `0.10` |
-| grousers per wheel | `WHEEL_GROUSERS` | `6` (0 for a bare cylinder) |
-| arm length | `ARM_LEN` | `0.76` |
-| arm pivot ahead of the axle | `MAST_OFFSET_X` | `0.22` |
-| arm travel | `ARM_RANGE` | `(-0.55, 0.72)` |
+| vanes | `ROTOR_VANES` | `4` |
+| rake | `ROTOR_RAKE` | 32° |
+| hub, tip radius | `ROTOR_HUB_R`, `ROTOR_TIP_R` | `0.045`, `0.185` m |
+| half-length | `ROTOR_HALF_LEN` | `0.475` m |
+| vane half-thickness | `VANE_HALF_T` | `0.006` m |
+| boxes per vane | `VANE_SEGMENTS` | `5` |
+| spiral handedness | `RAKE_SIGN` | `1.0` |
 
-`ARM_RANGE[1]` is tied to `ROTOR_TIP_R`: 0.72 rad puts the vane tips 0.185 m
-down, which is one rotor radius. Deeper and the vanes fight the whole overburden
-instead of cutting.
+A vane sweeps `ln(TIP/HUB) · tan(rake)` = 50.6° from hub to tip, inside its
+90° pocket. The chord between adjacent vane tips, `VANE_TIP_GAP`, is 0.262 m.
+
+## Shroud
+
+| what | constant | value |
+|---|---|---|
+| inlet | `SHROUD_INLET` | 100° |
+| inner, outer radius | `SHROUD_IN_R`, `SHROUD_OUT_R` | `0.195`, `0.212` m |
+| end plate thickness | `SHROUD_END_T` | `0.012` m |
+| aiming range | `SHROUD_RANGE` | `(-1.10, 1.10)` rad |
+
+`SHROUD_IN_R - ROTOR_TIP_R` is the 10 mm running clearance.
+
+## Machine
+
+| what | constant | value |
+|---|---|---|
+| wheelbase, track | `WHEELBASE`, `TRACK` | `1.40`, `1.15` m |
+| wheel radius, half-width | `WHEEL_RADIUS`, `WHEEL_HALF_W` | `0.30`, `0.10` m |
+| grousers per wheel | `WHEEL_GROUSERS` | `6` |
+| arm length | `ARM_LEN` | `0.76` m |
+| arm pivot ahead of the axle | `MAST_OFFSET_X` | `0.22` m |
+| arm travel | `ARM_RANGE` | `(-0.55, 0.72)` rad; 0.72 buries the vane tips 0.185 m |
+| ballast deck | `DECK_MASS` | `670` kg; machine total 994 kg |
 
 ## Rates and the solver
 
-| what | where | now |
+| what | where | value |
 |---|---|---|
-| wheel speed cap | `MAX_WHEEL_SPEED` in `excavator_cfg.py` | `5.0` rad/s |
+| wheel speed cap | `MAX_WHEEL_SPEED` (excavator_cfg.py) | `5.0` rad/s (1.5 m/s) |
 | drum speed cap | `MAX_DRUM_SPEED` | `2.9` rad/s |
 | contact buffers | `rigid_njmax`, `rigid_nconmax` | `8192`, `32768` |
-| grid cells per particle | `grid_cap_multiplier` | `8.0` |
-| cells per leaf node | `grid_leaf_shift` | `7` |
+| grid cells per particle | `grid_cap_multiplier` | `1.0` |
+| leaf size | `grid_leaf_shift` | `3` |
 
-`MAX_DRUM_SPEED` is not a preference. Outward acceleration at the vane tips is
-`omega^2 * ROTOR_TIP_R`, which passes lunar gravity at **2.96 rad/s**; above
-that the vanes throw regolith at the shroud instead of carrying it inward. The
-limit scales as `sqrt(g/r)`, so it moves if the rotor radius does.
-
-Overrunning a contact buffer is an illegal memory access, not an error -- a CUDA
-700 storm, or 0xC0000374 on Windows. A contact is a couple of hundred bytes, so
-there is no reason to be tight.
-
-## After changing anything in excavator.py
-
-```powershell
-.\isaaclab.bat -p -c "from luna_hifi_tasks.excavator.excavator import write_mjcf; print(write_mjcf())"
-Remove-Item -Recurse -Force $REPO\assets\excavator -ErrorAction SilentlyContinue
-.\isaaclab.bat -p scripts\tools\convert_mjcf.py $env:TEMP\luna_hifi_assets\excavator.xml $REPO\assets\excavator.usd
-```
-
-Check the geometry first; it takes two seconds and needs no GPU:
-
-```powershell
-& $REPO\.venv-geom\Scripts\python $REPO\scripts\check_excavator.py
-```
+`SPIN_LIMIT = sqrt(g / ROTOR_TIP_R)` = 2.96 rad/s is the drum speed at which
+the vane tips' outward acceleration equals lunar gravity. An overrun contact
+buffer shows up as CUDA error 700.

@@ -1,13 +1,7 @@
-# rewards.py
-#
-# Every reward and termination term as a pure function of tensors. Each
-# returns (num_envs,) and nothing here reads an env object; the env sums them.
-#
-# Conventions:
-#   * "penalty" functions return non-negative values and the env subtracts
-#     them with a weight.
-#   * body frame: +x forward, +y left, +z up. projected_gravity_b is a unit
-#     vector, so upright reads (0, 0, -1) at any gravity.
+# Reward and termination terms as pure functions of tensors, each returning
+# (num_envs,). "Penalty" functions return non-negative values; the env
+# subtracts them with a weight. Body frame: +x forward, +y left, +z up;
+# projected_gravity_b reads (0, 0, -1) upright.
 
 from __future__ import annotations
 
@@ -16,9 +10,7 @@ import math
 import torch
 
 
-# ---------------------------------------------------------------------------
-# Shared
-# ---------------------------------------------------------------------------
+# --- shared ---
 
 
 def action_rate_penalty(action: torch.Tensor, prev_action: torch.Tensor) -> torch.Tensor:
@@ -32,83 +24,48 @@ def energy_penalty(torque: torch.Tensor, joint_vel: torch.Tensor) -> torch.Tenso
 
 
 def upright_penalty(projected_gravity_b: torch.Tensor) -> torch.Tensor:
-    """0 when upright, 2 when inverted. projected_gravity_b is a unit vector
-    reading (0, 0, -1) upright, so 1 + g_z is the tilt in [0, 2]."""
+    """Tilt in [0, 2]: 0 upright, 2 inverted."""
     return 1.0 + projected_gravity_b[:, 2]
 
 
 def tipped(projected_gravity_b: torch.Tensor, max_tilt_cos: float) -> torch.Tensor:
-    """True when the base has tilted past the angle whose cosine is
-    `max_tilt_cos`. Upright g_z = -1; a 60 degree tilt reads -0.5."""
+    """Tilted past the angle whose cosine is max_tilt_cos."""
     return projected_gravity_b[:, 2] > -max_tilt_cos
 
 
 def nonfinite_state(*tensors: torch.Tensor) -> torch.Tensor:
-    """True for any env with a non-finite entry in any of the given (E, ...)
-    tensors. The env terminates on it."""
-    bad = None
-    for t in tensors:
-        flat = t.reshape(t.shape[0], -1)
-        b = ~torch.isfinite(flat).all(dim=-1)
-        bad = b if bad is None else (bad | b)
-    return bad
+    """Envs with a non-finite entry in any of the (E, ...) tensors."""
+    return torch.stack([~torch.isfinite(t.reshape(t.shape[0], -1)).all(dim=-1) for t in tensors]).any(dim=0)
 
 
-def wheel_slip(
-    wheel_vel: torch.Tensor,          # (E, W) joint rad/s
-    base_forward_speed: torch.Tensor, # (E,) body-frame x
-    wheel_radius: float,
-) -> torch.Tensor:
-    """Mean |omega*r - v| across wheels, m/s. Zero when rolling cleanly.
-
-    Ignores yaw, so a turning skid-steer machine reads some slip: skid
-    steering slips the inside wheels."""
-    surface = wheel_vel * wheel_radius
-    return (surface - base_forward_speed.unsqueeze(-1)).abs().mean(dim=-1)
+def wheel_slip(wheel_vel: torch.Tensor, base_forward_speed: torch.Tensor, wheel_radius: float) -> torch.Tensor:
+    """Mean |omega * r - v_x| over wheels, m/s. wheel_vel (E, W) rad/s."""
+    return (wheel_vel * wheel_radius - base_forward_speed.unsqueeze(-1)).abs().mean(dim=-1)
 
 
-# ---------------------------------------------------------------------------
-# Navigation
-# ---------------------------------------------------------------------------
+# --- navigation ---
 
 
 def progress_reward(dist_prev: torch.Tensor, dist_now: torch.Tensor) -> torch.Tensor:
-    """Distance closed this step, metres. Positive when approaching."""
+    """Distance closed this step, m."""
     return dist_prev - dist_now
 
 
-def bearing_alignment(
-    goal_vec_b: torch.Tensor,
-    forward_speed: torch.Tensor,
-    speed_scale: float,
-) -> torch.Tensor:
-    """Alignment with the goal, scaled by how fast the machine is closing on it.
-
-    The cosine of the bearing times body-frame x speed as a fraction of the
-    machine's top speed, so the term is zero for a stationary machine,
-    positive driving along its axis towards the goal and negative driving
-    away. Either end first: reversing at a goal behind it scores what driving
-    at one ahead does, since the machine has no front.
-    """
+def bearing_alignment(goal_vec_b: torch.Tensor, forward_speed: torch.Tensor, speed_scale: float) -> torch.Tensor:
+    """Cosine of the bearing to goal_vec_b times forward speed as a fraction
+    of speed_scale: positive driving towards it with either end first."""
     dist = torch.linalg.norm(goal_vec_b, dim=-1)
     cos = torch.where(dist > 1e-3, goal_vec_b[:, 0] / dist.clamp_min(1e-3), torch.zeros_like(dist))
     return cos * (forward_speed / speed_scale).clamp(-1.0, 1.0)
 
 
 def fade_in(x: torch.Tensor, start: float, full: float) -> torch.Tensor:
-    """0 at or below `start`, 1 at or above `full`, linear between."""
+    """0 at or below start, 1 at or above full, linear between."""
     return ((x - start) / (full - start)).clamp(0.0, 1.0)
 
 
-def goal_pose_ok(
-    dist: torch.Tensor,
-    heading_err: torch.Tensor,
-    dist_tol: float,
-    heading_tol: float,
-) -> torch.Tensor:
-    """Within `dist_tol` metres of the goal point and `heading_tol` radians of
-    the goal heading. `heading_err` is signed; navigate passes the error to
-    the goal's axis, in (-pi/2, pi/2] (see axis_heading_error)."""
+def goal_pose_ok(dist: torch.Tensor, heading_err: torch.Tensor, dist_tol: float, heading_tol: float) -> torch.Tensor:
+    """Within dist_tol metres of the goal and heading_tol radians of its heading."""
     return (dist < dist_tol) & (heading_err.abs() < heading_tol)
 
 
@@ -122,23 +79,9 @@ def goal_reached(
     speed_tol: float,
     yaw_rate_tol: float,
 ) -> torch.Tensor:
-    """The pose test of goal_pose_ok, and stopped: slower than `speed_tol` and
-    turning slower than `yaw_rate_tol`. One step of it; the env decides how
-    many in a row count as arriving.
-
-    `speed` is a magnitude, not body-frame x. The machine carries a drum at
-    each end and drives either way, so a signed test would misread a machine
-    backing in. Taking the planar norm also catches a machine sliding sideways
-    across the goal.
-
-    Without the speed terms this reads "touched the point", and a machine
-    crossing the goal at full speed scores what one settling on it scores.
-    """
-    return (
-        goal_pose_ok(dist, heading_err, dist_tol, heading_tol)
-        & (speed < speed_tol)
-        & (yaw_rate.abs() < yaw_rate_tol)
-    )
+    """goal_pose_ok, planar speed under speed_tol and |yaw rate| under
+    yaw_rate_tol, on this step."""
+    return goal_pose_ok(dist, heading_err, dist_tol, heading_tol) & (speed < speed_tol) & (yaw_rate.abs() < yaw_rate_tol)
 
 
 def pose_potential(
@@ -150,22 +93,12 @@ def pose_potential(
     heading_sigma: float,
     heading_radius: float,
 ) -> torch.Tensor:
-    """Shaping potential for the final pose, <= 0 and 0 exactly on the goal.
+    """Shaping potential for the final pose, <= 0 and 0 on the goal; the
+    reward is its change over a step.
 
-    The reward is its change over a step, Phi_now - Phi_prev, so an episode
-    collects Phi_end - Phi_start whatever path it takes: circling the goal, or
-    stepping in and out of it, pays nothing.
-
-    Position: w_pos * (1 - exp(-(d / pos_sigma)^2)), flat beyond about two
-    sigma and steepest near sigma, so it pays for the last tens of centimetres
-    that the linear progress term barely notices.
-
-    Heading: w_heading * ramp * (|psi| / pi + 1 - exp(-(psi / heading_sigma)^2)),
-    the linear part for large errors and the kernel for the last few degrees.
-    ramp is 1 on the goal point and 0 from heading_radius out, so heading only
-    counts once the machine is close. Backing away while misaligned recovers
-    at most w_heading * 2 / heading_radius per metre, which progress charges
-    back as long as that is no more than w_progress.
+    -w_pos (1 - exp(-(d / pos_sigma)^2))
+    - w_heading ramp (|psi| / pi + 1 - exp(-(psi / heading_sigma)^2)),
+    ramp falling from 1 at the goal to 0 at heading_radius.
     """
     a = heading_err.abs()
     pos = 1.0 - torch.exp(-((dist / pos_sigma) ** 2))
@@ -175,161 +108,91 @@ def pose_potential(
 
 
 def settle_penalty(speed: torch.Tensor, yaw_rate: torch.Tensor, half_track: float) -> torch.Tensor:
-    """Motion, m/s, non-negative: planar speed plus the wheel speed the yaw
-    rate takes, |yaw rate| times half the track."""
+    """Planar speed plus |yaw rate| times half the track, m/s."""
     return speed + half_track * yaw_rate.abs()
 
 
-def heading_error_sin_cos(goal_yaw: torch.Tensor, base_yaw: torch.Tensor) -> torch.Tensor:
-    """(sin, cos) of the yaw error, (E, 2), so nothing wraps at +-pi."""
-    err = goal_yaw - base_yaw
-    return torch.stack([torch.sin(err), torch.cos(err)], dim=-1)
-
-
 def axis_heading_sin_cos(goal_yaw: torch.Tensor, base_yaw: torch.Tensor) -> torch.Tensor:
-    """(sin, cos) of twice the yaw error, (E, 2): the goal heading as an axis.
-
-    A machine with a drum at each end has no front, so facing along the goal
-    heading and facing against it are the same pose. Doubling the angle makes
-    the two read the same.
-    """
+    """(sin, cos) of twice the yaw error, (E, 2): the same facing either way
+    along the goal heading."""
     err = 2.0 * (goal_yaw - base_yaw)
     return torch.stack([torch.sin(err), torch.cos(err)], dim=-1)
 
 
 def axis_heading_error(goal_yaw: torch.Tensor, base_yaw: torch.Tensor) -> torch.Tensor:
-    """Yaw error to the goal's axis, whichever end faces along it: in
-    (-pi/2, pi/2], 0 facing either way along the goal heading. (E,)."""
+    """Yaw error to the goal heading's axis, in (-pi/2, pi/2]. (E,)."""
     s = axis_heading_sin_cos(goal_yaw, base_yaw)
     return 0.5 * torch.atan2(s[:, 0], s[:, 1])
 
 
 def body_to_world_xy(vec_b: torch.Tensor, base_yaw: torch.Tensor) -> torch.Tensor:
-    """Rotate a body-frame xy vector out into the world yaw frame. The inverse
-    of world_to_body_xy. (E, 2) -> (E, 2)."""
+    """Rotate (E, 2) body-frame xy into the world frame by base_yaw."""
     c, s = torch.cos(base_yaw), torch.sin(base_yaw)
-    x = c * vec_b[:, 0] - s * vec_b[:, 1]
-    y = s * vec_b[:, 0] + c * vec_b[:, 1]
-    return torch.stack([x, y], dim=-1)
+    return torch.stack([c * vec_b[:, 0] - s * vec_b[:, 1], s * vec_b[:, 0] + c * vec_b[:, 1]], dim=-1)
 
 
 def world_to_body_xy(vec_w: torch.Tensor, base_yaw: torch.Tensor) -> torch.Tensor:
-    """Rotate a world-frame xy vector into the yaw frame. (E, 2) -> (E, 2)."""
+    """Rotate (E, 2) world xy into the body yaw frame."""
     c, s = torch.cos(base_yaw), torch.sin(base_yaw)
-    x = c * vec_w[:, 0] + s * vec_w[:, 1]
-    y = -s * vec_w[:, 0] + c * vec_w[:, 1]
-    return torch.stack([x, y], dim=-1)
+    return torch.stack([c * vec_w[:, 0] + s * vec_w[:, 1], -s * vec_w[:, 0] + c * vec_w[:, 1]], dim=-1)
 
 
-# ---------------------------------------------------------------------------
-# Excavation
-# ---------------------------------------------------------------------------
+# --- excavation ---
 
 
-def progress_delta(
-    prev: torch.Tensor,
-    now: torch.Tensor,
-    fresh: torch.Tensor,
-) -> torch.Tensor:
-    """Reduction from `prev` to `now`, zero where `fresh` marks an episode's
-    first step, which has no previous value."""
+def progress_delta(prev: torch.Tensor, now: torch.Tensor, fresh: torch.Tensor) -> torch.Tensor:
+    """prev - now, 0 where fresh marks an episode's first step."""
     return torch.where(fresh, torch.zeros_like(now), prev - now)
 
 
 def spill_penalty(fill_delta: torch.Tensor) -> torch.Tensor:
-    """Mass lost this step, non-negative. (E,) -> (E,).
-
-    Rectified, so an episode total is the input's downward variation. The
-    excavate env passes the lagged fill reading."""
+    """Mass lost this step, non-negative."""
     return (-fill_delta).clamp_min(0.0)
 
 
 def fill_delta_reward(fill_now: torch.Tensor, fill_prev: torch.Tensor) -> torch.Tensor:
-    """Soil captured this step, summed over drums. (E, D) -> (E,). Negative
-    when soil is spilled."""
+    """Soil captured this step, summed over drums. (E, D) -> (E,)."""
     return (fill_now - fill_prev).sum(dim=-1)
 
 
-def stall_penalty(
-    wheel_cmd: torch.Tensor,           # (E,) commanded forward wheel speed, rad/s
-    base_forward_speed: torch.Tensor,  # (E,)
-    wheel_radius: float,
-) -> torch.Tensor:
-    """Commanded surface speed not turned into motion, m/s. Zero when the
-    machine moves as fast as the wheels ask, large when it is bogged."""
-    asked = (wheel_cmd * wheel_radius).abs()
-    got = base_forward_speed.abs()
-    return (asked - got).clamp_min(0.0)
+def stall_penalty(wheel_cmd: torch.Tensor, base_forward_speed: torch.Tensor, wheel_radius: float) -> torch.Tensor:
+    """Commanded surface speed (wheel_cmd rad/s) not turned into motion, m/s."""
+    return ((wheel_cmd * wheel_radius).abs() - base_forward_speed.abs()).clamp_min(0.0)
 
 
-def drift_penalty(
-    base_lin_vel_b: torch.Tensor,      # (E, 3)
-    forward_cmd_speed: torch.Tensor,   # (E,) m/s the policy asked for
-) -> torch.Tensor:
-    """Motion of the chassis the policy did not command, m/s:
-    |v_x - v_cmd| + |v_y|.
-
-    The counter-rotation check. Available traction is ~782 N for the whole
-    machine and a drum cutting cohesive regolith can exceed that, so drum
-    reactions that do not cancel show up here as a shove.
-    """
+def drift_penalty(base_lin_vel_b: torch.Tensor, forward_cmd_speed: torch.Tensor) -> torch.Tensor:
+    """Uncommanded chassis motion, |v_x - v_cmd| + |v_y|, m/s."""
     return (base_lin_vel_b[:, 0] - forward_cmd_speed).abs() + base_lin_vel_b[:, 1].abs()
 
 
 def drums_full(fill_fraction: torch.Tensor, threshold: float) -> torch.Tensor:
-    """(E, D) -> (E,). True when every drum has reached the threshold."""
+    """Every drum at or above threshold. (E, D) -> (E,)."""
     return (fill_fraction >= threshold).all(dim=-1)
 
 
 def front_drum_full(fill_fraction: torch.Tensor, threshold: float) -> torch.Tensor:
-    """(E, D) -> (E,). True when the front drum has reached the threshold.
-    Driving forward, the front drum is the one meeting fresh soil."""
+    """Drum 0 at or above threshold. (E, D) -> (E,)."""
     return fill_fraction[:, 0] >= threshold
 
 
-# ---------------------------------------------------------------------------
-# Bookkeeping
-# ---------------------------------------------------------------------------
+# --- bookkeeping ---
 
 
 class TermLogger:
-    """Accumulates each term's signed, weighted contribution to the reward,
-    which is what the policy optimises.
-
-    Totals are summed over the episode, so an episode that ends early reads as
-    having paid less.
-    """
+    """Sums each term's weighted contribution to the reward over the episode."""
 
     def __init__(self, names: list[str], num_envs: int, device) -> None:
-        self.names = list(names)
         self.sums = {n: torch.zeros(num_envs, device=device) for n in names}
 
     def add_all(self, terms: dict[str, torch.Tensor]) -> torch.Tensor:
-        """Accumulate every term and return their sum, the step reward.
-
-        Raises on a term the logger was not built with, or a declared term
-        this step left out.
-        """
-        missing = [n for n in self.names if n not in terms]
-        extra = sorted(set(terms) - set(self.names))
-        if missing or extra:
-            raise KeyError(f"reward terms missing={missing} unexpected={extra}")
-        total = None
-        for name in self.names:
-            value = terms[name]
+        """Accumulate every term; return their sum, the step reward."""
+        for name, value in terms.items():
             self.sums[name] += value
-            total = value if total is None else total + value
-        return total
+        return torch.stack(list(terms.values())).sum(dim=0)
 
     def flush(self, env_ids: torch.Tensor) -> dict[str, float]:
-        """Mean episode total per term over the finishing envs, then zero
-        them. The values sum to the mean episode return.
-
-        The env publishes this as extras["log"] and replaces it in _reset_idx.
-        rsl_rl averages that dict over every step of an iteration, so a
-        training log shows these totals mixed with the snapshots held between
-        resets. scripts/reward_audit.py reads them on reset steps alone.
-        """
+        """Mean episode total per term over env_ids as Episode_Reward/<term>,
+        then zero them."""
         out = {}
         n = max(int(env_ids.numel()), 1)
         for name, buf in self.sums.items():

@@ -1,28 +1,18 @@
 #!/bin/bash
-# Run a command inside the Isaac Lab container against this checkout.
+# Runs a command in the Isaac Lab container with this checkout bind-mounted at
+# /workspace/luna. Kit caches and the user site-packages persist in
+# $LUNA_STATE (default ~/.luna).
 #
 #   workstation/dev.sh bash                       # interactive shell
-#   workstation/dev.sh isaaclab -p scripts/run_task.py --task Luna-Excavator-Navigate
 #   workstation/dev.sh isaaclab train --rl_library rsl_rl \
 #       --task Luna-Excavator-Navigate --num_envs 1024 --max_iterations 2000
 #
-# `isaaclab` as the first word expands to the launcher inside the image, which
-# is not on PATH there.
-#
-# The checkout is bind-mounted, so an edit on the host is live inside the
-# container: no rebuild, no reinstall, no copy. That is the entire reason to
-# work locally instead of on the cluster.
-#
-# Kit's caches and the editable install live in $LUNA_STATE on the host, so
-# they survive the container exiting. Without that, every start pays the
-# five-minute cold shader compile and the package has to be reinstalled.
+# A leading `isaaclab` runs the image's isaaclab.sh. CONTAINER=podman uses
+# podman instead of docker.
 
 set -eu
 
 IMAGE="${IMAGE:-nvcr.io/nvidia/isaac-lab:3.0.0-rc1}"
-# podman takes the same arguments and needs no daemon or group membership, so
-# on a box where you are not in the docker group it is a drop-in:
-#   CONTAINER=podman workstation/dev.sh ...
 CONTAINER="${CONTAINER:-docker}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE="${LUNA_STATE:-$HOME/.luna}"
@@ -40,16 +30,10 @@ else
   ARGS=("$@")
 fi
 
-DISPLAY_ARGS=()
-if [ -n "${DISPLAY:-}" ] && [ -d /tmp/.X11-unix ]; then
-  # xhost +local:docker on the host is what actually lets the container draw.
-  DISPLAY_ARGS=(-e "DISPLAY=$DISPLAY" -v /tmp/.X11-unix:/tmp/.X11-unix:rw)
-fi
-
 TTY_ARGS=()
 [ -t 0 ] && TTY_ARGS=(-it)
 
-# podman addresses GPUs through CDI rather than --gpus.
+# podman takes GPUs as CDI devices.
 GPU_ARGS=(--gpus all)
 [ "$CONTAINER" = podman ] && GPU_ARGS=(--device nvidia.com/gpu=all)
 
@@ -67,5 +51,4 @@ exec "$CONTAINER" run --rm "${TTY_ARGS[@]}" \
   -v "$STATE/tmp:/tmp/luna" \
   -e ACCEPT_EULA=Y -e OMNI_KIT_ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y \
   -e TMPDIR=/tmp/luna \
-  "${DISPLAY_ARGS[@]}" \
   "$IMAGE" "${ARGS[@]}"

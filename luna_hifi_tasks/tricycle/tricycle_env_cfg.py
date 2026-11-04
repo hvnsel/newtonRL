@@ -1,24 +1,15 @@
 # tricycle_env_cfg.py
 #
-# Barebones pipeline validation: a tricycle drives forward on a flat strip of
-# MPM soil for 2 seconds. Reward is forward distance.
+# A tricycle drives forward on a flat strip of MPM soil for 2 seconds. Reward
+# is forward distance.
 #
-# Structure follows isaaclab_tasks/contrib/ur10_particle_push, which is the
-# reference for running a rigid solver and implicit MPM together:
-#   - NewtonCfg takes ONE solver_cfg. Rigid + MPM are two CouplerEntryCfg
-#     entries inside a CouplerProxyCfg.
-#   - The MPM entry must set in_place=True and all_particles=True.
-#   - project_outside_colliders must be False on a coupled MPM entry.
-#   - The tool bodies (here: wheels) are a CouplerProxyMappingCfg from the
-#     rigid entry to the MPM entry, mode="lagged", with a mass_scale.
-#   - physics is assigned in __post_init__, not as a class attribute.
-#   - Scene prim_path uses {ENV_REGEX_NS}; coupler bodies use the expanded
-#     /World/envs/env_.* form.
+# Physics: one NewtonCfg whose solver_cfg is a CouplerProxyCfg with two
+# CouplerEntryCfg entries, rigid (MJWarp) and MPM. The wheel bodies are
+# proxied from the rigid entry into the MPM entry in "lagged" mode. Scene
+# prim paths use {ENV_REGEX_NS}; coupler body paths use /World/envs/env_.*.
 #
-# The car is loaded from the USD in assets/tricycle/, which is converted
-# offline from the MJCF in tricycle.py (see RUNBOOK.md). MJCF cannot be
-# imported at runtime: the importer is a Kit extension and the CLI never
-# boots Kit.
+# The car is the USD in assets/tricycle/, converted offline from the MJCF in
+# tricycle.py (README.md, "Assets").
 
 from __future__ import annotations
 
@@ -48,6 +39,7 @@ from isaaclab_contrib.coupling import CouplerEntryCfg, CouplerProxyCfg, CouplerP
 
 from ..ground import ground_plane_spawn
 from .tricycle import CHASSIS_Z, JOINT_REAR, JOINT_STEER
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -68,9 +60,7 @@ STRIP_START_X = -0.4                       # car spawns at x=0, on the strip
 STRIP_LOWER = (STRIP_START_X, -0.5 * STRIP_WIDTH, MPM_COLLIDER_MARGIN)
 STRIP_UPPER = (STRIP_START_X + STRIP_LENGTH, 0.5 * STRIP_WIDTH, MPM_COLLIDER_MARGIN + STRIP_DEPTH)
 
-# Hidden slab that gives the MPM entry a floor. Without it particles fall
-# forever -- the MPM entry only sees bodies listed on its CouplerEntryCfg,
-# not the global ground plane.
+# Hidden ground slab under the strip: size and centre (m).
 MPM_GROUND_SIZE = (STRIP_LENGTH + 1.0, STRIP_WIDTH + 1.0, 0.10)
 MPM_GROUND_POSITION = (STRIP_START_X + 0.5 * STRIP_LENGTH, 0.0, -0.05)
 
@@ -78,9 +68,7 @@ MPM_GROUND_POSITION = (STRIP_START_X + 0.5 * STRIP_LENGTH, 0.0, -0.05)
 # Tricycle
 # ---------------------------------------------------------------------------
 
-# <repo>/assets/tricycle/tricycle.usda, found relative to this file so the
-# repo can live anywhere. Regenerate it with the converter after editing
-# tricycle.py (RUNBOOK.md, "Convert the tricycle asset").
+# <repo>/assets/tricycle/tricycle.usda
 ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 TRICYCLE_USD_PATH = ASSETS_DIR / "tricycle" / "tricycle.usda"
 
@@ -108,7 +96,7 @@ TRICYCLE_CFG = ArticulationCfg(
             stiffness=0.0,            # velocity drive
             damping=0.5,
         ),
-        # front wheel free-rolls on MJCF joint damping -- no actuator
+        # front wheel: unactuated, free-rolling with MJCF joint damping
     },
 )
 
@@ -126,7 +114,7 @@ SOIL_CFG = MPMObjectCfg(
         particles_per_cell=MPM_PARTICLES_PER_CELL,
         particle_placement="cell_center",
         jitter=0.0,
-        # Packed ground, not a sandbox: high friction, capped compression.
+        # Packed ground: high friction, effectively no compressive yield.
         material=MPMParticleMaterialCfg(
             density=1800.0,
             friction=0.84,            # tan(40 deg)
@@ -137,29 +125,29 @@ SOIL_CFG = MPMObjectCfg(
 )
 
 
-def _mpm_ground() -> RigidObjectCfg:
-    """Hidden kinematic slab so soil has a floor inside the MPM entry."""
-    return RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/MPMGround",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=MPM_GROUND_POSITION),
-        spawn=sim_utils.CuboidCfg(
-            size=MPM_GROUND_SIZE,
-            rigid_props=UsdPhysicsRigidBodyCfg(
-                rigid_body_enabled=True,
-                kinematic_enabled=True,
-            ),
-            collision_props=NewtonCollisionPropertiesCfg(
-                collision_enabled=True,
-                contact_margin=MPM_COLLIDER_MARGIN,
-                contact_gap=0.0,
-            ),
-            physics_material=RigidBodyMaterialBaseCfg(
-                static_friction=0.8,
-                dynamic_friction=0.7,
-            ),
-            visible=False,
+# Hidden kinematic slab: the soil's floor. The MPM entry collides only with the
+# bodies listed on its CouplerEntryCfg.
+MPM_GROUND_CFG = RigidObjectCfg(
+    prim_path="{ENV_REGEX_NS}/MPMGround",
+    init_state=RigidObjectCfg.InitialStateCfg(pos=MPM_GROUND_POSITION),
+    spawn=sim_utils.CuboidCfg(
+        size=MPM_GROUND_SIZE,
+        rigid_props=UsdPhysicsRigidBodyCfg(
+            rigid_body_enabled=True,
+            kinematic_enabled=True,
         ),
-    )
+        collision_props=NewtonCollisionPropertiesCfg(
+            collision_enabled=True,
+            contact_margin=MPM_COLLIDER_MARGIN,
+            contact_gap=0.0,
+        ),
+        physics_material=RigidBodyMaterialBaseCfg(
+            static_friction=0.8,
+            dynamic_friction=0.7,
+        ),
+        visible=False,
+    ),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +168,7 @@ class TricycleSceneCfg(InteractiveSceneCfg):
     )
 
     tricycle: ArticulationCfg = TRICYCLE_CFG
-    mpm_ground: RigidObjectCfg = _mpm_ground()
+    mpm_ground: RigidObjectCfg = MPM_GROUND_CFG
     soil: MPMObjectCfg = SOIL_CFG
 
 
@@ -192,7 +180,7 @@ class TricycleSceneCfg(InteractiveSceneCfg):
 @configclass
 class TricycleEnvCfg(DirectRLEnvCfg):
     decimation = 2                      # policy at 50 Hz on a 100 Hz sim
-    episode_length_s = 2.0              # "how far in 2 seconds"
+    episode_length_s = 2.0
 
     sim: SimulationCfg = SimulationCfg(dt=1.0 / 100.0, render_interval=decimation)
 
@@ -214,12 +202,10 @@ class TricycleEnvCfg(DirectRLEnvCfg):
 
     # termination
     max_lateral_drift = 0.5             # m; off the strip sideways
-    flip_gravity_z = 0.3               # projected gravity z above this => flipped
+    flip_gravity_z = 0.3                # flipped when projected gravity z < this; reads +1 upright
 
-    # Scales the wheel inertia MPM sees. Stability knob for the lagged
-    # feedback -- lower it if the car starts chattering on the strip.
+    # Mass multiplier on the wheel proxies inside the MPM entry.
     proxy_mass_scale: float = 10.0
-
 
     def __post_init__(self) -> None:
         self.sim.physics = NewtonCfg(
@@ -253,7 +239,6 @@ class TricycleEnvCfg(DirectRLEnvCfg):
                             collider_velocity_mode="forward",
                             solver="auto",
                             separate_worlds=True,
-                            # Must be False on a coupled entry.
                             project_outside_colliders=False,
                             max_active_cell_count=1 << 14,
                             max_leaf_node_count=1 << 13,

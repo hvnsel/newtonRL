@@ -1,95 +1,74 @@
 """Heightfield site model for the excavation planner.
 
-The planner's unit of action is one trim: the dig policy clears one voxel of
-depth from a patch the size of its own footprint. Nothing below that matters
-to it, so the site is a grid of patches each carrying an integer height in
-voxels, and a trim is `height -= 1`. That makes every transition exact
-arithmetic and the whole model costs nothing to simulate -- no particles, no
-rigid bodies, no Isaac Lab.
+The site is a grid of patches, each the size of the dig policy's footprint and
+carrying an integer height in voxels. One trim clears one voxel of depth from
+one patch (`height -= 1`), then hauls the spoil to the dump. Pure Python; no
+simulation.
 
-What it is for: deciding the order of trims, where to put the dump pile, and
-not stranding the machine below a face it cannot climb. Travel dominates --
-at a 10 m dump distance only about a third of the machine's time is spent
-cutting -- so the ordering is most of the value.
+The baselines choose the order of trims. The machine only drives between
+neighbouring patches whose height difference is within `climb_voxels`.
 
-Every constant below is measured, and says where from. The two that are
-guesses are marked as such.
+Run it for a demo on a pit:
 
-Validate against MPM, do not trust this alone: it cannot know whether the dig
-policy's success rate holds when trimming beside a face rather than in open
-ground, nor whether the navigate policy can cross terrain it has itself
-modified while being blind to it.
+    python luna_hifi_tasks/planner/site.py
 """
 
 from __future__ import annotations
 
+import copy
 import math
 from collections import deque
 from dataclasses import dataclass, field
 
 Patch = tuple[int, int]      # (iy, ix)
-Grid = list[list[int]]       # heights in voxels; no numpy, the grids are tiny
+Grid = list[list[int]]       # heights in voxels
 
 
 @dataclass
 class SiteCfg:
     # --- geometry -----------------------------------------------------
     voxel: float = 0.04
-    """Metres per voxel. The dig policy's cut depth is exactly one of these,
-    because particles sit one per cell and nothing thinner is representable."""
+    """Metres per voxel; the depth of one trim."""
 
     patch_x: float = 0.90
     patch_y: float = 1.20
-    """The trim footprint: 0.60 m of work area ahead of the anchor plus 0.30
-    behind, by the 1.2 m drum swath. Sized so one pass can finish one layer."""
+    """Trim footprint, metres: 0.60 m ahead of the anchor plus 0.30 behind, by
+    the 1.2 m drum swath."""
 
     # --- what a trim does ---------------------------------------------
     soil_density: float = 1500.0
-    """kg/m3. Apollo surface regolith."""
+    """kg/m3."""
 
     capture_fraction: float = 0.733
-    """Of the soil a trim disturbs, the share reaching the bore rather than
-    jamming in the shell. Measured across the calibration sweep, range
-    0.70-0.77 over a 5x span of advance speed and 4.5x of depth."""
+    """Share of the soil a trim disturbs that reaches the drum bore."""
 
     drum_pair_capacity: float = 52.0
-    """kg the two drums hold at normal packing. Measured peak bore load. One
-    trim captures 47.5 kg, so the machine dumps after essentially every trim
-    -- which is what makes this a routing problem."""
+    """kg the two drums hold."""
 
     trim_seconds: float = 13.0
-    """Cutting time for one trim. The drum is throughput limited at 4-7 kg/s
-    almost regardless of depth or advance speed, and one layer is 65 kg."""
+    """Cutting time for one trim, seconds."""
 
     trim_success: float = 0.5
-    """Probability a trim meets its shape tolerance. Taken from the dig
-    policy's Episode/shape_done. Feeds the planner one-for-one: at 0.5 the
-    cycle count doubles, so raising it is worth more than planner cleverness.
-    Update this from the training run before trusting any plan's duration."""
+    """Probability a trim meets its shape tolerance (the dig policy's
+    Episode/shape_done)."""
 
     # --- travel -------------------------------------------------------
     drive_speed: float = 1.0
-    """m/s while hauling. GUESS. Navigate's cap is 1.5 m/s and it arrived at
-    0.22, so the cruise figure wants measuring from a goal trace."""
+    """m/s while hauling. Estimate."""
 
     dump_seconds: float = 3.0
-    """Time to discharge. Measured: both drums emptied 99.6% in about 2.5 s
-    of reversed drum."""
+    """Time to discharge, seconds."""
 
     # --- reachability -------------------------------------------------
     climb_degrees: float = 10.0
-    """The slope the laden machine can drive. GUESS, and the single most
-    important number here, because it is what makes a ramp necessary. Soil
-    friction of 0.84 gives a 40 degree soil-on-soil limit and the tipping
-    limit is 60, but wheel traction on loose regolith with 52 kg aboard is
-    much less. Measure it before relying on any plan that digs deep."""
+    """Steepest slope the laden machine drives, degrees. Estimate."""
 
     def __post_init__(self) -> None:
         self.patch_area = self.patch_x * self.patch_y
         self.trim_mass = self.patch_area * self.voxel * self.soil_density
         self.trim_capture = self.trim_mass * self.capture_fraction
-        # Voxels of height difference between neighbouring patches that the
-        # machine can still drive. A patch length of run at the climb angle.
+        # Drivable height step between neighbouring patches, voxels: the rise
+        # over one patch length at the climb angle, at least 1.
         self.climb_voxels = max(
             1, int(self.patch_x * math.tan(math.radians(self.climb_degrees)) / self.voxel)
         )
@@ -101,14 +80,13 @@ class Site:
 
     cfg: SiteCfg
     height: Grid                # current surface, voxels
-    target: Grid                # where the surface should end up, voxels
+    target: Grid                # final surface, voxels
     entry: Patch                # the patch the machine enters from
     dump: Patch                 # where spoil goes
     at: Patch | None = None     # machine's patch; defaults to entry
-    load: float = 0.0           # kg in the drums
     clock: float = 0.0          # seconds elapsed
     trims: int = 0
-    log: list = field(default_factory=list)
+    log: list = field(default_factory=list)     # (patch, succeeded, clock) per trim
 
     def __post_init__(self) -> None:
         if self.at is None:
@@ -128,15 +106,7 @@ class Site:
 
     def reachable(self) -> set[Patch]:
         """Flood fill from the entry patch, stepping between neighbours only
-        where the height difference is within the climb limit.
-
-        This is the constraint that keeps the machine from digging itself in,
-        and it is exact -- no learning needed to enforce it. What it does NOT
-        give you is a ramp: filtering to reachable patches stops you getting
-        stuck but leaves you halting early, because building access means
-        trimming patches you do not want excavated, before you need them.
-        That is what lookahead is for.
-        """
+        where the height difference is within the climb limit."""
         ny, nx = self.shape
         seen = {self.entry}
         q = deque([self.entry])
@@ -161,8 +131,7 @@ class Site:
         return d / c.drive_speed
 
     def cycle_seconds(self, patch) -> float:
-        """Drive to the patch, trim it, haul to the dump, discharge, and be
-        back at the dump ready for the next one."""
+        """Drive to the patch, trim it, haul to the dump and discharge."""
         c = self.cfg
         return (
             self.travel_seconds(self.at, patch)
@@ -174,20 +143,13 @@ class Site:
     # -- transition ----------------------------------------------------
 
     def trim(self, patch, succeeded: bool = True) -> float:
-        """Apply one trim. Returns the seconds it cost.
-
-        A failed trim costs the same time and moves no soil. The baselines
-        never pass succeeded=False -- they plan the ideal schedule -- so
-        trim_success enters only through `expected_clock`. Pass it explicitly
-        when replaying a plan against sampled outcomes.
-        """
+        """Apply one trim cycle and return its seconds. A failed trim costs
+        the same time and moves no soil. The machine ends at the dump."""
         cost = self.cycle_seconds(patch)
         self.clock += cost
         self.trims += 1
         if succeeded:
             self.height[patch[0]][patch[1]] -= 1
-            self.load = min(self.load + self.cfg.trim_capture, self.cfg.drum_pair_capacity)
-        self.load = 0.0                      # discharged at the dump each cycle
         self.at = self.dump
         self.log.append((patch, succeeded, self.clock))
         return cost
@@ -197,26 +159,18 @@ class Site:
 
     @property
     def landed(self) -> int:
-        """Trims that actually moved soil, per the log."""
+        """Trims that moved soil."""
         return sum(1 for _, ok, _ in self.log if ok)
 
     def expected_clock(self) -> float:
-        """Clock corrected for the dig policy's success rate.
-
-        `self.clock` is the perfect-execution duration: the baselines below
-        assume every trim lands, because a search cannot plan around a coin
-        flip it has not flipped yet. A failed trim costs a full cycle and
-        moves nothing, so clearing one voxel costs 1/trim_success cycles in
-        expectation and the whole schedule stretches by that factor. At the
-        measured 0.5 this doubles every duration, which is large enough that
-        quoting the raw clock would be misleading.
-        """
-        return self.clock / max(self.cfg.trim_success, 1e-9)
+        """Clock scaled by 1 / trim_success: the expected duration when each
+        trim lands with probability trim_success."""
+        return self.clock / self.cfg.trim_success
 
     def summary(self) -> str:
         c = self.cfg
         left = len(self.pending())
-        moved = self.landed * c.trim_mass          # what the log says moved
+        moved = self.landed * c.trim_mass
         return (
             f"{self.trims:4d} trims  {self.clock/60:6.1f} min ideal  "
             f"{self.expected_clock()/60:6.1f} min at p={c.trim_success:.2f}  "
@@ -230,35 +184,20 @@ class Site:
 # ---------------------------------------------------------------------
 
 
-def greedy_plan(site: Site, max_trims: int = 10_000) -> Site:
-    """Always trim the reachable pending patch that costs the least to reach.
-
-    Correct on reachability and usually decent on travel, but it will halt the
-    moment every pending patch is cut off rather than build a way in.
-    """
-    while not site.done() and site.trims < max_trims:
-        options = site.actionable()
-        if not options:
-            break
-        best = min(options, key=site.cycle_seconds)
-        site.trim(best, succeeded=True)
+def greedy_plan(site: Site) -> Site:
+    """Repeatedly trim the actionable patch with the cheapest cycle. Stops when
+    no pending patch is reachable."""
+    while options := site.actionable():
+        site.trim(min(options, key=site.cycle_seconds), succeeded=True)
     return site
 
 
-def beam_plan(site: Site, width: int = 8, horizon: int = 6, max_trims: int = 10_000) -> Site:
-    """Short-horizon lookahead over trim orderings.
-
-    This is where a ramp can appear: a branch that spends two or three trims
-    on patches it does not need, because doing so opens patches it does. The
-    horizon has to exceed the ramp's length for that to be findable -- a
-    0.25 m face at 10 degrees is about 1.6 patch lengths, so a horizon of 6
-    is ample at that depth and nowhere near enough for a 2 m pit.
-    """
-    import copy
-
-    while not site.done() and site.trims < max_trims:
-        if not site.actionable():
-            break
+def beam_plan(site: Site, width: int = 8, horizon: int = 6) -> Site:
+    """Beam search over orderings of actionable trims, `horizon` trims deep
+    with the `width` cheapest per node, ranked by seconds per patch cleared.
+    Commits the first trim of the best branch, then searches again."""
+    while site.actionable():
+        before = site.pending()
         beams = [(0.0, copy.deepcopy(site), None)]
         for _ in range(horizon):
             nxt = []
@@ -271,15 +210,11 @@ def beam_plan(site: Site, width: int = 8, horizon: int = 6, max_trims: int = 10_
                 for p in opts[:width]:
                     s2 = copy.deepcopy(st)
                     c = s2.trim(p, succeeded=True)
-                    nxt.append((cost + c, s2, first if first else p))
-            # cheapest seconds per patch actually cleared
-            before = site.pending()
+                    nxt.append((cost + c, s2, first or p))
+            # cheapest seconds per patch cleared
             nxt.sort(key=lambda t: t[0] / max(1, len(before - t[1].pending())))
             beams = nxt[: width * 2]
-        step = beams[0][2]
-        if step is None:
-            break
-        site.trim(step, succeeded=True)
+        site.trim(beams[0][2], succeeded=True)
     return site
 
 
@@ -289,7 +224,7 @@ def beam_plan(site: Site, width: int = 8, horizon: int = 6, max_trims: int = 10_
 def _demo() -> None:
     cfg = SiteCfg()
     ny, nx = 6, 8
-    # A pit: take the middle down six voxels, which is the whole 0.25 m bed.
+    # A pit six voxels deep over the middle 4 x 4 patches.
     height = [[0] * nx for _ in range(ny)]
     target = [[0] * nx for _ in range(ny)]
     for y in range(1, 5):

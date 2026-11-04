@@ -1,32 +1,29 @@
 #!/bin/bash
-# The navigate obstacle course: one clip per layout of mdp/course.py, a trace
-# of each, and the graphs with the obstacles drawn under the path.
+# Plays the navigate checkpoint on each mdp/course.py layout: a clip, a trace
+# and the plots per layout. CKPT defaults to the newest navigate run's last
+# checkpoint; clips already in OUT are skipped.
 #
 #   bash workstation/nav_course.sh
 #   LAYOUTS="wall gate" GPU=0 OUT=~/nav_course bash workstation/nav_course.sh
 #   CKPT=logs/rsl_rl/excavator_navigate/<run>/model_1999.pt bash workstation/nav_course.sh
 #
-# In every layout the machine spawns facing a goal 11 m straight ahead with
-# craters or boulders on the line between, so it only has to drive forward,
-# and it has to steer round them to get there:
+# Each layout spawns the machine facing a goal 11 m ahead with obstacles on
+# the line between:
 #
 #   boulder   one boulder on the line
 #   crater    one crater on the line
-#   wall      three boulders abreast; the way is round either end
+#   wall      three boulders abreast
 #   chicane   a boulder, then a crater, both on the line
 #   gate      a row of boulders across the route with one 2 m gap off to the left
 #   field     a crater and two boulders scattered over the line
 #
-# Luna-Excavator-Navigate-Course is the navigate task on that one cell, so the
-# navigate checkpoint plays it unchanged. A clip runs the one episode, with
-# the machine parked on the goal once it arrives. A clip already in OUT is
-# skipped. Into OUT:
+# Into OUT:
 #
-#   course_<layout>.mp4   the clips, 25 fps, 1920 x 1080, goal drawn in green
+#   course_<layout>.mp4   the clip, 25 fps, 1920 x 1080
 #   course_<layout>.csv   per-step pose, goal, errors and speed
 #   course_<layout>.png   the path over the layout, and errors against time
 #   tracking.png arrival.png summary.csv   (scripts/plot_nav.py)
-#   course_<layout>.log   each run's console output
+#   course_<layout>.log   the run's console output
 
 set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -70,8 +67,7 @@ for layout in $LAYOUTS; do
       "env.scene.terrain.terrain_generator.sub_terrains.course.layout=$layout" \
       env.goal_trace_envs=1 "env.goal_trace_path=$OUT/$tag.csv" \
       > "$OUT/$tag.log" 2>&1
-  # The recorder numbers its clips; the one this run wrote is the one newer
-  # than the stamp.
+  # The clip this run wrote: the one newer than the stamp.
   clip="$(find "$VID" -maxdepth 1 -name '*.mp4' -newer "$stamp" 2>/dev/null | sort | tail -1)"
   rm -f "$stamp"
   if [ -n "$clip" ]; then

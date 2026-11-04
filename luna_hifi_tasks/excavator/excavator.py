@@ -1,15 +1,10 @@
-# excavator.py
+# The bucket-drum excavator as an MJCF string: four driven wheels on a
+# rectangular frame and a counter-rotating drum on a pitching arm at each end.
+# assets/excavator/ holds the USD converted from it, which training loads.
 #
-# The bucket-drum excavator, as an MJCF string. Four driven wheels on a
-# rectangular frame, and a counter-rotating excavation drum on a pitching arm
-# at each end.
+# Plan view (+x forward). A, B are the front corners, C, D the rear:
 #
-# Source for the converted USD in assets/excavator/, which is what training
-# loads. Re-run the converter after every change here.
-#
-# Plan view (+x forward, +z up). A,B are the front corners, C,D the rear:
-#
-#                        front drum (digs forward of the machine)
+#                        front drum
 #                            ___
 #                           (___)
 #                             |  <- front arm, pitches in the x-z plane
@@ -21,53 +16,41 @@
 #                             |  <- rear arm
 #                           (___)
 #                            ---
-#                        rear drum (digs behind the machine)
+#                        rear drum
 #
 # Elevation (+x right, +z up), arms at full down:
 #
 #              .-.                                     .-.
-#             ( o )  <- drum, cavity open at the mouths( o )
+#             ( o )  <- drum                          ( o )
 #              '-'   \                               /  '-'
 #                     \___[mast]===[deck]===[mast]___/
 #                      (O)                       (O)     <- wheels
 #           ~~~~~~~~~~~~~~~~~ soil ~~~~~~~~~~~~~~~~~~~~
 #
-# Layout
-# ------
-# * Skid steer, no steering joints. Four hinges, left pair and right pair
-#   commanded together.
-# * The rear assembly is the front assembly rotated 180 degrees about z, so the
-#   rear drum's spin axis points along world -y and identical joint commands
-#   counter-rotate the two drums. Their horizontal digging reactions cancel
-#   through the frame.
-# * Each drum is a ROTOR inside a SHROUD, hinged on the same axis off the arm
-#   and moving independently.
+# * Skid steer: four wheel hinges, the left pair and the right pair commanded
+#   together.
+# * The rear assembly is the front one rotated 180 degrees about z, so one
+#   drum command turns the two drums in opposite world directions.
+# * Each drum is a rotor (a hub with ROTOR_VANES logarithmic-spiral vanes)
+#   inside a shroud (a shell open over SHROUD_INLET), each on its own hinge on
+#   the same axis off the arm.
+# * Wheels are cylinders with WHEEL_GROUSERS radial cleats.
+# * Every body carrying a joint has a geom with mass.
+# * Wheel centres sit at z = 0 in the chassis frame, one wheel radius above
+#   the ground.
 #
-#   The rotor is a hub carrying ROTOR_VANES logarithmic-spiral blades. The
-#   spiral holds the rake constant from hub to tip, so the blade meets soil at
-#   90 - ROTOR_RAKE degrees everywhere along it.
-#
-#   The shroud is the shell, fixed relative to the turning rotor. It is
-#   closed over every arc except SHROUD_INLET, so a pocket that has passed the
-#   inlet stays shut for the rest of the turn. Its own actuator aims it.
-#
-#   Outward acceleration at the vane tips is omega^2 * ROTOR_TIP_R, which
-#   passes lunar gravity at 2.96 rad/s. MAX_DRUM_SPEED sits under it.
-# * The rotor sweeps ~184 kg of regolith per drum, against a heavier chassis.
-#   scripts/check_excavator.py reads the hold torques off the model's own mass
-#   table.
-#
-# Wheels are cylinders with grousers. WHEEL_GROUSERS = 0 falls back to bare
-# cylinders.
-#
-# Every body carrying a joint has a geom with mass, so MuJoCo derives real
-# inertia for all of them.
-#
-# Frame convention: +x forward, +z up. Wheel centres sit at z = 0 in the
-# chassis frame, so the chassis origin is one wheel radius above the ground.
+# Sign conventions:
+#   wheels   positive velocity drives forward (+x).
+#   arms     positive angle pitches the boom down, on both arms. ARM_RANGE[1]
+#            is full dig, ARM_RANGE[0] stows the drum at dump height.
+#   drums    a velocity of sign DIG_DRUM_SIGN digs, on both ends.
+#   shrouds  positive angle turns the inlet the way a positive arm angle turns
+#            the boom; 0 points it straight down with the arm horizontal.
 
 from __future__ import annotations
 
+import getpass
+import hashlib
 import math
 import os
 import tempfile
@@ -86,10 +69,8 @@ TRACK = 1.15                    # left wheel centre to right wheel centre, along
 AXLE_X = 0.5 * WHEELBASE        # +/- 0.70
 WHEEL_Y = 0.5 * TRACK           # +/- 0.575
 
-# The arm pivot sits ahead of the axle. The drum ends and the yoke legs both
-# pass through the wheel band in y, so separation in x is what keeps them off
-# the front wheels at full dig: swept clearance is 0.069 m here, binding pair
-# is the cross piece against a rear grouser.
+# Arm pivot distance ahead of the axle; the drum and yoke legs clear the
+# front wheels by 0.069 m at full dig.
 MAST_OFFSET_X = 0.22
 PIVOT_X = AXLE_X + MAST_OFFSET_X
 
@@ -111,112 +92,43 @@ MAST_TOP_Z = 0.20               # arm pivot height in the chassis frame
 MAST_HALF = (0.05, 0.09, 0.13)  # x half-size is extended to span MAST_OFFSET_X
 
 # --- arm ---
-# The arm is a yoke: the boom stops short of the drum axis and two legs pass
-# outboard of the end caps to pick up the axle.
+# A yoke: the boom stops short of the drum axis and two legs pass outboard of
+# the shroud's end plates to the axle.
 ARM_LEN = 0.76                  # pivot to drum axis
 ARM_HALF_H = 0.05
 ARM_HALF_W = 0.07
 YOKE_HALF_W = 0.04
 YOKE_HALF_H = 0.05
-# Gap between the outer face of an end cap and the inner face of a leg. The cap
-# is a disc of half-thickness CAP_HALF_T centred at DRUM_HALF_LEN + CAP_HALF_T,
-# so it reaches DRUM_HALF_LEN + 2*CAP_HALF_T.
+# Gap between an end plate's outer face and a leg's inner face.
 YOKE_CLEARANCE = 0.005
-# Positive arm angle pitches the boom down, toward the soil. The down limit of
-# 0.72 rad buries the vane tips 0.185 m, one ROTOR_TIP_R.
+# Positive angle pitches the boom down. 0.72 rad buries the vane tips 0.185 m.
 ARM_RANGE = (-0.55, 0.72)       # -31.5 deg (stowed high) .. +41.3 deg (full dig)
 
-# --- rotor ---
-#
-# A vaned rotor turning inside a fixed shroud. The rotor carries no outer wall
-# of its own; the shroud closes the pockets between its vanes.
+# --- rotor: a hub with spiral vanes; the shroud closes the pockets between them ---
 ROTOR_HUB_R = 0.045             # central drum the vanes are welded to
 ROTOR_TIP_R = 0.185             # vane tip; fill is counted inside this
-ROTOR_HALF_LEN = 0.475          # ~100 cm wide, matching the old drum
-# 6 gave a 0.185 m tip gap and nothing ever loaded. The pocket mouth has to
-# pass regolith, and the width at which it flows is MPM_FLOW = 4 grains: the
-# note below sizes the gap against MPM_TARGET_VOXEL at 0.03, where 0.155 m
-# clear is 5.2 grains and flows. The env runs 0.04 m particles, where the same
-# gap is 0.145 m clear against a 0.16 m flow width -- 3.6 grains, under the
-# threshold, so the material arches at the mouth and goes round the drum
-# instead of into it. Three dig runs cut visible trenches and reported
-# payload 0.0 with spoil berms either side of the cut, which is what arching
-# looks like from above.
-#
-#     vanes   tip gap   clear at 0.04   grains
-#       6      0.185       0.145          3.6   arches
-#       5      0.218       0.178          4.4
-#       4      0.262       0.222          5.5
-#
-# 4 it is. Fewer, bigger scoops is also what RASSOR carries. The constraint
-# this has to respect is that a blade stays inside one pocket: it sweeps
-# ln(TIP/HUB)*tan(rake) = 1.414*tan(32 deg) = 50.6 deg, which fits a 6-vane
-# 60 deg pocket with 9 deg spare and a 4-vane 90 deg pocket with 39, so going
-# down loosens the constraint rather than tightening it.
-#
-# BORE_VOLUME is a plain cylinder, so drum capacity and target_load_kg do not
-# move with this.
+ROTOR_HALF_LEN = 0.475          # 0.95 m wide
 ROTOR_VANES = 4
 VANE_SEGMENTS = 5               # straight boxes approximating one spiral vane
 VANE_HALF_T = 0.006
 
-# Rake: the angle between the vane and the radius, held constant along the
-# blade by the logarithmic spiral r = r0 * exp(theta / tan(rake)). At rake b
-# the face meets soil at 90 - b degrees.
-#
-# The blade sweeps ln(TIP/HUB) * tan(rake) = 1.414 * tan(rake) radians from hub
-# to tip and stays inside one pocket. At 6 vanes the pocket is 60 deg and rake
-# tops out near 35; 32 leaves 9 deg of margin.
+# Rake: the angle between vane and radius, constant along the logarithmic
+# spiral r = r0 * exp(theta / tan(rake)). The face meets soil at 90 - rake degrees.
 ROTOR_RAKE = math.radians(32.0)
-RAKE_SIGN = 1.0                 # handedness; DIG_DRUM_SIGN is derived from it
+RAKE_SIGN = 1.0                 # spiral handedness
 
-# Gap between adjacent vane tips, the way in to a pocket. Six vanes give a
-# 0.185 m chord: 0.155 m clear once the MPM coupler has taken a voxel, 5.2
-# grains at 0.03.
-MPM_TARGET_VOXEL = 0.03
-MPM_CLEARANCE = MPM_TARGET_VOXEL        # a passage narrower than this is closed
-MPM_FLOW = 4.0 * MPM_TARGET_VOXEL       # width at which regolith flows
-
-# --- shroud ---
-#
-# Hangs on its own hinge on the rotor axis, driven by its own actuator, so the
-# policy aims the inlet independently of the arm.
+# --- shroud: its own hinge and actuator on the rotor axis ---
 SHROUD_IN_R = 0.195             # running clearance of 10 mm over the vane tips
 SHROUD_OUT_R = 0.212
 SHROUD_END_T = 0.012            # end plates, which close the pockets axially
 SHROUD_INLET = math.radians(100.0)
-# Spans the arm swing (1.35 rad) with room to turn the inlet up to dump.
+# The arm swing (1.35 rad) plus room to turn the inlet up to dump.
 SHROUD_RANGE = (-1.10, 1.10)
-
-# Drum-level dimensions, taken from the shroud, which is the outermost part.
-DRUM_HALF_LEN = ROTOR_HALF_LEN
-CAP_HALF_T = SHROUD_END_T
 
 # --- masses (kg) ---
 RAIL_MASS = 35.0                # each
 CROSSMEMBER_MASS = 30.0         # each
-# Ballast, low and central: one box geom slung under the axle line, so this
-# adds mass without moving the CG, the wheelbase or any reach.
-#
-# 170 gave a 494 kg machine, 801 N at lunar gravity, and it could not hold
-# itself down while cutting. Every dig run floated to about +75 mm above
-# spawn with all four wheels at n=0 and the drums carrying everything --
-# through two soil densities, two stiffnesses, two cohesions, two vane
-# counts, both spin directions and three arm effort limits. The float height
-# never moved, because it is set by the machine's weight rather than by
-# anything about the soil or the drum.
-#
-# RASSOR digs at 45 kg, so mass looked like the wrong answer, and it was for
-# the wrong reason. RASSOR takes roughly 5 mm bites. The smallest bite this
-# bed can represent is one particle spacing, 40 mm, and a 40 mm cut measured
-# 711-930 N of reaction against a 801 N machine. A rover that must take
-# eight times RASSOR's bite has to be heavier than RASSOR; that is the
-# discretisation's doing, not the design's, and it is the honest thing to
-# write down rather than a number tuned until the wheels stayed put.
-#
-# 670 gives 994 kg and 1611 N, about 2x. Against a 900 N cut that leaves
-# ~700 N on the wheels, which should be traction enough. It is a probe, not
-# a final value: if it still floats, weight is not the lever either.
+# The deck is ballast slung under the axle line; the machine totals 994 kg.
 DECK_MASS = 670.0
 MAST_MASS = 20.0                # each
 WHEEL_MASS = 12.0               # cylinder only
@@ -235,7 +147,7 @@ WHEEL_FRICTION = "1.4 0.010 0.0010"
 DRUM_FRICTION = "1.0 0.010 0.0010"
 
 # ---------------------------------------------------------------------------
-# Names. Exported so the env cfg and the env never spell a string twice.
+# Joint and body names
 # ---------------------------------------------------------------------------
 
 JOINT_ROOT = "root"
@@ -247,10 +159,7 @@ JOINT_DRUMS = ["drum_front", "drum_rear"]
 JOINT_SHROUDS = ["shroud_front", "shroud_rear"]
 
 BODY_CHASSIS = "chassis"
-BODY_WHEELS = ["wheel_fl_body", "wheel_fr_body", "wheel_rl_body", "wheel_rr_body"]
-BODY_ARMS = ["arm_front_body", "arm_rear_body"]
 BODY_DRUMS = ["drum_front_body", "drum_rear_body"]
-
 
 FRAME_RGBA = "0.78 0.62 0.16 1"     # machine yellow
 DECK_RGBA = "0.42 0.45 0.50 1"
@@ -264,8 +173,7 @@ SHROUD_RGBA = "0.62 0.64 0.67 1"
 # ---------------------------------------------------------------------------
 # Geometry helpers
 #
-# Every spinning part (wheels, drums) turns about the body's local y axis, and
-# the geometry below is built about it.
+# Wheels and drums spin about the body's local y axis.
 #
 # MuJoCo's euler="0 b 0" rotates about +y, mapping local z_hat to
 # (sin b, 0, cos b). To aim a box's thickness axis along the direction psi in
@@ -324,7 +232,6 @@ def _radial_blade(
 # Rotor and shroud geometry
 # ---------------------------------------------------------------------------
 
-VANE_SWEEP = math.log(ROTOR_TIP_R / ROTOR_HUB_R) * math.tan(ROTOR_RAKE)
 POCKET_ARC = 2.0 * math.pi / ROTOR_VANES
 # Chord between adjacent vane tips: the way into a pocket.
 VANE_TIP_GAP = 2.0 * ROTOR_TIP_R * math.sin(math.pi / ROTOR_VANES)
@@ -366,10 +273,7 @@ def _vane_xml(prefix: str, index: int, phi_root: float) -> list[str]:
 
 
 def _shroud_arc_xml(prefix: str) -> list[str]:
-    """The shroud wall: closed everywhere except SHROUD_INLET.
-
-    Each plate spans at most 20 degrees.
-    """
+    """The shroud wall, closed except over SHROUD_INLET, in plates of at most 20 degrees."""
     span = 2.0 * math.pi - SHROUD_INLET
     n = max(int(math.ceil(span / math.radians(20.0))), 6)
     step = span / n
@@ -429,46 +333,9 @@ def _rotor(prefix: str, joint: str) -> str:
         </body>"""
 
 
-def vane_swept_radii() -> tuple[float, float]:
-    """Innermost and outermost radius any vane geom reaches, thickness included."""
-    lo, hi = math.inf, 0.0
-    for v in range(ROTOR_VANES):
-        pts = vane_points(v * POCKET_ARC)
-        for a, b in zip(pts, pts[1:]):
-            cx, cz = 0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])
-            mid = math.hypot(cx, cz)
-            half = 0.5 * math.hypot(b[0] - a[0], b[1] - a[1])
-            corner = math.hypot(half, VANE_HALF_T)
-            lo = min(lo, max(mid - corner, 0.0))
-            hi = max(hi, mid + corner)
-    return lo, hi
-
-
-def pocket_geometry() -> dict[str, float]:
-    """The numbers that decide whether regolith can get in and stay in."""
-    return {
-        "vanes": float(ROTOR_VANES),
-        "rake_deg": math.degrees(ROTOR_RAKE),
-        "attack_deg": 90.0 - math.degrees(ROTOR_RAKE),
-        "vane_sweep_deg": math.degrees(VANE_SWEEP),
-        "pocket_arc_deg": math.degrees(POCKET_ARC),
-        "shadowed": float(VANE_SWEEP >= POCKET_ARC),
-        "tip_gap": VANE_TIP_GAP,
-        "tip_gap_clear": VANE_TIP_GAP - MPM_TARGET_VOXEL,
-        "tip_gap_grains": (VANE_TIP_GAP - MPM_TARGET_VOXEL) / MPM_TARGET_VOXEL,
-        "running_clearance": SHROUD_IN_R - ROTOR_TIP_R,
-        "inlet_deg": math.degrees(SHROUD_INLET),
-        "inlet_chord": 2.0 * SHROUD_IN_R * math.sin(0.5 * SHROUD_INLET),
-        "swept_volume": math.pi * ROTOR_TIP_R ** 2 * (2.0 * ROTOR_HALF_LEN),
-    }
-
-
 def _wheel(name: str, x: float, y: float, joint: str) -> str:
-    """A cylinder tyre spinning about y, optionally with radial grousers.
-
-    MuJoCo cylinders run along their local z, so euler="pi/2 0 0" lays the
-    axis along y.
-    """
+    """A cylinder tyre spinning about y, with radial grousers. euler="pi/2 0 0"
+    lays the cylinder's local z along y."""
     cleats = []
     for i in range(WHEEL_GROUSERS):
         phi = 2.0 * math.pi * i / WHEEL_GROUSERS
@@ -499,11 +366,7 @@ def _wheel(name: str, x: float, y: float, joint: str) -> str:
 # Derived yoke geometry. The legs straddle the shroud.
 YOKE_Y = ROTOR_HALF_LEN + 2.0 * SHROUD_END_T + YOKE_CLEARANCE + YOKE_HALF_W
 
-VANE_SWEPT_INNER_R, VANE_SWEPT_OUTER_R = vane_swept_radii()
-
-# Which sign of drum command digs. A joint velocity of sign k turns the rotor
-# toward -k*phi, so relative to the rotor the soil streams toward +k*phi. The
-# vane bites when its concave face leads, which is the -RAKE_SIGN side.
+# The drum command sign that digs: the vanes lead with their concave face.
 DIG_DRUM_SIGN = -RAKE_SIGN
 
 # The cross piece spans the machine at the drum's height and clears the shroud.
@@ -521,32 +384,13 @@ def _arm_assembly(
     shroud_prefix: str,
     shroud_joint: str,
 ) -> str:
-    """One arm + drum, hung off the mast at PIVOT_X.
+    """One arm and drum, hung off the mast at PIVOT_X. `yaw` is 0 for the front
+    assembly and pi for the rear.
 
-    `yaw` is 0 for the front assembly and pi for the rear, a true 180-degree
-    copy, so the two drums take opposite world spin axes for the same joint
-    command.
-
-    The arm is boom -> cross piece -> two legs straddling the drum. The rotor
-    and the shroud are siblings, both hinged on the same axis off the arm.
-
-    A joint axis is expressed in its body's LOCAL frame, and this body carries
-    the yaw, so a local +y axis is world +y at the front and world -y at the
-    rear. That is correct for the arms and must stay. The two arm tips point in
-    OPPOSITE directions -- front at +ARM_LEN, rear at -ARM_LEN -- and for a
-    point at (x,0,0) a rotation of phi about world +y gives dz = -x sin(phi).
-    So about a COMMON world axis one angle raises one tip and lowers the other,
-    while opposite world axes raise or lower both together:
-
-      original (world +y front, -y rear), stow -0.55:  front +397 mm, rear +397 mm
-      a common world +y axis,             stow -0.55:  front +397 mm, rear -397 mm
-
-    The second is what this file briefly did, and it drove the rear drum into
-    the ground: measured, the rear drum sat 603 mm BELOW the arm pivot with its
-    shroud touching the soil, while the front drum sat level with the pivot. The
-    625 mm separation between the two drums did not change at all, which is the
-    tell that the axis was never what produced it.
-
+    The arm is boom -> cross piece -> two legs straddling the drum; the rotor
+    and shroud are siblings hinged on the same axis off the arm. Joint axes are
+    local +y, which is world -y on the rear assembly, so one arm angle raises or
+    lowers both drums together.
     """
     x = PIVOT_X * math.cos(yaw)
     leg_half = 0.5 * (ARM_LEN - _LEG_X0)
@@ -574,7 +418,7 @@ def _arm_assembly(
 
 
 # ---------------------------------------------------------------------------
-# Frame geoms. All fixed to the chassis body; the masts carry no joint.
+# Frame geoms, all fixed to the chassis body.
 # ---------------------------------------------------------------------------
 
 _FRAME_PARTS = [
@@ -628,10 +472,8 @@ _ARMS_XML = "\n      ".join(
 )
 
 # ---------------------------------------------------------------------------
-# Model
-#
-# Every geom spells out its own friction and rgba; the MJCF->USD converter
-# drops <default class="..."> inheritance.
+# Model. Every geom carries its own friction and rgba; the MJCF->USD
+# converter does not apply <default class="..."> inheritance.
 # ---------------------------------------------------------------------------
 
 EXCAVATOR_MJCF = f"""
@@ -663,165 +505,27 @@ EXCAVATOR_MJCF = f"""
 </mujoco>
 """
 
-# ---------------------------------------------------------------------------
-# Sign conventions.
-#
-#   wheels      positive joint velocity drives the machine FORWARD (+x).
-#               Skid steer: JOINT_WHEELS_LEFT commanded together and
-#               JOINT_WHEELS_RIGHT together; equal = straight, opposite = spin.
-#
-#   arms        positive joint angle pitches the boom DOWN toward the soil, on
-#               BOTH arms. 0 is horizontal, ARM_RANGE[1] = 0.72 rad is full dig,
-#               putting the drum's lowest point ~19 cm below the ground plane.
-#               ARM_RANGE[0] = -0.55 rad stows the drum ~66 cm up, the dump
-#               height.
-#
-#               The local +y axis on both arms is what makes this true, and it
-#               must stay. The rear assembly carries a 180 deg yaw, so local +y
-#               is world -y there, and because the two arm tips point opposite
-#               ways that is exactly what moves them together: for a point
-#               (x,0,0), a rotation phi about world +y gives dz = -x sin(phi),
-#               so opposite world axes raise or lower both tips by the same
-#               amount while a common axis raises one and lowers the other.
-#               Signing the axes to a common +y was tried and drove the rear
-#               drum 603 mm below its pivot, shroud into the soil.
-#
-#               The open question is separate from the axis: at a commanded
-#               -0.55 the front drum stows +397 mm as predicted, and the rear
-#               was measured 240 mm BELOW its pivot instead. The two drums sat
-#               626 mm apart before the axis change and 625 mm after, so the
-#               axis never produced that gap. The attitude block in
-#               scripts/play_dig.py prints achieved joint angles now, which is
-#               the measurement that was missing.
-#
-#   drums       a joint velocity of sign DIG_DRUM_SIGN digs, the same sign on
-#               both ends. Derived from RAKE_SIGN, currently -1. The rear
-#               assembly is rotated 180 deg about z, so one sign gives opposite
-#               world-frame rotation at the two ends and the digging reactions
-#               cancel through the frame.
-#
-#               Outward acceleration at the vane tips is omega^2 * ROTOR_TIP_R,
-#               which passes lunar gravity at 2.96 rad/s.
-#
-#   shrouds     positive joint angle turns the inlet the way a positive arm
-#               angle turns the boom, so holding the inlet still against the
-#               ground through an arm pitch means driving the shroud to minus
-#               the arm angle. 0 points the inlet straight down with the arm
-#               horizontal.
-#
-# The low-level action vector is 8-wide:
-#   [left_wheels, right_wheels, arm_front, arm_rear, drum_front, drum_rear,
-#    shroud_front, shroud_rear]
-# ---------------------------------------------------------------------------
-
-
-def reach() -> dict[str, float]:
-    """Derived working envelope, in the chassis frame. Sizes the soil bed in
-    the env cfg and feeds the geometry checks."""
-    lo, hi = ARM_RANGE
-    pivot_z = CHASSIS_Z + MAST_TOP_Z
-    return {
-        "pivot_height": pivot_z,
-        # dig_depth is to the shroud, the outermost part of the drum.
-        "dig_depth": -(pivot_z - ARM_LEN * math.sin(hi) - SHROUD_OUT_R),
-        "vane_dig_depth": -(pivot_z - ARM_LEN * math.sin(hi) - ROTOR_TIP_R),
-        "dump_height": pivot_z - ARM_LEN * math.sin(lo) - SHROUD_OUT_R,
-        "reach_x": PIVOT_X + ARM_LEN * math.cos(hi) + SHROUD_OUT_R,
-        "overall_length": 2.0 * (PIVOT_X + ARM_LEN * math.cos(0.0) + SHROUD_OUT_R),
-        "overall_width": TRACK + 2.0 * WHEEL_HALF_W,
-        # Fill is counted inside the rotor's swept cylinder.
-        "rotor_swept_diameter": 2.0 * ROTOR_TIP_R,
-        "rotor_swept_volume": math.pi * ROTOR_TIP_R ** 2 * (2.0 * ROTOR_HALF_LEN),
-        "vane_swept_inner_r": VANE_SWEPT_INNER_R,
-        "vane_swept_outer_r": VANE_SWEPT_OUTER_R,
-        # The running fit between vane tips and shroud. The coupler seals a
-        # gap narrower than a voxel.
-        "running_clearance": SHROUD_IN_R - VANE_SWEPT_OUTER_R,
-        # The gap between adjacent vane tips, the way into a pocket.
-        "vane_tip_gap": VANE_TIP_GAP,
-        "vane_tip_gap_grains": (VANE_TIP_GAP - MPM_TARGET_VOXEL) / MPM_TARGET_VOXEL,
-        # Rake, and the arcs that decide whether a blade stays in its pocket.
-        "rake_deg": math.degrees(ROTOR_RAKE),
-        "attack_deg": 90.0 - math.degrees(ROTOR_RAKE),
-        "vane_sweep_deg": math.degrees(VANE_SWEEP),
-        "pocket_arc_deg": math.degrees(POCKET_ARC),
-        # How much of the circumference the inlet opens, and its chord.
-        "inlet_deg": math.degrees(SHROUD_INLET),
-        "inlet_chord": 2.0 * SHROUD_IN_R * math.sin(0.5 * SHROUD_INLET),
-        "shroud_outer_width": 2.0 * (ROTOR_HALF_LEN + 2.0 * SHROUD_END_T),
-        "shroud_width_over_track": 2.0 * (ROTOR_HALF_LEN + 2.0 * SHROUD_END_T) / TRACK,
-        # How far the shroud reaches past the inner face of a wheel in y.
-        "drum_lateral_overlap": (
-            (ROTOR_HALF_LEN + 2.0 * SHROUD_END_T) - (WHEEL_Y - WHEEL_HALF_W)
-        ),
-        "wheel_standoff_at_full_dig": (
-            PIVOT_X + ARM_LEN * math.cos(hi) - SHROUD_OUT_R
-        ) - (AXLE_X + WHEEL_RADIUS),
-        "yoke_standoff_from_shroud": ARM_LEN - SHROUD_OUT_R - (BOOM_LEN + YOKE_HALF_W),
-        # Spin at which outward acceleration at the vane tips equals lunar
-        # gravity.
-        "spin_limit_rad_s": math.sqrt(1.62 / ROTOR_TIP_R),
-    }
-
 
 def source_hash() -> str:
-    """MD5 of this file, the single source the MJCF and so the USD derive from."""
-    import hashlib
-
-    return hashlib.md5(Path(__file__).read_bytes()).hexdigest()
+    """MD5 of the MJCF the USD is converted from."""
+    return hashlib.md5(EXCAVATOR_MJCF.encode()).hexdigest()
 
 
 def source_stamp_path() -> Path:
-    """Where the converted asset's record of its source lives.
-
-    In assets/ but OUTSIDE assets/excavator/, which the documented rebuild
-    deletes with `rm -rf` after write_mjcf has run.
-
-    Neither this nor the asset is tracked; .gitignore covers both. The asset
-    once was -- committed on one box, never pushed -- and the stamp was not,
-    so `git checkout -- .` restored an old build and left a stamp that still
-    matched the current source. With both generated on the machine that runs,
-    the stamp says what the asset on disk was actually built from.
-    """
+    """assets/excavator.usd.srchash: the source_hash the converted asset was
+    built from. It sits outside assets/excavator/, which the rebuild deletes."""
     return Path(__file__).resolve().parents[2] / "assets" / "excavator.usd.srchash"
 
 
-def _write_source_stamp() -> None:
-    try:
-        p = source_stamp_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(source_hash() + "\n", encoding="utf-8")
-    except OSError:
-        pass  # a stamp we cannot write is a warning, not a failure
-
-
 def write_mjcf(directory: str | None = None) -> str:
-    """Write the MJCF to disk and return its path. Idempotent.
-
-    Called by the offline USD conversion step.
-
-    The default directory carries the username. Without it the path is
-    /tmp/luna_hifi_assets for everyone on the machine, the first user to run
-    this owns it, and every other user gets PermissionError on the open --
-    makedirs(exist_ok=True) succeeds against the existing directory and gives
-    no hint that the problem is ownership.
-    """
-    _write_source_stamp()
-    if directory is None:
-        import getpass
-
-        try:
-            who = getpass.getuser()
-        except Exception:  # noqa: BLE001
-            who = str(os.getuid()) if hasattr(os, "getuid") else "user"
-        directory = os.path.join(tempfile.gettempdir(), f"luna_hifi_assets-{who}")
+    """Write the MJCF and the source stamp; return the MJCF's path. The default
+    directory is <tmp>/luna_hifi_assets-<user>."""
+    stamp = source_stamp_path()
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(source_hash() + "\n")
+    directory = directory or os.path.join(tempfile.gettempdir(), f"luna_hifi_assets-{getpass.getuser()}")
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, "excavator.xml")
-    if os.path.exists(path) and not os.access(path, os.W_OK):
-        raise PermissionError(
-            f"{path} exists and is not writable by this user. Pass a directory "
-            f"explicitly: write_mjcf('/some/path/you/own')"
-        )
     with open(path, "w") as fh:
         fh.write(EXCAVATOR_MJCF.strip() + "\n")
     return path

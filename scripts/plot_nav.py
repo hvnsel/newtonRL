@@ -1,29 +1,23 @@
-"""Graphs from navigate playback traces, and the training run's curves.
+"""Figures from navigate playback traces (goal_trace CSVs) and the training run.
 
     ~/IsaacLab/.venv/bin/python scripts/plot_nav.py ~/nav_media/nav_*.csv --out ~/nav_media
     ~/IsaacLab/.venv/bin/python scripts/plot_nav.py goal_trace.csv --out plots \
         --run logs/rsl_rl/excavator_navigate/<run>
 
-workstation/nav_videos.sh runs this after recording. Each trace is one
-playback run, written by goal_trace_envs, and every episode in it is drawn.
-Writes, into --out:
+Writes into --out:
 
-  <trace>.png    one per trace and named after it, so nav_03.png goes with
-                 nav_03.mp4: the path with the goal pose, and distance,
-                 heading error and speed against time
+  <trace>.png    per trace: paths with the goal pose, and distance, heading
+                 error and speed against time
   tracking.png   every episode's distance and heading error against time
-  arrival.png    where each episode finished against the tolerances, and how
-                 long it took against how far it had to go
-  training.png   the run's arrival rate, end errors and curriculum by
-                 iteration: --run, else the newest navigate run under logs/
+  arrival.png    arrival errors against the tolerances, and arrival time
+                 against goal distance
+  training.png   arrival rate, end errors and curriculum by iteration, from
+                 --run or the newest navigate run under logs/
   summary.csv    one row per episode
 
-A trace named course_<layout>.csv, as workstation/nav_course.sh writes them,
-gets that layout's craters and boulders drawn under its path.
-
-Tolerances and the episode split are read_trace.py's, and the TensorBoard
-reader is peek.py's, so the three scripts agree on what an arrival is.
-Needs matplotlib, which Isaac Lab's venv carries.
+A trace named course_<layout>.csv gets that layout's craters and boulders
+drawn under its paths. Tolerances and episode splitting come from
+read_trace.py, the TensorBoard reader from peek.py.
 """
 
 from __future__ import annotations
@@ -46,27 +40,26 @@ from matplotlib.patches import Polygon, Rectangle  # noqa: E402
 from peek import _newest_run, _scalars  # noqa: E402
 from read_trace import DIST_TOL, DT, HEAD_TOL_DEG, SPEED_TOL, TOP_SPEED, _episodes  # noqa: E402
 
-# Footprint drawn on the paths: drum to drum with the arms stowed (1.75 m
-# either side of the chassis centre), wheel face to wheel face across.
+# Footprint drawn on the paths: drum to drum with the arms stowed, and wheel
+# face to wheel face.
 MACHINE_LEN = 3.5
 MACHINE_W = 1.35
 GOAL_GREEN = "#1a9e3a"
 BOULDER_RED = "#b2182b"
 CRATER_BLUE = "#2166ac"
-RIM_WIDTH = 0.5                 # HfHazardTerrainCfg.rim_width, which the course uses
+RIM_WIDTH = 0.5                 # HfHazardTerrainCfg.rim_width
 
 
 def _course_layouts() -> dict:
-    """mdp/course.py's layouts, loaded by path: importing the package would
-    pull in Isaac Lab, and the file is plain data."""
+    """mdp/course.py's COURSE_LAYOUTS, loaded by file path (no Isaac Lab import)."""
     path = Path(__file__).resolve().parents[1] / "luna_hifi_tasks/excavator/mdp/course.py"
     spec = importlib.util.spec_from_file_location("nav_course_layouts", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod.COURSE_LAYOUTS
 
-# Iterations averaged, centred, for the training curves; the raw series is
-# drawn faint behind. The goal ceiling is a staircase and is drawn raw.
+# Training curves: a centred SMOOTH-iteration mean over the faint raw series;
+# RAW tags are drawn unsmoothed.
 SMOOTH = 25
 
 TRAINING = (
@@ -102,8 +95,8 @@ def _load(path: Path) -> list[list[dict]]:
 
 
 def _measure(name: str, ep: list[dict]) -> dict:
-    """What an episode did. Errors are read on the step the hold completed,
-    where navigate hands the machine over, else on the last row."""
+    """An episode's summary row. Errors are read on the step the hold
+    completed, else on the last row."""
     first, last = ep[0], ep[-1]
     arrive = next((r for r in ep if r["reached"]), None)
     at = arrive or last
@@ -142,9 +135,8 @@ def _footprint(ax, x, y, yaw, **kw):
 
 
 def _goal(ax, ep):
-    """The goal pose: its spot, and a bar along its axis, either end of which
-    the machine may face. The axis is the machine's yaw plus the heading
-    error, on any row; the first is as good as the last."""
+    """Draw the goal pose: a disc on the spot and a bar along its axis (the
+    machine's yaw plus the heading error)."""
     r = ep[0]
     gx, gy = r["goal_x"], r["goal_y"]
     gyaw = r["yaw"] + math.radians(r["herr"])
@@ -182,7 +174,6 @@ def _episode_figure(name: str, eps: list[list[dict]], stats: list[dict], out: Pa
     for k, (ep, st) in enumerate(zip(eps, stats)):
         x, y = _col(ep, "x"), _col(ep, "y")
         t = _t(ep)
-        # The path, coloured by time.
         seg = np.stack([np.column_stack([x[:-1], y[:-1]]), np.column_stack([x[1:], y[1:]])], axis=1)
         lc = LineCollection(seg, cmap="viridis", lw=2.2, zorder=2)
         lc.set_array(t[:-1])
@@ -317,8 +308,7 @@ def _arrival_figure(stats: list[dict], out: Path) -> None:
 
 
 def _smooth(v: np.ndarray, w: int) -> np.ndarray:
-    """Centred mean over w points, the window shrinking at the ends, so the
-    curve neither lags the raw series nor jumps at the edges."""
+    """Centred mean over w points, the window shrinking at the ends."""
     c = np.cumsum(np.insert(v, 0, 0.0))
     i = np.arange(len(v))
     lo = np.clip(i - w // 2, 0, len(v))
@@ -411,12 +401,9 @@ def main(argv=None) -> int:
     wrote += ["tracking.png", "arrival.png", "summary.csv"]
 
     if not args.no_training:
-        try:
-            run = Path(args.run) if args.run else _newest_run(Path("logs/rsl_rl"), "excavator_navigate")
-            if _training_figure(run, out / "training.png"):
-                wrote.append("training.png")
-        except (SystemExit, OSError, ValueError) as exc:
-            print(f"[training] skipped: {exc}")
+        run = Path(args.run) if args.run else _newest_run(Path("logs/rsl_rl"), "excavator_navigate")
+        if _training_figure(run, out / "training.png"):
+            wrote.append("training.png")
 
     print(f"\nwrote into {out}: {', '.join(wrote)}")
     return 0

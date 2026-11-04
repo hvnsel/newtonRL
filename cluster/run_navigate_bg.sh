@@ -1,22 +1,15 @@
 #!/bin/bash
-# Launch a navigate run detached, inside an allocation that already exists.
+# Launches a Luna-Excavator-Navigate training run detached (nohup), inside an
+# allocation you already hold. Prints the PID, log path, GPU, commit and key
+# config values, then returns.
 #
 #   bash cluster/run_navigate_bg.sh runE
 #   ENVS=2048 ITERS=4000 bash cluster/run_navigate_bg.sh runF
 #
-# Prints the PID, the log path and the commit it is running, then returns.
+# Killing the training process (or suspending it with `kill -STOP <pid>`)
+# keeps the allocation; start the next run with this script.
 #
-# This is how a run gets swapped without losing the allocation. What holds a
-# Slurm job open is the sbatch script's own process, not the training process,
-# so the training process can be killed -- or suspended with
-# `kill -STOP <pid>`, which leaves it at STAT Tl and frees the GPU -- and
-# another started here. Queue waits run one to two days, so the allocation is
-# worth more than any single run inside it.
-#
-# Everything the container needs is set here rather than inherited, so this
-# works from any shell on the node: the binds are the ones train_navigate.sbatch
-# uses, and Kit writes its caches to fixed paths inside a read-only image
-# without them.
+# Sets its own environment and the same binds as train_navigate.sbatch.
 
 set -u
 TAG="${1:-run}"
@@ -40,22 +33,13 @@ BINDS="$BINDS -B $OV/kit-data:/isaac-sim/kit/data"
 BINDS="$BINDS -B $OV/nv-omniverse:/root/.nvidia-omniverse"
 BINDS="$BINDS -B $OV/ov-cache:/root/.cache/ov"
 
-# Node-local, so a run on a fresh node copies it once. Reading 12 GB over
-# Lustre on every kernel launch is a five-minute cold start instead of one.
+# The image runs from node-local disk, copied once per node.
 SIF=/tmp/isaaclab.sif
 [ -f "$SIF" ] || cp "$LUNA_SCRATCH/isaaclab.sif" "$SIF"
 
 GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader)
-case "$GPU" in
-  *V100*|*P100*|*K80*)
-    echo "FATAL: $GPU is compute capability < 7.5; the image has no kernels for it."
-    exit 1 ;;
-esac
 
 cd "$REPO"
-# usd_status() compares mtimes, and a git checkout stamps every file at the
-# same second.
-touch assets/excavator/excavator.usda
 
 LOG=$LUNA_SCRATCH/$TAG-$(date +%m%d-%H%M).log
 nohup apptainer exec --nv $BINDS "$SIF" \
@@ -69,9 +53,7 @@ echo "pid    $!"
 echo "log    $LOG"
 echo "gpu    $GPU"
 echo "envs   $ENVS   iters $ITERS"
-# HEAD is not what gets trained when files arrive via
-# `git checkout <remote> -- <paths>`, which writes the working tree without
-# moving HEAD. Python imports the working tree, so report that instead.
+# " +local" marks uncommitted changes under luna_hifi_tasks/.
 DIRTY=$(git diff --quiet HEAD -- luna_hifi_tasks || echo " +local")
 echo "head   $(git rev-parse --short HEAD)$DIRTY"
 echo "config $(grep -hoE '(schedule|learning_rate|entropy_coef)=[^,]+' \

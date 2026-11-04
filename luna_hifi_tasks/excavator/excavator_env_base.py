@@ -1,12 +1,5 @@
-# excavator_env_base.py
-#
-# What the navigate and excavate environments share: the machine, its joint
-# and body handles, the skid-steer drive mapping, proprioceptive observation
-# terms, the failure terminations, and root reset.
-#
-# Assets are fetched from the scene in _setup_scene, joint ids resolve once in
-# __init__, and resets write root pose, root velocity and joint state
-# separately.
+# What navigate and excavate share: joint and body handles, skid-steer drive,
+# joint targets, proprioception, failure terminations and robot reset.
 
 from __future__ import annotations
 
@@ -41,9 +34,8 @@ from .mdp.terrain import yaw_from_quat
 
 
 class ExcavatorEnvBase(DirectRLEnv):
-    """Shared machinery. Subclasses own actions, observations and rewards."""
+    """Subclasses own actions, observations and rewards."""
 
-    # subclasses set these
     cfg: object
 
     def __init__(self, cfg, render_mode: str | None = None, **kwargs):
@@ -56,36 +48,17 @@ class ExcavatorEnvBase(DirectRLEnv):
         self._drum_ids, _ = self.robot.find_joints(JOINT_DRUMS, preserve_order=True)
         self._shroud_ids, _ = self.robot.find_joints(JOINT_SHROUDS, preserve_order=True)
         self._drum_body_ids, _ = self.robot.find_bodies(BODY_DRUMS, preserve_order=True)
-        assert len(self._shroud_ids) == 2, (
-            f"expected 2 shroud joints, found {len(self._shroud_ids)}. The shroud hinges "
-            "on the drum axis as a separate body; rebuild the USD from excavator.py."
-        )
-        assert len(self._wheel_ids) == 4 and len(self._arm_ids) == 2 and len(self._drum_ids) == 2, (
-            "joint lookup failed -- the USD's joint names do not match excavator.py; "
-            f"have {self.robot.joint_names}"
-        )
-        assert len(self._drum_body_ids) == 2, (
-            f"drum body lookup failed; have {self.robot.body_names}"
-        )
-
-        # commanded speeds, kept so rewards can compare asked vs achieved
+        # Last commanded body speeds.
         self._forward_cmd = torch.zeros(self.num_envs, device=self.device)   # m/s
         self._yaw_cmd = torch.zeros(self.num_envs, device=self.device)       # rad/s
 
-    # ------------------------------------------------------------------
-    # scene
-    # ------------------------------------------------------------------
-
     def _setup_scene(self):
-        # InteractiveScene already spawned everything in the scene cfg.
         self.robot: Articulation = self.scene["excavator"]
 
-    # ------------------------------------------------------------------
-    # drive
-    # ------------------------------------------------------------------
+    # --- joint targets ---
 
     def _apply_drive(self, forward: torch.Tensor, yaw: torch.Tensor) -> None:
-        """Skid steer from [forward, yaw] in [-1, 1]. Straight is yaw = 0."""
+        """Wheel velocity targets for skid steer from forward and yaw in [-1, 1]."""
         v = forward * MAX_WHEEL_SPEED * WHEEL_RADIUS          # m/s
         w = yaw * MAX_YAW_SPEED                               # rad/s
         half_track = 0.5 * TRACK
@@ -97,33 +70,23 @@ class ExcavatorEnvBase(DirectRLEnv):
         self._yaw_cmd[:] = w
 
     def _apply_arms(self, angle: torch.Tensor) -> None:
-        """Position target for both arms. (E,) rad, same value each side."""
+        """Position target (E,) rad for both arms."""
         self.robot.set_joint_position_target(angle.unsqueeze(-1).expand(-1, 2), joint_ids=self._arm_ids)
 
     def _apply_drums(self, speed: torch.Tensor) -> None:
-        """Velocity target for both drums, (E,) rad/s. The same sign on each
-        is the counter-rotating dig; see excavator.py."""
+        """Velocity target (E,) rad/s for both drums."""
         self.robot.set_joint_velocity_target(speed.unsqueeze(-1).expand(-1, 2), joint_ids=self._drum_ids)
 
     def _apply_shrouds(self, angle: torch.Tensor) -> None:
-        """Position target for both shrouds. (E,) rad, same value each side.
+        """Position target (E,) rad for both shrouds (the drum inlets)."""
+        self.robot.set_joint_position_target(angle.unsqueeze(-1).expand(-1, 2), joint_ids=self._shroud_ids)
 
-        The shroud carries the inlet, so minus the arm angle holds the inlet
-        still against the ground through an arm pitch."""
-        self.robot.set_joint_position_target(
-            angle.unsqueeze(-1).expand(-1, 2), joint_ids=self._shroud_ids
-        )
-
-    # ------------------------------------------------------------------
-    # observation pieces
-    # ------------------------------------------------------------------
+    # --- observations ---
 
     def _proprio(self) -> dict[str, torch.Tensor]:
         d = self.robot.data
         tau = d.applied_torque.torch
-        # Phase within a pocket. The rotor is ROTOR_VANES-fold symmetric, so
-        # the joint angle times the vane count reads the same in every pocket,
-        # and (sin, cos) removes the wrap at +-pi.
+        # Rotor phase within a vane pocket.
         rotor = ROTOR_VANES * d.joint_pos.torch[:, self._drum_ids]
         return {
             "base_lin_vel": d.root_lin_vel_b.torch,
@@ -147,11 +110,10 @@ class ExcavatorEnvBase(DirectRLEnv):
         d = self.robot.data
         return d.body_pos_w.torch[:, self._drum_body_ids], d.body_quat_w.torch[:, self._drum_body_ids]
 
-    # ------------------------------------------------------------------
-    # failure terminations shared by both tasks
-    # ------------------------------------------------------------------
+    # --- terminations and reset ---
 
     def _failed(self) -> torch.Tensor:
+        """Non-finite state, beyond max_env_excursion, over 20 m/s, or tipped."""
         d = self.robot.data
         pos = d.root_pos_w.torch - self.scene.env_origins
         bad = R.nonfinite_state(pos, d.root_lin_vel_b.torch, d.joint_vel.torch)
@@ -160,24 +122,13 @@ class ExcavatorEnvBase(DirectRLEnv):
         bad |= R.tipped(d.projected_gravity_b.torch, math.cos(self.cfg.max_tilt_rad))
         return bad
 
-    # ------------------------------------------------------------------
-    # reset
-    # ------------------------------------------------------------------
-
     def _exit_stats(self, env_ids: torch.Tensor) -> dict[str, float]:
-        """Which of DirectRLEnv's two reset causes fired, plus the count.
-
-        Read at the top of _reset_idx, from the buffers DirectRLEnv.step sets
-        just before it calls us. terminated + timeout covers every reset the
-        step loop produces.
-        """
-        out = {"Episode/resets": float(env_ids.numel())}
-        for name in ("reset_terminated", "reset_time_outs"):
-            buf = getattr(self, name, None)
-            if buf is not None:
-                key = "terminated" if "terminated" in name else "timeout"
-                out[f"Episode/{key}"] = float(buf[env_ids].float().mean())
-        return out
+        """Reset count and the share terminated and timed out."""
+        return {
+            "Episode/resets": float(env_ids.numel()),
+            "Episode/terminated": float(self.reset_terminated[env_ids].float().mean()),
+            "Episode/timeout": float(self.reset_time_outs[env_ids].float().mean()),
+        }
 
     def _reset_robot(
         self,
@@ -188,23 +139,17 @@ class ExcavatorEnvBase(DirectRLEnv):
         drum_angle: torch.Tensor | None = None,
         z_offset: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Put the machine at its env origin (+ `xy_offset`, + `z_offset`)
-        facing `yaw`, arms at `arm_angle`, everything else at rest. Returns the
-        world xy written.
-
-        Anything else in the same reset that needs the new pose (goal
-        sampling, initial distances) takes this return value. The data buffers
-        are timestamped against the sim and refresh on the next step, so
-        data.root_pos_w still holds the pose from before the reset.
-        """
+        """Place the machine at its default root state plus the env origin,
+        xy_offset and z_offset, facing yaw, arms at arm_angle (and drums at
+        drum_angle), at rest. Returns the world xy written; robot.data still
+        holds the old pose until the next sim step."""
         root = self.robot.data.default_root_state.torch[env_ids].clone()
         root[:, :3] += self.scene.env_origins[env_ids]
         if xy_offset is not None:
             root[:, :2] += xy_offset
         if z_offset is not None:
             root[:, 2] += z_offset
-        # yaw-only orientation, (x, y, z, w)
-        root[:, 3] = 0.0
+        root[:, 3] = 0.0                                      # quaternion (x, y, z, w), yaw only
         root[:, 4] = 0.0
         root[:, 5] = torch.sin(0.5 * yaw)
         root[:, 6] = torch.cos(0.5 * yaw)
@@ -214,10 +159,7 @@ class ExcavatorEnvBase(DirectRLEnv):
 
         jpos = self.robot.data.default_joint_pos.torch[env_ids].clone()
         jvel = torch.zeros_like(jpos)
-        if isinstance(arm_angle, torch.Tensor):
-            jpos[:, self._arm_ids] = arm_angle.unsqueeze(-1)
-        else:
-            jpos[:, self._arm_ids] = arm_angle
+        jpos[:, self._arm_ids] = torch.as_tensor(arm_angle, device=self.device).reshape(-1, 1)
         if drum_angle is not None:
             jpos[:, self._drum_ids] = drum_angle.unsqueeze(-1)
         self.robot.write_joint_state_to_sim(jpos, jvel, None, env_ids)

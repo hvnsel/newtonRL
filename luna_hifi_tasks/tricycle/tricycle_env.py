@@ -1,10 +1,8 @@
 # tricycle_env.py
 #
-# The smallest DirectRLEnv that exercises the whole stack: MJCF articulation,
-# MPM soil, two-way contact, batched reset, rsl_rl. Reward is per-step forward
+# A DirectRLEnv covering the whole stack: MJCF-derived articulation, MPM soil,
+# two-way contact, batched reset, rsl_rl. Reward is per-step forward
 # displacement, which sums to total distance over the 2 s episode.
-
-# proof of concept we can have an RL environment with an articulated vehicle AND MPM soil
 
 from __future__ import annotations
 
@@ -22,39 +20,22 @@ from .tricycle_env_cfg import TricycleEnvCfg
 class TricycleEnv(DirectRLEnv):
     cfg: TricycleEnvCfg
 
-    # This is a child class of DirectRLEnv which is a child class of InteractiveSceneEnv.
     def __init__(self, cfg: TricycleEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         self._steer_id, _ = self.car.find_joints([JOINT_STEER])
         self._rear_ids, _ = self.car.find_joints(JOINT_REAR)
-        # one steerable front wheel and two rear wheels
-        assert len(self._steer_id) == 1 and len(self._rear_ids) == 2
 
-        # the actions tensor is 2D: number of environments x 2 (throttle, steer)
+        # (num_envs, 2): [throttle, steer]
         self._actions = torch.zeros(self.num_envs, 2, device=self.device)
         self._prev_x = torch.zeros(self.num_envs, device=self.device)
 
     def _setup_scene(self):
-        # InteractiveScene has already spawned everything in TricycleSceneCfg.
-        # Constructing assets here would try to spawn them a second time.
+        # The scene has already spawned everything in TricycleSceneCfg.
         self.car: Articulation = self.scene["tricycle"]
         self.soil: MPMObject = self.scene["soil"]
 
-
-    '''
-    DirectRLEnv has a step function that does the following:
-    This function performs the following steps:
-        1. Pre-process the actions before stepping through the physics.
-        2. Apply the actions to the simulator and step through the physics in a decimated manner.
-        3. Compute the reward and done signals.
-        4. Reset environments that have terminated or reached the maximum episode length.
-        5. Apply interval events if they are enabled.
-        6. Compute observations.
-    We must implement the following abstract methods in this class:
-    '''
     def _pre_physics_step(self, actions: torch.Tensor):
-        # clamp our actions into [-1, 1]
         self._actions[:] = actions.clamp(-1.0, 1.0)
 
     def _apply_action(self):
@@ -85,7 +66,6 @@ class TricycleEnv(DirectRLEnv):
         self._prev_x[:] = x
         return dx.clamp(-0.1, 0.1)     # 0.1 m per 20 ms step = 5 m/s ceiling
 
-    # find out which envs are done, either by timeout or by invalid state
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 
@@ -101,10 +81,7 @@ class TricycleEnv(DirectRLEnv):
 
         return invalid | off_strip | flipped, time_out
 
-    #  Reset the envs that are done, and reset the episode length counter for those envs.
-    def _reset_idx(self, env_ids: torch.Tensor | None):
-        if env_ids is None:
-            env_ids = torch.arange(self.num_envs, device=self.device)
+    def _reset_idx(self, env_ids: torch.Tensor):
         super()._reset_idx(env_ids)
 
         root_state = self.car.data.default_root_state[env_ids].clone()
@@ -118,10 +95,8 @@ class TricycleEnv(DirectRLEnv):
             env_ids,
         )
 
-        # Puts every particle of these envs back at its spawn position with zero
-        # velocity. Solver-side history (warm starts, plastic strain) is not
-        # cleared by this call; NewtonMPMManager.reset_solver_state exists for
-        # that, and the tricycle trains fine without it.
+        # Particles of these envs back to their spawn positions, zero velocity.
+        # Solver-side history (warm starts, plastic strain) is kept.
         self.soil.reset(env_ids)
 
         self._actions[env_ids] = 0.0

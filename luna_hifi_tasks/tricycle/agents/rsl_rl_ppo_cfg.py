@@ -1,8 +1,7 @@
 # agents/rsl_rl_ppo_cfg.py
 #
-# Isaac Lab converts this "policy" style config into rsl_rl's newer actor /
-# critic model configs at start-up (isaaclab_rl.rsl_rl.utils), so it works
-# with the rsl_rl version the develop branch installs.
+# rsl_rl PPO runner config for Luna-Tricycle-Direct. Isaac Lab converts the
+# "policy" field into rsl_rl's actor / critic model configs at start-up.
 
 from isaaclab.utils.configclass import configclass
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
@@ -10,7 +9,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class TricyclePPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 50          # half an episode per rollout at 50 Hz
+    num_steps_per_env = 50          # 1 s at 50 Hz, half an episode
     max_iterations = 300
     save_interval = 50
     experiment_name = "tricycle"

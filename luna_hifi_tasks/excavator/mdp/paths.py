@@ -1,25 +1,12 @@
-# mdp/paths.py
+# Cost-to-goal maps over a cell, for navigate's progress reward.
 #
-# Distance to the goal the way the machine has to drive it, round the craters
-# and boulders rather than through them, for the navigate reward.
-#
-# Each cell's ground is read on a square grid. A grid point is an obstacle
-# where the ground steps to a neighbour by more than a threshold: a boulder's
-# side, a crater's wall. Every grid point gets a travel cost per metre: a lot
-# on an obstacle, rising towards it across a zone round it, 1 on open ground
-# beyond. Costs are finite, so a machine that has come into a zone, or
-# worse, still reads a distance with a slope that leads out.
-#
-# path_field spreads the cheapest cost to the goal over the whole grid from
-# the goal outwards: Bellman-Ford over a 16-neighbour stencil, every grid
-# point at once, batched over envs. The stencil's knight moves keep the
-# distance on open ground within 3% of the straight line in any direction,
-# where 8 neighbours run up to 8% long at 22.5 degrees. A move is charged at
-# the cost of the point it leaves, and no move spans more than two points
-# along an axis; an obstacle's ring is at least two points thick, since both
-# sides of a step are marked, so no move hops it.
-#
-# Only the reward reads these maps. The policy never sees them.
+# A cell's ground is read on a square grid. A grid point is an obstacle where
+# the ground steps to an axis neighbour by more than a threshold; both sides
+# of the step are marked. Travel cost per metre is obstacle_cost on an
+# obstacle, falls linearly from zone_cost beside one to 1 at zone metres out,
+# and is 1 beyond. path_field is Bellman-Ford from the goal over a
+# 16-neighbour stencil, batched over envs; a move is charged at the cost of
+# the point it leaves.
 
 from __future__ import annotations
 
@@ -28,8 +15,8 @@ import math
 import torch
 import torch.nn.functional as F
 
-# (di, dj) of the 16 neighbours, and the centre, which keeps a point's own
-# value. Kernel index into a 5 x 5 unfold is (di + 2) * 5 + (dj + 2).
+# (di, dj) of the centre and the 16 neighbours, and their index into a 5 x 5
+# unfold, (di + 2) * 5 + (dj + 2).
 _STENCIL = [(0, 0)] + [
     (di, dj)
     for di in range(-2, 3)
@@ -39,8 +26,7 @@ _STENCIL = [(0, 0)] + [
 _STENCIL_IDX = [(di + 2) * 5 + (dj + 2) for di, dj in _STENCIL]
 _STENCIL_LEN = [math.hypot(di, dj) for di, dj in _STENCIL]
 
-# Larger than any path cost a grid can hold, and finite, so nothing in the
-# relaxation turns into inf - inf.
+# Initial cost of unreached grid points.
 _FAR = 1.0e9
 
 
@@ -59,10 +45,7 @@ def obstacle_cost(
     zone_cost: float,
     obstacle_cost: float,
 ) -> torch.Tensor:
-    """(B, G, G) travel cost per metre: obstacle_cost on both sides of every
-    step taller than `step` between axis neighbours; across `zone` metres
-    round one, falling linearly from zone_cost beside it to 1 at the zone's
-    edge; 1 beyond."""
+    """(B, G, G) travel cost per metre from (B, G, G) heights at spacing res."""
     h = heights
     dx = torch.nan_to_num((h[:, 1:, :] - h[:, :-1, :]).abs(), nan=0.0) > step
     dy = torch.nan_to_num((h[:, :, 1:] - h[:, :, :-1]).abs(), nan=0.0) > step
@@ -72,8 +55,7 @@ def obstacle_cost(
     obst[:, :, 1:] |= dy
     obst[:, :, :-1] |= dy
 
-    # Distance to the nearest obstacle point, out to the zone's edge: the
-    # nearest of every offset within it at which one sits.
+    # Distance to the nearest obstacle point within the zone.
     k = int(math.ceil(zone / res))
     pad = F.pad(obst.float(), (k, k, k, k)).bool()
     gx, gy = h.shape[1], h.shape[2]
@@ -99,10 +81,9 @@ def path_field(
     check_every: int = 16,
     chunk: int = 128,
 ) -> torch.Tensor:
-    """(n, G, G) cheapest cost from each grid point to the goal, in metres of
-    open ground. Grid points within one spacing of the goal start at their
-    straight distance to it; everything else relaxes from there until no
-    value changes over check_every sweeps, or max_iters."""
+    """(n, G, G) cheapest cost from each grid point to the goal. Points within
+    one spacing of the goal start at their straight cost to it; sweeps run
+    until nothing changes over check_every of them, or max_iters."""
     out = []
     for s in range(0, cost.shape[0], chunk):
         out.append(_path_field(cost[s:s + chunk], goal_uv[s:s + chunk], res, max_iters, check_every))
@@ -131,8 +112,8 @@ def _path_field(cost, goal_uv, res, max_iters, check_every):
 
 
 def sample_field(field: torch.Tensor, uv: torch.Tensor, res: float) -> torch.Tensor:
-    """(n,) the field at (n, 2) grid coordinates, bilinear. Off the grid the
-    nearest edge value plus the straight distance out to the point."""
+    """(n,) bilinear sample of the field at (n, 2) grid coordinates; off the
+    grid, the nearest edge value plus the straight distance to it."""
     n, gx, gy = field.shape
     u = uv[:, 0].clamp(0.0, gx - 1.0)
     v = uv[:, 1].clamp(0.0, gy - 1.0)

@@ -1,40 +1,13 @@
-# agents/rsl_rl_ppo_cfg.py
+# PPO for navigate (rsl_rl 5).
 #
-# Model configs in rsl_rl 5's form, which Isaac Lab passes through to the
-# runner (isaaclab_rl.rsl_rl.utils).
-#
-#   * the actor is rsl_rl's CNNModel. The 25-wide "policy" group --
-#     velocities, attitude, the goal, the last action -- is normalised and
-#     goes straight to the MLP. The two terrain windows arrive as images and
-#     each goes through its own CNN encoder, trained by the PPO loss with
-#     everything else; no separate autoencoder. Two 3x3 stride-2
-#     convolutions take each window down to a 6 x 6 grid of 4 features, 144
-#     numbers: far, 27 x 27 at 0.45 m, goes 27 -> 13 -> 6, an output cell
-#     every 1.8 m; near, 25 x 25 at 0.20 m, goes 25 -> 12 -> 6, one every
-#     0.8 m. rsl_rl's "zeros" padding pads a layer only where the stride
-#     needs it, so an odd window loses its edge row rather than growing one.
-#     A third convolution took both to 3 x 3, cells 3.6 m and 1.6 m apart,
-#     coarser than the gaps the machine has to find; global pooling would
-#     lose where a hazard is altogether. The MLP reads 313 inputs, 288 of
-#     them terrain.
-#   * the critic is an MLP over the policy group and the privileged "critic"
-#     group, which carries the clean scan, true slip and exact fill: the
-#     asymmetric actor-critic. It is discarded after training, so it may read
-#     what no rover could.
-#   * symmetry: every mini-batch is doubled with each sample turned 180
-#     degrees, mdp/symmetry.turn_around, so neither end of the machine is the
-#     front. The extra samples cost a second forward and backward pass per
-#     mini-batch, not simulation.
-#
-# 256 envs (the workstation reboots under a full GPU load) with 128-step
-# rollouts: 32,768 samples an update. 4000 iterations of that is 131M steps,
-# the same experience as the earlier 2000 at 1024 x 64. A checkpoint every 25
-# iterations, so a reboot costs at most 25 iterations.
-#
-# gamma 0.997 is an effective horizon of 333 steps, 13 s at 25 Hz, against a
-# 750-step episode covering an 18 m traverse. A goal reached 400 steps out
-# discounts to 0.30, so the terminal bonus stays visible from the start of a
-# long run.
+# Actor: rsl_rl CNNModel. The 25-wide "policy" group goes to the MLP
+# normalised; each scan image goes through its own CNN encoder, two 3x3
+# stride-2 convolutions to a 6 x 6 x 4 grid (far 27 -> 13 -> 6, near
+# 25 -> 12 -> 6). MLP input: 25 + 2 x 144 = 313.
+# Critic: MLP over the "policy" and privileged "critic" groups.
+# Symmetry: each mini-batch is doubled with every sample turned 180 degrees
+# (mdp/symmetry.turn_around).
+# 256 envs x 128 steps = 32,768 samples per update; 4000 iterations = 131M steps.
 
 from isaaclab.utils.configclass import configclass
 from isaaclab_rl.rsl_rl import (
@@ -79,10 +52,6 @@ class ExcavatorNavigatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        # 0.002 let the std run down to 0.04 by iteration 1800, which is a
-        # deterministic policy: once there it cannot explore its way out of
-        # whatever it has converged to, and it converged to creeping 2.6 m
-        # and stopping. Back to 0.005.
         entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,

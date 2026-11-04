@@ -3,16 +3,9 @@
     python3 scripts/render_dig.py dig_bed.npz
     python3 scripts/render_dig.py dig_bed.npz --out dig.gif --fps 12
 
-Writes an animated GIF, which needs only matplotlib and plays anywhere, and
-optionally the individual PNGs with --png.
-
-Why this rather than a rendered viewport: on the Newton backend env.render()
-returns None, the GL viewer runs headless under EGL with no readable buffer,
-and there is no display on the workstation anyway. But the soil surface is
-already a (ny, nx) heightmap recomputed every step for the reward, so the
-thing worth seeing can be drawn from data rather than captured from pixels.
-It also shows what a camera would not: height CHANGE against the opening
-surface, so removal and spoil piles separate by colour.
+Writes an animated GIF with matplotlib, and optionally every frame as a PNG
+with --png. Without matplotlib (or with --no_mpl) it writes plain top-down
+PNGs with numpy and zlib only.
 
 Three panels:
 
@@ -33,12 +26,9 @@ import numpy as np
 
 
 def _write_png(path: Path, rgb: np.ndarray) -> None:
-    """Write an (h, w, 3) uint8 array as a PNG, with zlib and nothing else.
-
-    Here so that a box without matplotlib still gets pictures. PNG's own
-    format is a zlib stream of rows each prefixed by a filter byte, wrapped in
-    four chunks whose lengths and CRCs are big-endian.
-    """
+    """Write an (h, w, 3) uint8 array as a PNG: a zlib stream of rows, each
+    prefixed by a filter byte, in IHDR/IDAT/IEND chunks with big-endian
+    lengths and CRCs."""
     import struct
     import zlib
 
@@ -59,9 +49,9 @@ def _write_png(path: Path, rgb: np.ndarray) -> None:
 
 def _colour(delta: np.ndarray, span: float) -> np.ndarray:
     """Height change to RGB: blue where soil left, red where it piled up."""
-    u = np.clip(delta / max(span, 1e-9), -1.0, 1.0)
+    u = np.clip(delta / span, -1.0, 1.0)
     neg, pos = np.clip(-u, 0, 1), np.clip(u, 0, 1)
-    # white at no change, saturating either way, so zero reads as background.
+    # White at no change.
     r = 1.0 - 0.85 * neg
     g = 1.0 - 0.85 * (neg + pos)
     b = 1.0 - 0.85 * pos
@@ -79,21 +69,20 @@ def _fallback(d, out_dir: Path, scale: int, stride: int) -> int:
     delta = bed - bed[0]
     span = float(np.percentile(np.abs(delta), 99.5)) or voxel
 
-    ys, xs = np.nonzero(work) if work.any() else (np.array([0]), np.array([0]))
+    ys, xs = np.nonzero(work)
     out_dir.mkdir(parents=True, exist_ok=True)
     for k in range(T):
         img = _colour(delta[k], span)
         # Work-area outline, one cell thick, before upscaling.
-        if work.any():
-            for yy in (ys.min(), ys.max()):
-                img[yy, xs.min():xs.max() + 1] = (0, 0, 0)
-            for xx in (xs.min(), xs.max()):
-                img[ys.min():ys.max() + 1, xx] = (0, 0, 0)
+        for yy in (ys.min(), ys.max()):
+            img[yy, xs.min():xs.max() + 1] = (0, 0, 0)
+        for xx in (xs.min(), xs.max()):
+            img[ys.min():ys.max() + 1, xx] = (0, 0, 0)
         # The machine, as a filled square at its grid cell.
         cx = int(np.clip(round((pose[k, 0] - lower[0]) / voxel), 1, nx - 2))
         cy = int(np.clip(round((pose[k, 1] - lower[1]) / voxel), 1, ny - 2))
         img[cy - 1:cy + 2, cx - 1:cx + 2] = (20, 120, 20)
-        # origin="lower" by hand: PNG rows run top-down.
+        # PNG rows run top-down; flip so +y is up.
         img = img[::-1]
         if scale > 1:
             img = np.repeat(np.repeat(img, scale, axis=0), scale, axis=1)
@@ -126,13 +115,12 @@ def main(argv=None) -> int:
     if args.no_mpl:
         return _fallback(d, Path(args.npz).with_suffix(""), args.scale, args.stride)
     try:
-        import matplotlib  # noqa: F401
+        import matplotlib
     except ModuleNotFoundError:
         print("no matplotlib here; writing the plain top-down frames instead")
         return _fallback(d, Path(args.npz).with_suffix(""), args.scale, args.stride)
 
-    import matplotlib
-    matplotlib.use("Agg")                    # no display, and none needed
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation, PillowWriter
     from matplotlib.patches import Rectangle
@@ -145,15 +133,13 @@ def main(argv=None) -> int:
     cap = float(d["drum_capacity_kg"])
 
     T, ny, nx = bed.shape
-    # Cell centres in env-local metres. soil_heightmap indexes [y][x] from
-    # bed_grid_lower, so extent follows that and nothing is transposed.
+    # Env-local extent of the grid; bed is indexed [y][x] from bed_grid_lower.
     x0, y0 = float(lower[0]), float(lower[1])
     extent = (x0, x0 + nx * voxel, y0, y0 + ny * voxel)
 
     opening = bed[0]
     delta = bed - opening                    # negative where soil left
-    # Symmetric scale, ignoring the extremes so one flung cell does not wash
-    # the whole map out.
+    # Symmetric colour scale at the 99.5th percentile of |change|.
     span = float(np.percentile(np.abs(delta), 99.5)) or voxel
     t = pose[:, 4]
     removal, payload = pose[:, 5], pose[:, 6]
@@ -168,13 +154,12 @@ def main(argv=None) -> int:
                        cmap="RdBu_r", vmin=-span, vmax=span)
     fig.colorbar(im, ax=ax_map, label="height change (m)   blue = soil removed",
                  fraction=0.035, pad=0.02)
-    # The work area, as the env masked it: its own bounding box in cell space.
-    if work.any():
-        ys, xs = np.nonzero(work)
-        ax_map.add_patch(Rectangle(
-            (x0 + xs.min() * voxel, y0 + ys.min() * voxel),
-            (xs.max() - xs.min() + 1) * voxel, (ys.max() - ys.min() + 1) * voxel,
-            fill=False, ec="k", lw=1.6, ls="--", label="work area"))
+    # Bounding box of the work-area mask.
+    ys, xs = np.nonzero(work)
+    ax_map.add_patch(Rectangle(
+        (x0 + xs.min() * voxel, y0 + ys.min() * voxel),
+        (xs.max() - xs.min() + 1) * voxel, (ys.max() - ys.min() + 1) * voxel,
+        fill=False, ec="k", lw=1.6, ls="--", label="work area"))
     machine, = ax_map.plot([], [], "o", ms=11, mfc="none", mec="k", mew=2.2)
     heading, = ax_map.plot([], [], "-", c="k", lw=2.2)
     track, = ax_map.plot([], [], "-", c="0.35", lw=1.0, alpha=0.8)

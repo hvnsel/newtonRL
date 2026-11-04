@@ -1,22 +1,17 @@
 # scripts/dig_demo.py
 #
-# Watch the machine dig, with no policy involved. A fixed four-phase script
-# drives the excavate task on the small bed:
+# Scripted dig on the small bed, no policy:
 #
-#   settle   everything at rest, arms stowed high, so the chassis finds the
-#            soil surface before anything moves
-#   lower    boom ramps down until the drums are buried to the target depth
-#   spin     drums ramp up to digging speed, still stationary
-#   drive    slow forward crawl, cutting a trench
+#   settle   at rest, arms stowed
+#   lower    boom ramps down to the cut depth
+#   spin     drums ramp up to digging speed, stationary
+#   drive    slow forward crawl
+#   dump     (--t_dump) inlet up, rotor reversed
 #
 #   isaaclab -p scripts/dig_demo.py
 #   isaaclab -p scripts/dig_demo.py --cut 0.05 --drive 0.35 --seconds 40
 #
-# The output to watch is the fill readout. The drums are in the soil by
-# construction here, so drum_fill_mass rising is what says the particle
-# adapter reads real particles.
-#
-# Pass --no_window to run it as a plain assertion with no viewer.
+# Exits 0 if drum fill rose above 1 kg in every env. --no_window skips the viewer.
 
 from __future__ import annotations
 
@@ -48,13 +43,13 @@ from luna_hifi_tasks.excavator.excavator_cfg import (
     MAX_DRUM_SPEED,
     MAX_WHEEL_SPEED,
     SPIN_LIMIT,
+    usd_status,
 )
-
-CHANNEL_OPENING = VANE_TIP_GAP
 from luna_hifi_tasks.excavator.excavate.excavate_env_cfg import BORE_HALF_LEN
 from luna_hifi_tasks.excavator.mdp.sensors import drum_fill_mass
 
 TASK = "Luna-Excavator-Excavate-Small"
+CHANNEL_OPENING = VANE_TIP_GAP
 
 
 def _parse(argv):
@@ -62,8 +57,6 @@ def _parse(argv):
     p.add_argument("--task", default=TASK, help=f"default {TASK}")
     p.add_argument("--num_envs", type=int, default=1)
     p.add_argument("--seconds", type=float, default=30.0, help="simulated seconds to run")
-    # Not --headless: AppLauncher guards that name as a SimulationApp config
-    # key and _check_argparser_config_params rejects a parser carrying it.
     p.add_argument("--no_window", action="store_true", help="skip the viewer; just run the checks")
 
     # Phase boundaries, in simulated seconds.
@@ -74,42 +67,26 @@ def _parse(argv):
                    help="turn the inlet up and reverse the rotor at this time; "
                         "off by default. Fill falls after it")
 
-    # Depth of the shroud below the soil surface, in metres, which
-    # cfg.boom_command_for_cut() turns into a boom command against the env's
-    # own bed. The shroud is the outermost part of the drum, and
-    # cut_diagnosis() reports the margin per run.
     p.add_argument("--cut", type=float, default=0.10,
                    help="how deep the shroud cuts below the surface, metres")
     p.add_argument("--boom", type=float, default=None,
                    help="raw boom command, overriding --cut")
-    # 1.0 is 8 rad/s, 2.0 m/s at the lip, which throws soil clear of the
-    # drum; 0.4 is 0.8 m/s and scoops. DIG_DRUM_SIGN is the loading sign,
-    # derived from the lip handedness; the other sign dumps.
     p.add_argument("--drum", type=float, default=0.4 * DIG_DRUM_SIGN,
-                   help="drum command once spinning; |cmd| > ~0.5 flings rather than scoops. "
-                        f"The loading sign for this lip is {DIG_DRUM_SIGN:+.0f}")
-    # 0.05 is 0.075 m/s, 12 s to cross a 0.9 m bed.
+                   help="drum command once spinning, a fraction of MAX_DRUM_SPEED. "
+                        f"The loading sign is {DIG_DRUM_SIGN:+.0f}; the other dumps")
     p.add_argument("--drive", type=float, default=0.05,
                    help="forward command once crawling; 1.0 is 1.5 m/s")
 
-    # Set on the cfg before gym.make, which is when the env re-derives the
-    # MPM material from these fields.
-    p.add_argument("--cohesion", type=float, default=None,
-                   help="soil yield_stress in Pa; 0 sprays, ~800 holds a cut together")
+    # Set on the cfg before gym.make, which re-derives the MPM material from them.
+    p.add_argument("--cohesion", type=float, default=None, help="soil yield_stress in Pa")
     p.add_argument("--friction", type=float, default=None, help="soil friction, ~tan(phi)")
     p.add_argument("--density", type=float, default=None, help="soil density, kg/m3")
-    # The channel opens 0.122 m and the coupler takes a voxel of it, so this
-    # sets how many grains wide the way in is. Granular material arches across
-    # an orifice narrower than about four.
-    #   0.03 -> 3.0 grains   0.025 -> 3.9   0.02 -> 5.0
-    # Particle count goes as the inverse cube.
     p.add_argument("--voxel", type=float, default=None,
-                   help="MPM voxel; sets how many grains wide the drum's entry channel is")
+                   help="override voxel_size [m], the height-grid cell; half of it is the collider margin")
 
     add_launcher_args(p)
     p.set_defaults(device=None, visualizer=["newton_gl"])
-    # resolve_task_config runs Hydra, which re-reads sys.argv, so this script's
-    # own flags have to be split off and the remainder handed over.
+    # Hydra (in resolve_task_config) reads the remaining arguments from sys.argv.
     args, hydra_args = setup_preset_cli(p, argv)
     sys.argv = [sys.argv[0]] + hydra_args
     return args
@@ -117,28 +94,17 @@ def _parse(argv):
 
 def _dominant(u, n: int = 2) -> str:
     """The n reward terms with the largest magnitude this step, for env 0."""
-    terms = getattr(u, "_last_terms", None)
-    if not terms:
-        return ""
     ranked = sorted(
-        ((k, float(v[0])) for k, v in terms.items()),
+        ((k, float(v[0])) for k, v in u._last_terms.items()),
         key=lambda kv: -abs(kv[1]),
     )[:n]
     return "[" + " ".join(f"{k} {v:+.2f}" for k, v in ranked if abs(v) > 1e-3) + "]"
 
 
 def soil_shells(u) -> tuple[torch.Tensor, torch.Tensor]:
-    """(in the running clearance, outside the shroud) kg per drum, front and
-    rear.
-
-    Three radial bands:
-
-        r < 0.185   the rotor's swept cylinder, which is fill
-        0.185-0.212 the running clearance and the shroud wall: soil wedged
-                    between vane tips and shroud
-        > 0.212     outside the drum, soil the shroud is buried in, which
-                    rises whenever the drum is in the ground
-    """
+    """(E, 2) kg per drum, front and rear, in two radial bands about the drum
+    axis: ROTOR_TIP_R..SHROUD_OUT_R (between vane tips and shroud wall), and
+    SHROUD_OUT_R..SHROUD_OUT_R + 0.10 (outside the shroud)."""
     pos, env = u._particles()
     dpos, dquat = u._drum_poses()
 
@@ -155,12 +121,8 @@ def soil_shells(u) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def cut_diagnosis(cfg, cut: float) -> list[str]:
-    """Whether the bed can supply the requested cut.
-
-    The bed is a finite slab on a rigid floor, so past a depth the drum grinds
-    on the slab holding the particles up. `cut` is to the shroud, the
-    outermost part of the drum.
-    """
+    """Notes on a shroud cut depth `cut` against the bed: whether the shroud
+    reaches the floor, and how much of the rotor ends up below grade."""
     wall = SHROUD_OUT_R - ROTOR_TIP_R
     floor = cfg.bed_top - cfg.bed_depth
     shroud_z = cfg.bed_top - cut
@@ -178,15 +140,12 @@ def cut_diagnosis(cfg, cut: float) -> list[str]:
     out.append(f"{submerged / span * 100:.0f}% of the {span:.2f} m rotor "
                f"ends up below grade")
     if submerged < ROTOR_TIP_R:
-        out.append(f"that is under half. A {ROTOR_TIP_R + wall:.2f} m deep bed is what it "
-                   "takes to bury half the rotor, and no cut depth or cohesion value "
-                   "substitutes for it")
+        out.append(f"under half; a {ROTOR_TIP_R + wall:.2f} m cut buries half the rotor")
     return out
 
 
 def _ramp(t: float, t0: float, duration: float = 1.5) -> float:
-    """0 before t0, 1 after t0 + duration, linear between. Eases the arm into
-    the bed and the drums up to speed."""
+    """0 before t0, 1 after t0 + duration, linear between."""
     if t <= t0:
         return 0.0
     return min((t - t0) / duration, 1.0)
@@ -195,9 +154,6 @@ def _ramp(t: float, t0: float, duration: float = 1.5) -> float:
 def main(argv=None) -> int:
     args = _parse(argv)
     torch.manual_seed(0)
-
-    # Checked before anything spawns.
-    from luna_hifi_tasks.excavator.excavator_cfg import usd_status
 
     problem = usd_status()
     if problem is not None:
@@ -244,14 +200,14 @@ def main(argv=None) -> int:
               f"grid {u.cfg.bed_grid_nx} x {u.cfg.bed_grid_ny}, "
               f"surface at z = {u.cfg.bed_top:.3f} m")
         print(f"  rotor sweeps {u.cfg.drum_capacity_kg:.1f} kg each")
-        print(f"  shroud inlet held at minus the arm angle, so it stays "
-              f"pointed at the ground")
+        print("  shroud inlet held at minus the arm angle, so it stays "
+              "pointed at the ground")
         print(f"  machine stands {'ON the bed' if u.cfg.spawn_on_bed else 'beside the pile'}")
-        # Off the material the solver was handed, not off the cfg fields.
         mat = u.cfg.scene.soil.spawn.material
         print(f"  soil: density {mat.density:.0f} kg/m3, friction {mat.friction:.2f}, "
               f"cohesion {mat.yield_stress:.0f} Pa")
-        # The number that decides whether soil can enter at all.
+        # Entry channel: the vane-tip gap less 6 mm a side. Width in voxels after
+        # one voxel of collider margin.
         chan = CHANNEL_OPENING - 2.0 * 0.006
         grains = (chan - u.cfg.voxel_size) / u.cfg.voxel_size
         print(f"  entry channel {chan:.4f} m, {u.cfg.voxel_size:.3f} m voxel -> "
@@ -263,22 +219,18 @@ def main(argv=None) -> int:
               f"(at r = {ROTOR_TIP_R:.3f} m, the vane tip)")
         if abs(rad_s) > SPIN_LIMIT:
             print(f"  !! {abs(rad_s):.2f} rad/s is over the {SPIN_LIMIT:.2f} rad/s where "
-                  "outward acceleration passes lunar gravity: regolith is thrown at the "
-                  "shroud instead of carried inward")
+                  "outward acceleration passes lunar gravity")
         if args.drum * DIG_DRUM_SIGN < 0:
-            print(f"  * this is the DUMP direction. Loading is {DIG_DRUM_SIGN:+.0f}; at "
-                  f"{args.drum:+.2f} the channel runs outward and the drum empties. "
-                  "Expect fill to fall, not rise.")
+            print(f"  * this is the DUMP direction. Loading is {DIG_DRUM_SIGN:+.0f}")
 
         boom, angle = u.cfg.boom_command_for_cut(args.cut)
         lo_arm, hi_arm = u.cfg.arm_range
 
-        # Where the drum is against where the soil is. Needs `angle`.
         drum_x = PIVOT_X + ARM_LEN * math.cos(angle)
         lead = drum_x + SHROUD_OUT_R
         ahead = u.cfg.bed_x[1] - lead
         speed = args.drive * MAX_WHEEL_SPEED * WHEEL_RADIUS
-        print(f"\n=== drum against the bed ===")
+        print("\n=== drum against the bed ===")
         print(f"  bed spans x {u.cfg.bed_x[0]:.2f} .. {u.cfg.bed_x[1]:.2f} m; at the dig "
               f"angle the drum axis is at {drum_x:.2f}, leading edge {lead:.2f}")
         if ahead <= 0.0:
@@ -291,9 +243,6 @@ def main(argv=None) -> int:
             boom = args.boom
             print(f"  boom command {boom:+.3f} (given directly, --cut ignored)\n")
         else:
-            # --cut is to the shroud. The rotor sits inside it, so the vane
-            # tips reach shallower, and that depth is how much of the rotor is
-            # in soil.
             wall = SHROUD_OUT_R - ROTOR_TIP_R
             print(f"  to cut {args.cut:.3f} m -> arm {angle:+.3f} rad "
                   f"-> boom command {boom:+.3f}")
@@ -304,9 +253,7 @@ def main(argv=None) -> int:
 
         obs, _ = env.reset()
         action = torch.zeros(u.num_envs, u.cfg.action_space, device=u.device)
-        slo, shi = u.cfg.shroud_range
-        # Wall clock over the whole run, so the throughput figure includes
-        # the MPM solve, the coupler and the reward.
+        shi = u.cfg.shroud_range[1]
         t_start = time.perf_counter()
 
         peak = torch.zeros(u.num_envs, 2, device=u.device)
@@ -330,18 +277,14 @@ def main(argv=None) -> int:
 
             action[:, 0] = 0.0 if dumping else args.drive * drive
             action[:, 1] = 0.0
-            # Boom starts at the cfg's stow angle and ramps to the dig command.
-            # Dumping lifts it clear of the bed first.
+            # Boom ramps from stowed (-1) to the dig command; stowed while dumping.
             action[:, 2] = -1.0 if dumping else -1.0 + (boom + 1.0) * lower
-            # Reversing the rotor runs the vanes backwards, emptying the
-            # pockets.
             action[:, 3] = -args.drum if dumping else args.drum * spin
-            # The shroud carries the inlet. Holding it at MINUS the arm angle
-            # keeps the inlet pointing at the ground while the boom pitches; to
-            # dump, turn it up and let the pockets fall open.
+            # Shroud at minus the arm angle, which keeps the inlet facing the
+            # ground; turned fully up while dumping.
             arm_now = lo_arm + 0.5 * (float(action[0, 2]) + 1.0) * (hi_arm - lo_arm)
             want = shi if dumping else -arm_now
-            action[:, 4] = max(-1.0, min(1.0, want / max(shi, 1e-6)))
+            action[:, 4] = max(-1.0, min(1.0, want / shi))
 
             obs, rew, term, trunc, _ = env.step(action)
             peak = torch.maximum(peak, u._fill_kg)
@@ -361,7 +304,7 @@ def main(argv=None) -> int:
                       f"truncated={bool(trunc.any())}) -- bed and machine reset")
 
         wall = time.perf_counter() - t_start
-        sps = steps * u.num_envs / max(wall, 1e-9)
+        sps = steps * u.num_envs / wall
         print("\n=== throughput ===")
         print(f"  {steps} steps x {u.num_envs} env in {wall:.1f} s "
               f"-> {sps:,.0f} env-steps/s at {u.cfg.bed_particles_per_env:,} particles")
@@ -369,50 +312,13 @@ def main(argv=None) -> int:
         print("\n=== result ===")
         print(f"  peak fill per drum, per env (kg):\n{peak}")
         print(f"  peak in the shell wall band, never reaching the bore (kg):\n{peak_lip}")
-        if float(peak.max()) < 1.0:
-            voxel = u.cfg.voxel_size
-            clear = 0.0819 - voxel
-            print(f"\n  Fill never moved. The entry channel opens 0.0819 m and the coupler")
-            print(f"  eats a whole voxel of it, leaving {clear:.4f} m clear -- "
-                  f"{clear / voxel:.1f} particle")
-            print("  spacings. Granular material ARCHES across an orifice narrower than")
-            print("  about four to six grains: the grains jam against each other and the")
-            print("  flow simply stops, however hard it is pushed. That is a property of")
-            print("  the material, not of the drum, and no lip geometry defeats it.")
-            print(f"\n  At this voxel the channel is {clear / voxel:.1f} grains wide. Options, cheapest first:")
-            print(f"    env.voxel_size=0.02   -> {(0.0819 - 0.02) / 0.02:.1f} grains. More particles, but the")
-            print("                             contact buffers are no longer the limit")
-            print("    --cohesion 0           -> cohesive material arches MORE readily")
-            print("    --drum +0.4            -> if fill RISES, DIG_DRUM_SIGN is inverted")
-            print("                             and we have been running the dump direction")
         ok = bool((peak.sum(dim=-1) > 1.0).all())
         print(("  PASS  " if ok else "  FAIL  ") +
               "drum fill rose while the drums were in the bed")
         if not ok:
-            print("\n  Fill never moved. In order of likelihood:")
-            print("   1. mpm_particle_state reads the wrong MPMObject.data attribute,")
-            print("      so drum_fill_mass is summing over an empty tensor.")
-            print("   2. the drums never actually reached soil -- check the arm angle")
-            print("      printed above against bed_top, and try a larger --boom.")
-            print("   3. the coupler proxy body regex matched nothing, so the drums")
-            print("      pass through the particles without disturbing them. Compare")
-            print("      the body names above with SOIL_CONTACT_BODIES_REGEX.")
-            print("\n  If particles VISIBLY move but fill stays near zero, none of the")
-            print("  above is wrong -- the drum is failing to carry soil. In order:")
-            print("    --cut 0.18               get more of the bore under the surface;")
-            print("                             at 0.12 only ~0.09 m of a 0.34 m bore is")
-            print("                             below grade, so most of it never sees soil")
-            print("    --cohesion 1500          cut material travels as a clod instead of")
-            print("                             shearing off the lip and flowing back out.")
-            print("                             NOT env.soil_cohesion=1500: Hydra applies")
-            print("                             that after the material is already built")
-            print("    --drum 0.25              slower; above the spin limit the vanes")
-            print("                             throw regolith at the shroud instead of")
-            print("                             carrying it inward")
-            print(f"    --drum {-0.4 * DIG_DRUM_SIGN:+.1f}             runs the vanes backwards, which should")
-            print("                             make fill FALL. If it rises instead,")
-            print("                             RAKE_SIGN is mirrored -- flip it and")
-            print("                             DIG_DRUM_SIGN follows")
+            print("  check the arm angle above against bed_top (--cut, --boom), the body names")
+            print("  against SOIL_CONTACT_BODIES_REGEX, the entry channel width (--voxel) and")
+            print(f"  the drum sign (--drum; loading is {DIG_DRUM_SIGN:+.0f})")
         env.close()
     return 0 if ok else 1
 

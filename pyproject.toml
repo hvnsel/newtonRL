@@ -1,22 +1,12 @@
 [project]
 name = "luna_hifi_tasks"
 version = "0.1.0"
-description = "Isaac Lab tricycle task: articulated vehicle on Newton implicit-MPM soil"
+description = "Isaac Lab tasks for a lunar regolith excavator: navigate and excavate, plus a tricycle demo"
 requires-python = ">=3.11"
 dependencies = []
 
-# scripts/check_excavator.py validates the excavator geometry offline and needs
-# MuJoCo but deliberately NOT Isaac Lab, so it runs wherever you are editing
-# excavator.py.
 [project.optional-dependencies]
-assets = ["mujoco>=3.13"]       # below this mj_geomDistance silently returns 0.0
-                                # for every pair, which makes every clearance and
-                                # passage number in check_excavator.py a fiction
-
-# Isaac Lab's VideoRecorder is built by DirectRLEnv._init_sim whenever
-# cfg.video_recorders is non-empty, which --video sets, and it raises on import
-# rather than degrading, so `play --video` fails at env construction without
-# this. Install it into the Isaac Lab venv, not here:
+# play --video; install into the Isaac Lab venv:
 #   uv pip install --python <isaaclab>/.venv/bin/python 'moviepy<2'
 video = ["moviepy<2"]
 

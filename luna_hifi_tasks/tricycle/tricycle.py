@@ -1,13 +1,10 @@
 # tricycle.py
-# vibecoded tricycle asset for training
 #
-# The car, as an MJCF string. One steerable front wheel, two driven rear
+# The tricycle as an MJCF string: one steerable front wheel, two driven rear
 # wheels, and a triangular frame connecting the three.
 #
-# This file is NOT read at training time. Training loads the converted USD in
-# assets/tricycle/. The MJCF here is the *source* of that USD: whenever you
-# change it, re-run the converter (see RUNBOOK.md, "Convert the tricycle
-# asset") so the USD matches again.
+# Training loads the converted USD in assets/tricycle/. This MJCF is its
+# source; after editing it, re-run the converter (README.md, "Assets").
 #
 # Body (plan view, +x forward):
 #
@@ -18,13 +15,8 @@
 #          rear_right
 #           ^ rear crossbar
 #
-# Wheels are spheres, not cylinders: analytic spheres are the cheapest and most
-# robust collider the MPM grid handles, and for "does the pipeline train" the
-# contact patch shape is irrelevant. Wheel positions and radii are unchanged
-# from the first working version, so nothing about the soil coupling moved.
-#
-# Every body with a joint has a geom with mass, so MuJoCo derives real inertia
-# for all of them. A body with zero inertia produces NaNs in the solver.
+# Wheels are spheres. MuJoCo derives every body's inertia from the masses of
+# its geoms.
 #
 # Frame: +x forward, +z up. Wheel bottoms sit at z = 0 in the chassis frame's
 # rest pose (chassis centre at z = 0.14, wheel centres at z = 0.10, r = 0.10).
@@ -49,11 +41,11 @@ REAR_Y = 0.16             # rear wheel centre, either side
 
 # Triangle: apex at the steering head, base between the rear wheels.
 APEX = (FRONT_X, 0.0)
-REAR_CORNER_Y = 0.13      # inside the rear wheels, so the rails end inside them
+REAR_CORNER_Y = 0.13      # rail ends, inside the rear wheels
 RAIL_HALF_W = 0.02        # rail cross-section is 4 cm wide x 3 cm tall
 RAIL_HALF_H = 0.015
 
-# Masses: same 5.0 kg chassis total as the original box body.
+# Chassis masses, 5.0 kg in total.
 RAIL_MASS = 0.8
 CROSSBAR_MASS = 0.8
 DECK_MASS = 2.6
@@ -86,14 +78,14 @@ def _rail(name: str, start: tuple[float, float], end: tuple[float, float], mass:
 LEFT_RAIL = _rail("left_rail", (REAR_X, REAR_CORNER_Y), APEX, RAIL_MASS)
 RIGHT_RAIL = _rail("right_rail", (REAR_X, -REAR_CORNER_Y), APEX, RAIL_MASS)
 
-# Base of the triangle. Runs slightly past the rail ends so the corners are closed.
+# Base of the triangle, extending past the rail ends to close the corners.
 CROSSBAR = (
     f'<geom name="crossbar" type="box" pos="{REAR_X} 0 0" '
     f'size="{RAIL_HALF_W} {REAR_CORNER_Y + RAIL_HALF_W} {RAIL_HALF_H}" '
     f'mass="{CROSSBAR_MASS}" rgba="{FRAME_RGBA}"/>'
 )
 
-# Flat floor pan inside the rear half of the triangle. Carries most of the mass.
+# Flat floor pan inside the rear half of the triangle; most of the chassis mass.
 DECK = (
     f'<geom name="deck" type="box" pos="-0.08 0 0" size="0.06 0.065 0.01" '
     f'mass="{DECK_MASS}" rgba="{DECK_RGBA}"/>'
@@ -144,12 +136,12 @@ TRICYCLE_MJCF = f"""
 """
 
 
-def write_mjcf(directory: str | None = None) -> str:
-    """Write the MJCF to disk and return its path. Idempotent.
+def write_mjcf() -> str:
+    """Write the MJCF to <tempdir>/luna_hifi_assets/tricycle.xml and return the path.
 
-    Used only by the offline USD conversion step; nothing calls it at training time.
+    Input to the offline USD conversion.
     """
-    directory = directory or os.path.join(tempfile.gettempdir(), "luna_hifi_assets")
+    directory = os.path.join(tempfile.gettempdir(), "luna_hifi_assets")
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, "tricycle.xml")
     with open(path, "w") as fh:

@@ -4,7 +4,7 @@
 |---|---|
 | `luna_hifi_tasks/excavator/excavator.py` | the machine. A change to the MJCF needs the asset rebuilt (README.md, "Assets"). |
 | `.../excavate/excavate_env_cfg.py` | excavate: soil, bed, solver, rewards |
-| `.../navigate/navigate_env_cfg.py` | navigate: terrain, goals, curriculum, scans, rewards |
+| `.../navigate/navigate_env_cfg.py` | navigate: terrain, goals, planner, curriculum, rewards |
 | `.../*/agents/rsl_rl_ppo_cfg.py` | PPO: rollout length, discount, networks |
 | `.../excavator_cfg.py` | actuators and speed limits |
 | `.../mdp/observations.py` | observation layouts and scan geometry. A changed layout does not load old checkpoints. |
@@ -47,7 +47,8 @@ dig_demo's crawl speed is `--drive` × `MAX_WHEEL_SPEED` × `WHEEL_RADIUS`:
 |---|---|---|---|
 | physics rate | `sim.dt` | 100 Hz | 200 Hz |
 | policy rate | `decimation` | `4` (25 Hz) | `8` (25 Hz) |
-| episode | `episode_length_s` | `24` s (Small/Micro `30`) | `30` s |
+| episode | `episode_length_s` | `16` s (Small/Micro `30`) | `30` s |
+| unpaid settle at the start | `settle_seconds` | `1` s | |
 | discount | `gamma` | `0.997` | `0.997` |
 | rollout | `num_steps_per_env` | `256` | `128` |
 | envs | `scene.num_envs` | `16` | `256` |
@@ -63,16 +64,41 @@ in the training log is each term's episode total.
 | full drum | `target_load_kg` | `40` kg |
 | nominal cut volume | `cut_volume_ref` | `0.0304` m³ |
 | commanded depth below the surface | `cut_depth_range` | `(0.04, 0.04)` m |
-| success, ends the episode | `fill_success_fraction` | `0.6` of `target_load_kg`, front drum |
+| drums full (logged as `Episode/drum_full`) | `fill_success_fraction` | `0.6` of `target_load_kg`, every drum |
+
+## Excavate tool and drive (excavate_env_cfg.py)
+
+The env runs the tool; the policy's actions are `[forward, yaw]`.
+
+| what | field | value |
+|---|---|---|
+| shroud bottom below the surface | `dig_cut` | `0.10` m (`boom_command_for_cut`: arm 0.536 rad) |
+| inlet off straight down | `dig_inlet_tilt` | `0.096` rad (shroud −0.44 rad) |
+| drum speed | `dig_drum_speed` | `−2.9` rad/s, the loading direction |
+| lowering and spin-up after the settle | `dig_ramp_seconds` | `2` s, wheels held |
+| forward | `dig_forward` | `0.15 × (1 + a0)` of top speed: 0–0.45 m/s, 0.225 at a0 = 0 |
+| heading hold, yaw action | `heading_hold_gain`, `dig_yaw_rate` | 1.0 /s capped at ±0.3 rad/s, plus 0.3 × a1 rad/s |
+| end of the pass | `work_area_length` | the episode ends when the front drum is 0.6 m past the anchor |
+| tool off (parked machine) | `dig_tool` | `True` |
+
+## Navigate planner (navigate_env_cfg.py)
+
+| what | field | value |
+|---|---|---|
+| grid | `path_res` | `0.25` m over the 32 m cell |
+| impassable band round an obstacle | `path_clearance` | `0.70` m (machine half-width 0.675) |
+| cost zone beyond it | `path_zone`, `path_zone_cost` | 2.0 m, from 3 down to 1 per metre |
+| inside the band | `path_obstacle_cost` | `50` per metre |
+| path points in the observation | `path_lookahead` | 1 m and 2 m ahead, body frame |
 
 ## Sensing
 
 | what | where | value |
 |---|---|---|
-| navigate far scan | `NAV_FAR_*` | 27 × 27 at 0.45 m, centred: 5.85 m each way |
-| navigate near scan | `NAV_NEAR_*` | 25 × 25 at 0.20 m, centred: 2.4 m each way |
+| navigate far scan (critic) | `NAV_FAR_*` | 27 × 27 at 0.45 m, centred: 5.85 m each way |
+| navigate near scan (critic, collision check) | `NAV_NEAR_*` | 25 × 25 at 0.20 m, centred: 2.4 m each way |
 | excavate scan | `DIG_SCAN_*` | 16 × 8 at 0.125 m, centred on the front drum |
-| scan noise, dropout | `scan_noise_std`, `scan_dropout` | navigate `0.02` / `0.02`, excavate `0.015` / `0.02`; both grow with range; a dropped cell reads `scan_invalid` |
+| excavate scan noise, dropout | `scan_noise_std`, `scan_dropout` | `0.015` / `0.02`, growing with range; a dropped cell reads `scan_invalid` |
 | actor's drum load sensor | `fill_sensor_*` | 0.3 s lag, 5% noise; the critic reads the exact mass |
 
 Both navigate scans are centred, so the 180-degree symmetry (mdp/symmetry.py)
@@ -123,6 +149,7 @@ A vane sweeps `ln(TIP/HUB) · tan(rake)` = 50.6° from hub to tip, inside its
 | wheel speed cap | `MAX_WHEEL_SPEED` (excavator_cfg.py) | `5.0` rad/s (1.5 m/s) |
 | drum speed cap | `MAX_DRUM_SPEED` | `2.9` rad/s |
 | contact buffers | `rigid_njmax`, `rigid_nconmax` | `8192`, `32768` |
+| MPM sweeps per solve | `mpm_max_iterations` | `50` (a multiple of 25) |
 | grid cells per particle | `grid_cap_multiplier` | `1.0` |
 | leaf size | `grid_leaf_shift` | `3` |
 

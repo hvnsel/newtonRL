@@ -6,7 +6,8 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class ExcavatorExcavatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    # Steps per env per update; an episode is 600 steps, the first 75 settling.
+    # Steps per env per update. An episode is at most 400 steps: 25 settling,
+    # 50 lowering the tool, then the pass (about 80 at the default speed).
     num_steps_per_env = 256
     max_iterations = 800
     save_interval = 5
@@ -17,7 +18,7 @@ class ExcavatorExcavatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     clip_actions = 1.0
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.5,
+        init_noise_std=0.3,
         actor_hidden_dims=[256, 128, 64],
         critic_hidden_dims=[256, 128, 64],
         activation="elu",

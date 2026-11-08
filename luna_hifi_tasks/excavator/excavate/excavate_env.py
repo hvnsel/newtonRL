@@ -1,9 +1,11 @@
 # excavate_env.py
 #
-# Cut a commanded plane out of an MPM regolith bed and carry the spoil in the
-# drums. Actions are [forward, yaw, boom, drum, shroud] in [-1, 1]; boom, drum
-# and shroud each drive both ends. The shroud is the outer half of each drum,
-# carrying the inlet, on its own hinge about the drum axis.
+# Cut a strip of an MPM regolith bed in one straight pass and carry the spoil
+# in the drums. The env runs the tool: after the settle, over dig_ramp_seconds
+# with the wheels held, both arms lower to the dig angle, both shrouds turn to
+# hold the inlet at dig_inlet_tilt off straight down, and both drums spin up.
+# Then the policy drives: actions are [forward, yaw] in [-1, 1]. The episode
+# ends when the front drum passes the end of the work area.
 
 from __future__ import annotations
 
@@ -17,7 +19,7 @@ import warp as wp
 from isaaclab_newton.assets import MPMObject
 
 from ..excavator import ARM_LEN, PIVOT_X, ROTOR_VANES, WHEEL_RADIUS
-from ..excavator_cfg import MAX_DRUM_SPEED, usd_status
+from ..excavator_cfg import MAX_YAW_SPEED, usd_status
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rewards as R
 from ..mdp.sensors import drum_fill_mass, mpm_grid_particle_mass, mpm_particle_state, soil_heightmap
@@ -60,8 +62,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         super().__init__(cfg, render_mode, **kwargs)
 
         E, dev = self.num_envs, self.device
-        self._actions = torch.zeros(E, 5, device=dev)
-        self._prev_actions = torch.zeros(E, 5, device=dev)
+        self._actions = torch.zeros(E, 2, device=dev)
+        self._prev_actions = torch.zeros(E, 2, device=dev)
 
         self._particle_mass = mpm_grid_particle_mass(cfg.scene.soil.spawn)
         self._fill_kg = torch.zeros(E, 2, device=dev)           # front, rear
@@ -126,6 +128,18 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._settle_steps = max(1, round(cfg.settle_seconds / step_dt))
         self._settle_left = torch.full((E,), self._settle_steps, dtype=torch.long, device=dev)
 
+        # Tool: steps since the settle ended (the ramp runs over the first
+        # _ramp_steps of them), the arm angle each env spawned with, the dig
+        # arm and shroud angles, the handover heading, and whether the front
+        # drum has passed the end of the work area.
+        self._ramp_steps = max(1, round(cfg.dig_ramp_seconds / step_dt))
+        self._since_settle = torch.zeros(E, dtype=torch.long, device=dev)
+        self._arm_start = torch.zeros(E, device=dev)
+        _, self._dig_arm = cfg.boom_command_for_cut(cfg.dig_cut)
+        self._dig_shroud = -self._dig_arm + cfg.dig_inlet_tilt
+        self._work_yaw = torch.zeros(E, device=dev)
+        self._pass_done = torch.zeros(E, dtype=torch.bool, device=dev)
+
         # Load sensor: first-order lag and a per-episode calibration bias.
         self._fill_filt = torch.zeros(E, 2, device=dev)
         self._fill_bias = torch.zeros(E, 2, device=dev)
@@ -156,6 +170,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             f"friction {mat.friction:.2f}, cohesion (yield_stress) {mat.yield_stress:.0f} Pa, "
             f"yield_pressure {mat.yield_pressure:.3g} Pa"
         )
+        print(
+            f"[excavate] tool: arm {self._dig_arm:+.3f} rad, shroud {self._dig_shroud:+.3f} rad, "
+            f"drums {cfg.dig_drum_speed:+.2f} rad/s"
+            + ("" if cfg.dig_tool else " (dig_tool False: arms held at the start angle)")
+        )
 
     def _setup_scene(self):
         super()._setup_scene()
@@ -171,14 +190,23 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._actions[:] = (1.0 - s) * actions.clamp(-1.0, 1.0) + s * self._actions
 
     def _apply_action(self):
+        c = self.cfg
         a = self._actions
-        lo, hi = self.cfg.arm_range
-        slo, shi = self.cfg.shroud_range
-        self._apply_drive(a[:, 0], a[:, 1])
+        driving = self._since_settle >= self._ramp_steps
+        ramp = (self._since_settle.float() / self._ramp_steps).clamp(0.0, 1.0) * float(c.dig_tool)
+        # Forward: dig_forward * (1 + a0) of top speed. Yaw rate: a heading hold
+        # on the handover heading plus dig_yaw_rate * a1. Wheels held until the
+        # ramp is done.
+        err = self._work_yaw - self._base_yaw()
+        err = torch.atan2(torch.sin(err), torch.cos(err))
+        hold = (c.heading_hold_gain * err).clamp(-c.dig_yaw_rate, c.dig_yaw_rate)
+        forward = torch.where(driving, c.dig_forward * (1.0 + a[:, 0]), torch.zeros_like(err))
+        yaw_rate = torch.where(driving, hold + c.dig_yaw_rate * a[:, 1], torch.zeros_like(err))
+        self._apply_drive(forward, yaw_rate / MAX_YAW_SPEED)
         self._update_lead()
-        self._apply_arms(lo + 0.5 * (a[:, 2] + 1.0) * (hi - lo))
-        self._apply_drums(a[:, 3] * MAX_DRUM_SPEED)
-        self._apply_shrouds(slo + 0.5 * (a[:, 4] + 1.0) * (shi - slo))
+        self._apply_arms(self._arm_start + ramp * (self._dig_arm - self._arm_start))
+        self._apply_drums(ramp * c.dig_drum_speed)
+        self._apply_shrouds(ramp * self._dig_shroud)
 
     # ------------------------------------------------------------------
     # soil sensing
@@ -514,6 +542,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._below_prev[:] = cut["below_volume"]
         self._settle_left = (self._settle_left - 1).clamp_min(0)
         self._cut_fresh[:] = self._settle_left > 0
+        self._since_settle = torch.where(self._cut_fresh, torch.zeros_like(self._since_settle), self._since_settle + 1)
         return reward
 
     # ------------------------------------------------------------------
@@ -550,12 +579,15 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         return bad
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Failures and non-finite envs always terminate; shape_done does only
-        with terminate_early. A non-finite env is not counted as failed."""
+        """Failures, non-finite envs and a finished pass terminate; shape_done
+        does only with terminate_early. A non-finite env is not counted as failed."""
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         failed = self._failed()
         self._nonfinite_now = self._nonfinite_state()
-        terminated = failed | self._nonfinite_now
+        heading = torch.stack([torch.cos(self._work_yaw), torch.sin(self._work_yaw)], dim=-1)
+        front = self._drum_poses()[0][:, 0, :2]
+        self._pass_done = ((front - self._target_xy) * heading).sum(dim=-1) >= self.cfg.work_area_length
+        terminated = failed | self._nonfinite_now | self._pass_done
         if self.cfg.terminate_early:
             terminated = terminated | self._shape_done
         self._failed_now = failed & ~self._nonfinite_now
@@ -594,6 +626,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     def _reset_idx(self, env_ids: torch.Tensor):
         exits = self._exit_stats(env_ids)
         exits["Episode/shape_done"] = float(self._shape_done[env_ids].float().mean())
+        exits["Episode/pass_done"] = float(self._pass_done[env_ids].float().mean())
         exits["Episode/drum_full"] = float(self._drum_full[env_ids].float().mean())
         exits["Episode/removed_kg"] = float(self._removed_kg[env_ids].mean())
         exits["Episode/payload_kg"] = float(self._payload_kg[env_ids].mean())
@@ -620,6 +653,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # Rotor phase, uniform over one pocket.
         drum = torch.rand(n, device=dev) * (2.0 * math.pi / ROTOR_VANES)
         spawn_xy = self._reset_robot(env_ids, yaw, arm, xy_off, drum)
+        self._arm_start[env_ids] = arm
+        self._work_yaw[env_ids] = yaw
+        self._since_settle[env_ids] = 0
+        self._pass_done[env_ids] = False
 
         # Soil is re-laid every soil_reset_every episodes, and whenever a
         # particle escaped or the articulation went non-finite.

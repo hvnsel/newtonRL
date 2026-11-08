@@ -1,5 +1,5 @@
-# Excavation: cut a commanded plane from an MPM regolith bed and carry the
-# spoil in both drums.
+# Excavation: one straight pass cutting a strip of an MPM regolith bed into
+# both drums. The env lowers and spins the tool; the policy drives.
 #
 #   isaaclab train --rl_library rsl_rl --task Luna-Excavator-Excavate --num_envs 4
 #   isaaclab play  --rl_library rsl_rl --task Luna-Excavator-Excavate --num_envs 1 --checkpoint latest --viz newton

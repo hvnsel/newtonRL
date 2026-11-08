@@ -33,18 +33,19 @@ from ..excavator import (
     ARM_LEN,
     ARM_RANGE,
     CHASSIS_Z,
+    DIG_DRUM_SIGN,
     MAST_TOP_Z,
     ROTOR_HALF_LEN,
     ROTOR_TIP_R,
     SHROUD_END_T,
     SHROUD_OUT_R,
-    SHROUD_RANGE,
 )
 from ..excavator_cfg import (
     DRUM_CONTACT_BODIES_REGEX,
     EXCAVATOR_CFG,
     EXCAVATOR_PRIM_REGEX,
     LUNAR_GRAVITY,
+    MAX_DRUM_SPEED,
     SOIL_CONTACT_BODIES_REGEX,
     SPAWN_Z,
     WHEEL_CONTACT_BODIES_REGEX,
@@ -192,10 +193,10 @@ class ExcavateSceneCfg(InteractiveSceneCfg):
 class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
     decimation = 4
-    episode_length_s = 24.0
+    episode_length_s = 16.0
     # Unpaid time at the start of each episode while the bed settles; the cut
     # plane and the reference surface are re-captured throughout it.
-    settle_seconds: float = 3.0
+    settle_seconds: float = 1.0
 
     sim: SimulationCfg = SimulationCfg(
         dt=1.0 / 100.0,
@@ -228,7 +229,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
     # Gauss-Seidel sweep cap per MPM solve. The solve runs in blocks of 25
     # sweeps, so keep it a multiple of 25.
-    mpm_max_iterations: int = 250
+    mpm_max_iterations: int = 50
     # Absolute tolerance on the dimensionless per-step strain residual.
     mpm_tolerance: float = 2.0e-6
     # True: the machine stands on the bed. False: the bed is a pile in front of it.
@@ -297,9 +298,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # which may not exceed it.
     max_num_envs = 4
 
-    # actions: [forward, yaw, boom, drum, shroud] in [-1, 1]
-    action_space = 5
-    observation_space = DIG_OBS.dim      # 169
+    # actions: [forward, yaw] in [-1, 1]
+    action_space = 2
+    observation_space = DIG_OBS.dim      # 166
     state_space = DIG_CRITIC.dim         # 231
 
     # --- start state ---
@@ -312,14 +313,31 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # Episodes an env keeps its worked bed before the soil is re-laid.
     soil_reset_every: int = 1
 
-    # --- actions ---
+    # --- tool, run by the env ---
+    # After the settle, over dig_ramp_seconds with the wheels held: the arms
+    # lower until the shroud bottom is dig_cut below the bed surface
+    # (boom_command_for_cut), the shrouds turn to minus the arm angle plus
+    # dig_inlet_tilt, and the drums spin up to dig_drum_speed. False holds the
+    # arms at their start angle and the drums still.
+    dig_tool: bool = True
+    dig_cut: float = 0.10                    # m
+    dig_inlet_tilt: float = 0.096            # rad off straight down
+    dig_drum_speed: float = DIG_DRUM_SIGN * MAX_DRUM_SPEED   # rad/s, the loading direction
+    dig_ramp_seconds: float = 2.0
+
+    # --- actions, once the ramp is done ---
+    # Forward: dig_forward * (1 + a0) of top speed, 0 to 0.45 m/s.
+    dig_forward: float = 0.15
+    # Yaw rate [rad/s]: heading_hold_gain * (handover heading - heading),
+    # clamped to dig_yaw_rate, plus dig_yaw_rate * a1.
+    heading_hold_gain: float = 1.0
+    dig_yaw_rate: float = 0.3
     action_smoothing = 0.3
     # The leading drum, which the actor's scan is taken at, switches only when
     # the commanded drive passes this speed [m/s].
     dig_lead_deadband: float = 0.05
 
     arm_range = ARM_RANGE
-    shroud_range = SHROUD_RANGE
 
     # --- cut command ---
     # Per episode: a plane `depth` below the surface the front drum meets,
@@ -332,7 +350,8 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     cut_lateral_fraction: float = 0.3
 
     # Work area: a rectangle fixed in the world for the episode, anchored where
-    # the front drum meets soil and aligned with the spawn heading.
+    # the front drum meets soil and aligned with the spawn heading. The episode
+    # ends when the front drum is work_area_length past the anchor.
     work_area_length: float = 0.60           # m ahead of the anchor
     work_area_behind: float = 0.20           # m behind it
     work_area_width: float = 0.95            # m, the drums' swath

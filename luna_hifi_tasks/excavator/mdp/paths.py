@@ -1,12 +1,12 @@
-# Cost-to-goal maps over a cell, for navigate's progress reward.
+# Cost-to-goal maps over a cell: navigate's planner and progress reward.
 #
 # A cell's ground is read on a square grid. A grid point is an obstacle where
 # the ground steps to an axis neighbour by more than a threshold; both sides
-# of the step are marked. Travel cost per metre is obstacle_cost on an
-# obstacle, falls linearly from zone_cost beside one to 1 at zone metres out,
-# and is 1 beyond. path_field is Bellman-Ford from the goal over a
+# of the step are marked. Travel cost per metre is obstacle_cost within
+# clearance of an obstacle, falls linearly from zone_cost there to 1 at zone
+# metres out, and is 1 beyond. path_field is Bellman-Ford from the goal over a
 # 16-neighbour stencil, batched over envs; a move is charged at the cost of
-# the point it leaves.
+# the point it leaves. trace_path follows the cheapest moves from any point.
 
 from __future__ import annotations
 
@@ -25,6 +25,8 @@ _STENCIL = [(0, 0)] + [
 ]
 _STENCIL_IDX = [(di + 2) * 5 + (dj + 2) for di, dj in _STENCIL]
 _STENCIL_LEN = [math.hypot(di, dj) for di, dj in _STENCIL]
+# Offsets of the 5 x 5 neighbourhood a traced path starts from.
+_SQUARE = [(di, dj) for di in range(-2, 3) for dj in range(-2, 3)]
 
 # Initial cost of unreached grid points.
 _FAR = 1.0e9
@@ -41,6 +43,7 @@ def obstacle_cost(
     heights: torch.Tensor,       # (B, G, G) ground height on the grid, NaN where unknown
     res: float,
     step: float,
+    clearance: float,
     zone: float,
     zone_cost: float,
     obstacle_cost: float,
@@ -68,9 +71,9 @@ def obstacle_cost(
             hit = pad[:, k + di:k + di + gx, k + dj:k + dj + gy]
             near = torch.where(hit, torch.minimum(near, torch.full_like(near, r)), near)
 
-    rise = (1.0 - near / zone).clamp(0.0, 1.0)
+    rise = ((zone - near) / (zone - clearance)).clamp(0.0, 1.0)
     cost = 1.0 + (zone_cost - 1.0) * rise
-    return torch.where(obst, torch.full_like(cost, obstacle_cost), cost)
+    return torch.where(near <= clearance, torch.full_like(cost, obstacle_cost), cost)
 
 
 def path_field(
@@ -127,3 +130,61 @@ def sample_field(field: torch.Tensor, uv: torch.Tensor, res: float) -> torch.Ten
     f01 = field[rows, i0, j0 + 1]
     f11 = field[rows, i0 + 1, j0 + 1]
     return (1 - fu) * (1 - fv) * f00 + fu * (1 - fv) * f10 + (1 - fu) * fv * f01 + fu * fv * f11 + out
+
+
+def trace_path(
+    field: torch.Tensor,         # (n, G, G) cost to the goal, from path_field
+    cost: torch.Tensor,          # (n, G, G) travel cost per metre it was built from
+    start_uv: torch.Tensor,      # (n, 2) start in grid units
+    goal_uv: torch.Tensor,       # (n, 2) goal in grid units
+    res: float,
+    distances: tuple[float, ...],
+) -> torch.Tensor:
+    """(n, len(distances), 2) grid coordinates of the points `distances` metres
+    along the cheapest path from start_uv to the goal.
+
+    The path goes from start_uv to the point of the 5 x 5 neighbourhood around
+    it with the least field value plus straight cost, then takes the cheapest
+    stencil move from each point; from a point within one spacing of the goal
+    it goes to the goal. Points past the goal are the goal.
+    """
+    n, gx, gy = field.shape
+    dev = field.device
+    rows = torch.arange(n, device=dev).unsqueeze(1)
+    hi = torch.tensor([gx - 1, gy - 1], device=dev)
+
+    def lowest(cands: torch.Tensor, extra: torch.Tensor) -> torch.Tensor:
+        """The (n, 2) candidate of (n, k, 2) with the least field value + extra."""
+        inside = ((cands >= 0) & (cands <= hi)).all(dim=-1)
+        ij = torch.minimum(cands.clamp_min(0), hi)
+        score = torch.where(inside, field[rows, ij[..., 0], ij[..., 1]] + extra, torch.full_like(extra, float("inf")))
+        return ij[torch.arange(n, device=dev), score.argmin(dim=1)]
+
+    base = torch.minimum(start_uv.round().long().clamp_min(0), hi)
+    square = base.unsqueeze(1) + torch.tensor(_SQUARE, device=dev)
+    here = cost[rows[:, 0], base[:, 0], base[:, 1]].unsqueeze(1)
+    cur = lowest(square, torch.linalg.norm(square - start_uv.unsqueeze(1), dim=-1) * res * here)
+
+    moves = torch.tensor(_STENCIL[1:], device=dev)
+    move_len = torch.tensor(_STENCIL_LEN[1:], device=dev) * res
+    arrived = torch.linalg.norm(start_uv - goal_uv, dim=-1) <= 1.0
+    pts = [start_uv]
+    for _ in range(int(math.ceil(max(distances) / res)) + 2):
+        point = torch.where(arrived.unsqueeze(1), goal_uv, cur.float())
+        pts.append(point)
+        arrived = arrived | (torch.linalg.norm(cur.float() - goal_uv, dim=-1) <= 1.0)
+        here = cost[rows[:, 0], cur[:, 0], cur[:, 1]].unsqueeze(1)
+        cur = lowest(cur.unsqueeze(1) + moves, move_len * here)
+    pts.append(goal_uv)
+    path = torch.stack(pts, dim=1)                                        # (n, K, 2)
+
+    seg = path[:, 1:] - path[:, :-1]
+    seg_len = torch.linalg.norm(seg, dim=-1) * res                        # (n, K-1)
+    end = seg_len.cumsum(dim=1)
+    want = torch.tensor(distances, device=dev).expand(n, -1)              # (n, D)
+    k = (end.unsqueeze(1) < want.unsqueeze(2)).sum(dim=2).clamp(max=seg.shape[1] - 1)
+    start = torch.gather(end - seg_len, 1, k)
+    length = torch.gather(seg_len, 1, k)
+    t = ((want - start) / length.clamp_min(1.0e-9)).clamp(0.0, 1.0).unsqueeze(-1)
+    take = k.unsqueeze(-1).expand(-1, -1, 2)
+    return torch.gather(path[:, :-1], 1, take) + t * torch.gather(seg, 1, take)

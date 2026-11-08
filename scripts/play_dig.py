@@ -57,7 +57,7 @@ def _parse(argv):
                    help="model file inside the run; default is the highest-numbered")
     p.add_argument("--no_window", action="store_true", help="skip the viewer")
     p.add_argument("--park", action="store_true",
-                   help="no policy: wheels commanded to zero, arm stowed")
+                   help="no policy: wheels commanded to zero, arms held at the start angle, drums still")
     p.add_argument("--trace", default="dig_trace.csv", help="per-step CSV")
     p.add_argument("--frames", default=None,
                    help="directory for PNGs, if the env can render to an array")
@@ -92,24 +92,21 @@ def _parse(argv):
                    choices=("fixed", "aitken"),
                    help="override proxy_relaxation_mode")
     p.add_argument("--dig", action="store_true",
-                   help="scripted dig instead of a policy: lower the arm until the shroud "
-                        "sits --cut under the surface, spin the drums up, then drive forward")
+                   help="no policy: a straight pass at --dig_speed once the env has lowered the tool")
     p.add_argument("--straight", action="store_true",
                    help="zero the spawn yaw, xy, arm and gradient jitter")
-    p.add_argument("--boom", type=float, default=None,
-                   help="boom command in [-1, 1] for --dig, overriding --cut; "
-                        "-1 is stowed, +1 full dig")
-    p.add_argument("--cut", type=float, default=0.10,
-                   help="cut depth [m] of the shroud bottom below the surface for --dig")
     p.add_argument("--dig_speed", type=float, default=0.15,
                    help="forward command during --dig, a fraction of MAX_WHEEL_SPEED")
+    # Tool overrides (the env lowers and spins the tool after the settle).
+    p.add_argument("--cut", type=float, default=None,
+                   help="override dig_cut: shroud bottom below the surface [m]")
     p.add_argument("--drum", type=float, default=None,
-                   help="drum command in [-1, 1] during --dig; default DIG_DRUM_SIGN, "
-                        "the loading direction")
-    p.add_argument("--shroud", type=float, default=0.0,
-                   help="shroud command in [-1, 1] during --dig")
-    p.add_argument("--dig_ramp", type=float, default=3.0,
-                   help="seconds to lower the arm and spin the drums up before driving")
+                   help="override dig_drum_speed as a fraction of MAX_DRUM_SPEED; "
+                        "the sign of DIG_DRUM_SIGN loads")
+    p.add_argument("--inlet_tilt", type=float, default=None,
+                   help="override dig_inlet_tilt: inlet angle off straight down [rad]")
+    p.add_argument("--dig_ramp", type=float, default=None,
+                   help="override dig_ramp_seconds: time to lower the arms and spin the drums up")
     p.add_argument("--limp", action="store_true",
                    help="zero every joint's stiffness and damping, so nothing is driven")
     p.add_argument("--probe", action="store_true",
@@ -503,7 +500,9 @@ def main(argv=None) -> int:
 
     ckpt = None
     if args.park:
-        print("[play] parked: zero wheel command, arm stowed, no policy")
+        print("[play] parked: zero wheel command, arms at the start angle, no policy")
+    elif args.dig:
+        print("[play] scripted pass, no policy")
     else:
         ckpt = _resolve_checkpoint(args.run, args.checkpoint)
         print(f"[play] checkpoint {ckpt}")
@@ -533,6 +532,14 @@ def main(argv=None) -> int:
     if args.cohesion is not None:
         env_cfg.soil_cohesion = args.cohesion
         print(f"[play] soil_cohesion set to {args.cohesion} Pa")
+
+    for value, field, scale in ((args.cut, "dig_cut", 1.0), (args.drum, "dig_drum_speed", MAX_DRUM_SPEED),
+                                (args.inlet_tilt, "dig_inlet_tilt", 1.0), (args.dig_ramp, "dig_ramp_seconds", 1.0)):
+        if value is not None:
+            setattr(env_cfg, field, value * scale)
+            print(f"[play] {field} set to {value * scale:g}")
+    if args.park:
+        env_cfg.dig_tool = False
 
     if args.park or args.probe or args.dig:
         # Episode long enough that no reset lands inside the run.
@@ -626,68 +633,34 @@ def main(argv=None) -> int:
     with launch_simulation(env_cfg, args):
         env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array" if frame_dir else None)
         u = env.unwrapped
-        if args.park:
-            # [forward, yaw, boom, drum, shroud]: wheels held at zero velocity, boom stowed.
-            parked = torch.zeros(u.num_envs, 5, device=u.device)
-            parked[:, 2] = -1.0
-
-            def policy(_obs):
-                return parked
-        elif args.dig:
-            cut = args.cut
-            boom_cmd, angle = u.cfg.boom_command_for_cut(cut)
-            if args.boom is not None:
-                lo_a, hi_a = u.cfg.arm_range
-                boom_cmd = max(-1.0, min(1.0, args.boom))
-                angle = lo_a + 0.5 * (boom_cmd + 1.0) * (hi_a - lo_a)
-                print(f"[play] --boom {args.boom:+.2f} overrides --cut: the "
-                      f"geometry solve wanted {cut * 100:.1f} cm")
-            ramp = max(1, int(args.dig_ramp / u.step_dt))
-            drum_cmd = DIG_DRUM_SIGN if args.drum is None else args.drum
-            if drum_cmd * DIG_DRUM_SIGN < 0:
-                print(f"[play] *** --drum {drum_cmd:+.2f} is the DUMP "
-                      f"direction. Loading is {DIG_DRUM_SIGN:+.0f} ***")
-            # Rotor tip height with the chassis at bed_top + CHASSIS_Z + 0.02 (SPAWN_Z).
-            chassis0 = float(u.cfg.bed_top) + CHASSIS_Z + 0.02
-            tip = chassis0 + MAST_TOP_Z - ARM_LEN * math.sin(angle) - ROTOR_TIP_R
-            gap = tip - float(u.cfg.bed_top)
-            print(f"[play] DIG geometry: rotor tip lands at z={tip:.4f} "
-                  f"against a bed surface of {u.cfg.bed_top:.4f}, "
-                  f"{1000 * gap:+.0f} mm")
-            if gap >= 0.0:
-                print("[play] *** the rotor is ABOVE the bed and will cut "
-                      "NOTHING. Raise --cut or use --boom. ***")
-            print(
-                f"[play] DIG: cut {cut * 100:.1f} cm -> boom command "
-                f"{boom_cmd:+.3f} (arm {angle:+.4f} rad, "
-                f"{math.degrees(angle):+.1f} deg), drums to "
-                f"{drum_cmd * MAX_DRUM_SPEED:+.2f} rad/s "
-                f"({'LOADING' if drum_cmd * DIG_DRUM_SIGN > 0 else 'DUMPING'}), "
-                f"then forward {args.dig_speed:+.2f} "
-                f"({args.dig_speed * MAX_WHEEL_SPEED * WHEEL_RADIUS:.2f} m/s) "
-                f"after a {args.dig_ramp:.1f}s ramp"
-            )
-            slo, shi = u.cfg.shroud_range
-            s_ang = slo + 0.5 * (args.shroud + 1.0) * (shi - slo)
-            print(f"[play] shroud command {args.shroud:+.2f} -> joint "
-                  f"{s_ang:+.4f} rad ({math.degrees(s_ang):+.1f} deg) against "
-                  f"an arm at {math.degrees(angle):+.1f} deg")
-            # Lower the arm and spin up over `ramp` steps, then drive.
-            dig_a = torch.zeros(u.num_envs, 5, device=u.device)
+        if args.park or args.dig:
+            # [forward, yaw]: forward is dig_forward * (1 + a0), so -1 holds the wheels.
+            fixed = torch.zeros(u.num_envs, 2, device=u.device)
+            fixed[:, 0] = -1.0 if args.park else args.dig_speed / u.cfg.dig_forward - 1.0
+            if args.dig:
+                angle = u._dig_arm
+                drum = u.cfg.dig_drum_speed
+                if drum * DIG_DRUM_SIGN < 0:
+                    print(f"[play] *** drums at {drum:+.2f} rad/s is the DUMP "
+                          f"direction. Loading is {DIG_DRUM_SIGN:+.0f} ***")
+                # Rotor tip height with the chassis at bed_top + CHASSIS_Z + 0.02 (SPAWN_Z).
+                chassis0 = float(u.cfg.bed_top) + CHASSIS_Z + 0.02
+                tip = chassis0 + MAST_TOP_Z - ARM_LEN * math.sin(angle) - ROTOR_TIP_R
+                print(f"[play] DIG: arm {angle:+.4f} rad ({math.degrees(angle):+.1f} deg), "
+                      f"shroud {u._dig_shroud:+.4f} rad, drums {drum:+.2f} rad/s; rotor tip "
+                      f"{1000 * (tip - float(u.cfg.bed_top)):+.0f} mm from the bed surface; "
+                      f"forward {args.dig_speed * MAX_WHEEL_SPEED * WHEEL_RADIUS:.2f} m/s "
+                      f"after {u.cfg.settle_seconds:.1f} s settle + {u.cfg.dig_ramp_seconds:.1f} s ramp")
             k = [0]
+            ramp_end = u._settle_steps + u._ramp_steps
 
-            def policy(_obs, _a=dig_a, _k=k, _b=boom_cmd, _r=ramp, _d=drum_cmd):
-                f = min(1.0, _k[0] / _r)
+            def policy(_obs, _k=k):
                 _k[0] += 1
-                _a[:, 0] = args.dig_speed if f >= 1.0 else 0.0
-                _a[:, 2] = -1.0 + f * (_b + 1.0)
-                _a[:, 3] = f * _d
-                _a[:, 4] = f * args.shroud
-                if _k[0] == _r + 1:
+                if args.dig and _k[0] == ramp_end + 1:
                     print("[play] --- end of dig ramp, before moving off ---")
                     _attitude(u)
                     print(f"[play] undisturbed bed surface is z={u.cfg.bed_top:.4f}")
-                return _a
+                return fixed
         else:
             policy = _load_policy(str(u.device), ckpt)
 
@@ -801,7 +774,8 @@ def main(argv=None) -> int:
             if bool(dones.any()):
                 reset_steps.append(i)
                 print(f"[play] t={i*dt:5.2f}s episode ended "
-                      f"(shape_done={int(scalar('_shape_done'))}, "
+                      f"(pass_done={int(scalar('_pass_done'))}, "
+                      f"shape_done={int(scalar('_shape_done'))}, "
                       f"escaped={int(scalar('_escaped'))})")
 
         if args.probe:

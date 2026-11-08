@@ -4,7 +4,7 @@
 # Turned round, body x and y negate and z stays; world-frame terms stay. The
 # wheels swap diagonally (fl <-> rr, rl <-> fr) and spin the other way; the
 # front and rear assemblies swap. Each centred scan maps onto itself turned
-# 180 degrees: both image axes flipped, a row-major vector reversed.
+# 180 degrees: a row-major vector reversed.
 
 from __future__ import annotations
 
@@ -41,11 +41,10 @@ _POLICY_RULES = {
     "base_lin_vel": _XY,
     "base_ang_vel": _XY,
     "projected_gravity": _XY,
+    "path_points": ((0, 1, 2, 3), (-1.0, -1.0, -1.0, -1.0)),
     "goal_vec_b": ((0, 1), (-1.0, -1.0)),
     "goal_vec_near": ((0, 1), (-1.0, -1.0)),
     "wheel_vel": _WHEELS,
-    "arm_pos": _ENDS,
-    "drum_fill": _ENDS,
     "last_action": ((0, 1), ACTION_SIGN),
 }
 _CRITIC_RULES = {
@@ -73,7 +72,6 @@ _VECTOR_MAPS = {
     "policy": _signed_permutation(navigate_obs_spec(), _POLICY_RULES),
     "critic": _signed_permutation(critic_state_spec(terrain_cells=NAV_SCAN_CELLS), _CRITIC_RULES),
 }
-_IMAGES = ("far_scan", "near_scan")
 _on_device: dict = {}
 
 
@@ -87,8 +85,6 @@ def _vector_map(key: str, device) -> tuple[torch.Tensor, torch.Tensor]:
 
 def turn_group(key: str, x: torch.Tensor) -> torch.Tensor:
     """One observation group of a batch, as the machine turned 180 degrees."""
-    if key in _IMAGES:
-        return torch.flip(x, dims=(-2, -1))
     src, sign = _vector_map(key, x.device)
     return x[:, src] * sign
 

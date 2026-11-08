@@ -30,8 +30,9 @@ goal_trace.csv
 goals.png
 setpoint.png
 
-# Training console output
+# Training console output (navigate, excavate)
 train.log
+dig_train.log
 
 # The converted excavator asset and its source stamp, generated per machine
 assets/excavator/

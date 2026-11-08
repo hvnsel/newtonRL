@@ -6,9 +6,9 @@ end.
 
 | task id | what |
 |---|---|
-| `Luna-Excavator-Navigate` | drive to a goal pose over generated terrain with craters and boulders (MJWarp, rigid terrain mesh) |
+| `Luna-Excavator-Navigate` | drive to a goal pose over generated terrain with craters and boulders, along a path planned around them; the actor sees the path ahead, not the terrain (MJWarp, rigid terrain mesh) |
 | `Luna-Excavator-Navigate-Course` | the navigate policy on one fixed obstacle layout (mdp/course.py), for playback |
-| `Luna-Excavator-Excavate` | cut to a target depth in an implicit-MPM soil bed and carry the spoil |
+| `Luna-Excavator-Excavate` | one straight pass cutting a strip of an implicit-MPM soil bed into the drums; the env lowers and spins the tool, the policy drives |
 | `Luna-Excavator-Excavate-Small`, `-Micro` | one env, a small soil pile in front of the machine |
 | `Luna-Tricycle-Direct` | a tricycle on an MPM strip: the minimal rigid ↔ MPM coupling example |
 
@@ -30,7 +30,7 @@ luna_hifi_tasks/
       observations.py             observation layouts and scan geometry
       rewards.py                  shared reward terms and the per-term episode logger
       terrain.py                  scan patterns, height sampling, terrain height fields
-      paths.py                    path-cost field to the goal (progress and bearing)
+      paths.py                    planner: cost-to-goal field, path points ahead, progress and bearing
       course.py                   fixed obstacle layouts for Navigate-Course
       symmetry.py                 180-degree symmetry for PPO augmentation
       sensors.py                  MPM soil readouts for excavate
@@ -103,7 +103,8 @@ bash workstation/nav_course.sh          # the obstacle course in ~/nav_course
 # excavate
 workstation/train.sh train --rl_library rsl_rl --task Luna-Excavator-Excavate --num_envs 4
 workstation/train.sh -p scripts/dig_demo.py --task Luna-Excavator-Excavate-Micro --no_window
-workstation/train.sh -p scripts/play_dig.py --no_window --trace dig.csv
+workstation/train.sh -p scripts/play_dig.py --no_window --trace dig.csv     # newest checkpoint
+workstation/train.sh -p scripts/play_dig.py --dig --no_window               # scripted pass, no policy
 
 # tricycle
 workstation/train.sh train --rl_library rsl_rl --task Luna-Tricycle-Direct --num_envs 4

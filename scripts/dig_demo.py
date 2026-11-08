@@ -1,15 +1,11 @@
 # scripts/dig_demo.py
 #
-# Scripted dig on the small bed, no policy:
-#
-#   settle   at rest, arms stowed
-#   lower    boom ramps down to the cut depth
-#   spin     drums ramp up to digging speed, stationary
-#   drive    slow forward crawl
-#   dump     (--t_dump) inlet up, rotor reversed
+# Scripted pass on the small bed, no policy. The env settles the bed, lowers
+# the arms and spins the drums up (dig_cut, dig_drum_speed, dig_ramp_seconds);
+# then the machine crawls forward at --drive.
 #
 #   isaaclab -p scripts/dig_demo.py
-#   isaaclab -p scripts/dig_demo.py --cut 0.05 --drive 0.35 --seconds 40
+#   isaaclab -p scripts/dig_demo.py --cut 0.05 --drive 0.2 --seconds 20
 #
 # Exits 0 if drum fill rose above 1 kg in every env. --no_window skips the viewer.
 
@@ -59,23 +55,13 @@ def _parse(argv):
     p.add_argument("--seconds", type=float, default=30.0, help="simulated seconds to run")
     p.add_argument("--no_window", action="store_true", help="skip the viewer; just run the checks")
 
-    # Phase boundaries, in simulated seconds.
-    p.add_argument("--t_lower", type=float, default=1.5, help="start lowering the boom")
-    p.add_argument("--t_spin", type=float, default=5.0, help="start the drums")
-    p.add_argument("--t_drive", type=float, default=7.0, help="start crawling forward")
-    p.add_argument("--t_dump", type=float, default=None,
-                   help="turn the inlet up and reverse the rotor at this time; "
-                        "off by default. Fill falls after it")
-
-    p.add_argument("--cut", type=float, default=0.10,
-                   help="how deep the shroud cuts below the surface, metres")
-    p.add_argument("--boom", type=float, default=None,
-                   help="raw boom command, overriding --cut")
-    p.add_argument("--drum", type=float, default=0.4 * DIG_DRUM_SIGN,
-                   help="drum command once spinning, a fraction of MAX_DRUM_SPEED. "
+    p.add_argument("--cut", type=float, default=None,
+                   help="override dig_cut: how deep the shroud bottom goes below the surface, metres")
+    p.add_argument("--drum", type=float, default=None,
+                   help="override dig_drum_speed as a fraction of MAX_DRUM_SPEED. "
                         f"The loading sign is {DIG_DRUM_SIGN:+.0f}; the other dumps")
     p.add_argument("--drive", type=float, default=0.05,
-                   help="forward command once crawling; 1.0 is 1.5 m/s")
+                   help="forward command once the tool is down, a fraction of 1.5 m/s; at most 0.30")
 
     # Set on the cfg before gym.make, which re-derives the MPM material from them.
     p.add_argument("--cohesion", type=float, default=None, help="soil yield_stress in Pa")
@@ -144,13 +130,6 @@ def cut_diagnosis(cfg, cut: float) -> list[str]:
     return out
 
 
-def _ramp(t: float, t0: float, duration: float = 1.5) -> float:
-    """0 before t0, 1 after t0 + duration, linear between."""
-    if t <= t0:
-        return 0.0
-    return min((t - t0) / duration, 1.0)
-
-
 def main(argv=None) -> int:
     args = _parse(argv)
     torch.manual_seed(0)
@@ -171,6 +150,10 @@ def main(argv=None) -> int:
         value = getattr(args, flag)
         if value is not None:
             setattr(env_cfg, field, value)
+    if args.cut is not None:
+        env_cfg.dig_cut = args.cut
+    if args.drum is not None:
+        env_cfg.dig_drum_speed = args.drum * MAX_DRUM_SPEED
 
     if not args.no_window:
         from isaaclab_visualizers.newton import NewtonGLVisualizerCfg
@@ -213,18 +196,17 @@ def main(argv=None) -> int:
         print(f"  entry channel {chan:.4f} m, {u.cfg.voxel_size:.3f} m voxel -> "
               f"{grains:.1f} grains wide "
               f"({'arches' if grains < 3.0 else 'marginal' if grains < 4.5 else 'flows'})")
-        rad_s = args.drum * MAX_DRUM_SPEED
-        print(f"  drum: {args.drum:+.2f} -> {rad_s:+.1f} rad/s -> "
-              f"tip {abs(rad_s) * ROTOR_TIP_R:.2f} m/s "
+        rad_s = u.cfg.dig_drum_speed
+        print(f"  drum: {rad_s:+.1f} rad/s -> tip {abs(rad_s) * ROTOR_TIP_R:.2f} m/s "
               f"(at r = {ROTOR_TIP_R:.3f} m, the vane tip)")
         if abs(rad_s) > SPIN_LIMIT:
             print(f"  !! {abs(rad_s):.2f} rad/s is over the {SPIN_LIMIT:.2f} rad/s where "
                   "outward acceleration passes lunar gravity")
-        if args.drum * DIG_DRUM_SIGN < 0:
+        if rad_s * DIG_DRUM_SIGN < 0:
             print(f"  * this is the DUMP direction. Loading is {DIG_DRUM_SIGN:+.0f}")
 
-        boom, angle = u.cfg.boom_command_for_cut(args.cut)
-        lo_arm, hi_arm = u.cfg.arm_range
+        cut = u.cfg.dig_cut
+        angle = u._dig_arm
 
         drum_x = PIVOT_X + ARM_LEN * math.cos(angle)
         lead = drum_x + SHROUD_OUT_R
@@ -239,21 +221,17 @@ def main(argv=None) -> int:
         else:
             print(f"  {ahead:.2f} m of bed ahead of it; crawling {speed:.3f} m/s "
                   f"clears it in {ahead / max(speed, 1e-6):.1f} s")
-        if args.boom is not None:
-            boom = args.boom
-            print(f"  boom command {boom:+.3f} (given directly, --cut ignored)\n")
-        else:
-            wall = SHROUD_OUT_R - ROTOR_TIP_R
-            print(f"  to cut {args.cut:.3f} m -> arm {angle:+.3f} rad "
-                  f"-> boom command {boom:+.3f}")
-            print(f"  vane tips reach {args.cut - wall:.3f} m below grade")
-            for line in cut_diagnosis(u.cfg, args.cut):
-                print(f"  * {line}")
-            print()
+        wall = SHROUD_OUT_R - ROTOR_TIP_R
+        print(f"  to cut {cut:.3f} m -> arm {angle:+.3f} rad, shroud {u._dig_shroud:+.3f} rad")
+        print(f"  vane tips reach {cut - wall:.3f} m below grade")
+        for line in cut_diagnosis(u.cfg, cut):
+            print(f"  * {line}")
+        print()
 
         obs, _ = env.reset()
-        action = torch.zeros(u.num_envs, u.cfg.action_space, device=u.device)
-        shi = u.cfg.shroud_range[1]
+        # [forward, yaw]: forward is dig_forward * (1 + a0) once the tool is down.
+        action = torch.zeros(u.num_envs, 2, device=u.device)
+        action[:, 0] = args.drive / u.cfg.dig_forward - 1.0
         t_start = time.perf_counter()
 
         peak = torch.zeros(u.num_envs, 2, device=u.device)
@@ -261,30 +239,12 @@ def main(argv=None) -> int:
         phase = ""
         for i in range(steps):
             t = i * dt
-
-            lower = _ramp(t, args.t_lower, 2.0)
-            spin = _ramp(t, args.t_spin, 1.0)
-            drive = _ramp(t, args.t_drive, 1.5)
-
-            dumping = args.t_dump is not None and t >= args.t_dump
-            now = ("dump" if dumping else
-                   "settle" if t < args.t_lower else
-                   "lower" if t < args.t_spin else
-                   "spin" if t < args.t_drive else "drive")
+            since = int(u._since_settle[0])
+            now = ("settle" if bool(u._cut_fresh[0]) else
+                   "lower and spin" if since < u._ramp_steps else "drive")
             if now != phase:
                 phase = now
                 print(f"[{t:5.1f}s] phase: {phase}")
-
-            action[:, 0] = 0.0 if dumping else args.drive * drive
-            action[:, 1] = 0.0
-            # Boom ramps from stowed (-1) to the dig command; stowed while dumping.
-            action[:, 2] = -1.0 if dumping else -1.0 + (boom + 1.0) * lower
-            action[:, 3] = -args.drum if dumping else args.drum * spin
-            # Shroud at minus the arm angle, which keeps the inlet facing the
-            # ground; turned fully up while dumping.
-            arm_now = lo_arm + 0.5 * (float(action[0, 2]) + 1.0) * (hi_arm - lo_arm)
-            want = shi if dumping else -arm_now
-            action[:, 4] = max(-1.0, min(1.0, want / shi))
 
             obs, rew, term, trunc, _ = env.step(action)
             peak = torch.maximum(peak, u._fill_kg)
@@ -316,7 +276,7 @@ def main(argv=None) -> int:
         print(("  PASS  " if ok else "  FAIL  ") +
               "drum fill rose while the drums were in the bed")
         if not ok:
-            print("  check the arm angle above against bed_top (--cut, --boom), the body names")
+            print("  check the arm angle above against bed_top (--cut), the body names")
             print("  against SOIL_CONTACT_BODIES_REGEX, the entry channel width (--voxel) and")
             print(f"  the drum sign (--drum; loading is {DIG_DRUM_SIGN:+.0f})")
         env.close()

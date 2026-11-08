@@ -20,9 +20,8 @@ NAV_NEAR_CELLS = NAV_NEAR_NX * NAV_NEAR_NY
 
 NAV_SCAN_CELLS = NAV_FAR_CELLS + NAV_NEAR_CELLS
 
-# The actor reads each scan as a (C, H, W) = (1, NY, NX) image: rows run along
-# body y, columns along body x.
-NAV_FAR_IMAGE = (1, NAV_FAR_NY, NAV_FAR_NX)
+# The near scan as a (C, H, W) = (1, NY, NX) grid: rows run along body y,
+# columns along body x.
 NAV_NEAR_IMAGE = (1, NAV_NEAR_NY, NAV_NEAR_NX)
 
 # GridPatternCfg sizes giving exactly NX x NY rays, a ray at both ends of each axis.
@@ -90,19 +89,17 @@ class ObsSpec:
         return "\n".join(lines)
 
 
-def navigate_obs_spec(num_arms: int = 2, num_wheels: int = 4) -> ObsSpec:
-    """Navigate's "policy" group. The scans reach the actor as their own image
-    groups, "far_scan" and "near_scan"."""
+def navigate_obs_spec(num_path_points: int = 2, num_wheels: int = 4) -> ObsSpec:
+    """Navigate's "policy" group, the actor's whole observation."""
     return ObsSpec([
         ObsTerm("base_lin_vel", 3, "body frame"),
         ObsTerm("base_ang_vel", 3, "body frame"),
         ObsTerm("projected_gravity", 3, "body frame"),
+        ObsTerm("path_points", 2 * num_path_points, "planned path points ahead, body-frame xy [m]"),
         ObsTerm("goal_vec_b", 2, "goal xy in body frame / goal_dist_max"),
         ObsTerm("goal_vec_near", 2, "goal xy in body frame / max(dist, goal_near_range)"),
         ObsTerm("goal_heading", 2, "(sin, cos) of twice the heading error"),
         ObsTerm("wheel_vel", num_wheels, "joint velocities, scaled"),
-        ObsTerm("arm_pos", num_arms, "boom angles"),
-        ObsTerm("drum_fill", num_arms, "0 on the rigid tier"),
         ObsTerm("last_action", 2, "[forward, yaw]"),
     ])
 
@@ -135,7 +132,7 @@ def excavate_obs_spec(terrain_cells: int = DIG_SCAN_CELLS, num_arms: int = 2, nu
         ObsTerm("depth_error", 1, "ground minus target over the footprint"),
         ObsTerm("cut_progress", 1, "fraction of the footprint at or below target"),
         ObsTerm("terrain_scan", terrain_cells, "drum-centred heights"),
-        ObsTerm("last_action", 5, "[forward, yaw, boom, drum, shroud]"),
+        ObsTerm("last_action", 2, "[forward, yaw]"),
     ])
 
 

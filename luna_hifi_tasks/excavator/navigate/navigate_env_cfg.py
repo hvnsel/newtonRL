@@ -1,5 +1,6 @@
 # Navigate: drive to a goal pose over generated terrain (worked ground,
-# craters, boulders) as a static mesh, under lunar gravity.
+# craters, boulders) as a static mesh, under lunar gravity, following a path
+# planned over the cell.
 
 from __future__ import annotations
 
@@ -84,9 +85,9 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
     # Actions: [forward, yaw] in [-1, 1].
     action_space = 2
-    # "policy" group; the actor also reads the "far_scan" and "near_scan" images.
+    # "policy" group: the actor's whole observation.
     observation_space = NAV_OBS.dim      # 25
-    state_space = NAV_CRITIC.dim         # 1361, critic only
+    state_space = NAV_CRITIC.dim         # 1361, critic only (includes both scans)
 
     # --- goals ---
     # Goals come from the flat-patch spots of the env's cell: the spot whose
@@ -115,15 +116,19 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
     goal_blocked_frac = 0.75
     goal_blocked_step = 0.25             # m
 
-    # --- path progress (mdp/paths.py) ---
-    # Progress and bearing follow the cheapest way to the goal over a path_res
-    # grid of the cell. An obstacle (a step over goal_blocked_step between grid
-    # neighbours) costs path_obstacle_cost per metre; within path_zone of one
-    # the cost falls from path_zone_cost to 1. path_zone must stay within the
-    # near scan's reach.
+    # --- planned path (mdp/paths.py) ---
+    # The cheapest way to the goal over a path_res grid of the cell, re-traced
+    # from the chassis every step; the actor sees the points path_lookahead
+    # metres along it, and progress and bearing follow it. Within
+    # path_clearance of an obstacle (a step over goal_blocked_step between grid
+    # neighbours) travel costs path_obstacle_cost per metre; from there the cost
+    # falls from path_zone_cost to 1 at path_zone. path_zone must stay within
+    # the near scan's reach.
     path_res = 0.25                      # m
+    path_lookahead: tuple[float, ...] = (1.0, 2.0)  # m
+    path_clearance = 0.70                # m, the machine's half-width is 0.675
     path_zone = 2.0                      # m
-    path_zone_cost = 5.0
+    path_zone_cost = 3.0
     path_obstacle_cost = 50.0
     path_max_iters = 256
 
@@ -209,14 +214,8 @@ class ExcavatorNavigateEnvCfg(DirectRLEnvCfg):
 
     arm_hold_angle = ARM_STOW_ANGLE
 
-    # --- scan ---
-    # The actor's scans get noise and dropout scaled by 1 + range / scan_range_ref;
-    # a dropped cell reads scan_invalid. The critic's are clean.
+    # --- scan (critic and collision check) ---
     scan_clip = 1.0                      # m
-    scan_noise_std = 0.02                # m
-    scan_dropout = 0.02
-    scan_range_ref = 4.0                 # m
-    scan_invalid = -2.0
 
     def __post_init__(self) -> None:
         self.sim.physics = NewtonCfg(

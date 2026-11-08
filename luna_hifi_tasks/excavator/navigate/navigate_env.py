@@ -1,5 +1,6 @@
-# Navigate: drive to a goal pose and hold it. Actions are [forward, yaw]; the
-# arms hold stowed, the drums still, the shroud inlets up.
+# Navigate: drive to a goal pose and hold it, following a planned path. The
+# actor sees the path ahead and the goal, not the terrain. Actions are
+# [forward, yaw]; the arms hold stowed, the drums still, the shroud inlets up.
 #
 # DirectRLEnv step order: _pre_physics_step, _apply_action (x decimation),
 # _get_dones, _get_rewards, _reset_idx, _get_observations.
@@ -15,8 +16,8 @@ from ..excavator_cfg import MAX_WHEEL_SPEED
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import paths as P
 from ..mdp import rewards as R
-from ..mdp.observations import NAV_FAR_IMAGE, NAV_NEAR_CELL, NAV_NEAR_IMAGE, navigate_obs_spec
-from ..mdp.terrain import degrade_scan, nav_far_pattern, nav_near_pattern, scan_from_raycaster
+from ..mdp.observations import NAV_NEAR_CELL, NAV_NEAR_IMAGE, navigate_obs_spec
+from ..mdp.terrain import nav_near_pattern, scan_from_raycaster
 from ..terrain_cfg import GOAL_PATCHES, SPAWN_PATCHES
 from .navigate_env_cfg import NAV_CRITIC, ExcavatorNavigateEnvCfg
 
@@ -25,6 +26,11 @@ MARKER_RGB = (0.10, 0.90, 0.20)
 MARKER_DISC = (0.5, 0.04)               # radius, height
 MARKER_BAR = (5.0, 0.20, 0.04)          # length, width, height
 MARKER_LIFT = 0.15                      # m above the goal spot
+# Playback path: dots every PATH_DOT_SPACING m along the planned path.
+PATH_RGB = (1.0, 0.55, 0.05)
+PATH_DOT_RADIUS = 0.08
+PATH_DOT_SPACING = 0.5
+PATH_DOTS = 40
 
 # Body-frame ground contact points: each tyre's contact line at its middle and
 # both faces, then a grid across the tyres' outer faces and 1.25 m fore and aft.
@@ -93,15 +99,16 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         self._stuck = zeros(E, dtype=torch.bool)
         self._route_is_blocked = zeros(E, dtype=torch.bool)
 
-        # Path progress: per-cell travel cost (built on the first reset), each
-        # env's cost-to-goal map, the cell centre it is laid on, its value at
-        # the goal, last step's potential, and path over straight distance at
-        # spawn.
+        # Planned path: per-cell travel cost (built on the first reset), each
+        # env's travel cost and cost-to-goal map, the cell centre they are laid
+        # on, the map's value at the goal, last step's potential, and path over
+        # straight distance at spawn.
         near_reach = 0.5 * (NAV_NEAR_IMAGE[2] - 1) * NAV_NEAR_CELL
         assert cfg.path_zone <= near_reach, f"path_zone {cfg.path_zone} m is beyond the near scan's {near_reach} m"
         self._path_axis = P.grid_axis(cfg.scene.terrain.terrain_generator.size[0], cfg.path_res, dev)
         G = self._path_axis.numel()
         self._path_cost = None
+        self._path_env_cost = zeros(E, G, G)
         self._path = zeros(E, G, G)
         self._path_origin = zeros(E, 2)
         self._path_at_goal = zeros(E)
@@ -110,7 +117,6 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
 
         # Collision check: pairs of neighbouring near-scan cells inside
         # RAM_OUTLINE, along each grid axis.
-        self._far_pattern = nav_far_pattern(dev)
         self._near_pattern = nav_near_pattern(dev)
         near = self._near_pattern.reshape(NAV_NEAR_IMAGE[1], NAV_NEAR_IMAGE[2], 2)
         inside = (near[..., 0].abs() <= RAM_OUTLINE[0]) & (near[..., 1].abs() <= RAM_OUTLINE[1])
@@ -187,6 +193,21 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             for s in (self.far_scanner, self.near_scanner)
         )
 
+    def _path_points(self, distances: tuple[float, ...]) -> torch.Tensor:
+        """(E, len(distances), 2) world xy of the points `distances` metres
+        along the planned path from the chassis."""
+        c = self.cfg
+        corner = self._path_origin + self._path_axis[0]
+        uv = P.trace_path(
+            self._path,
+            self._path_env_cost,
+            (self.robot.data.root_pos_w.torch[:, :2] - corner) / c.path_res,
+            (self._goal_pos_w - corner) / c.path_res,
+            c.path_res,
+            distances,
+        )
+        return uv * c.path_res + corner.unsqueeze(1)
+
     def _get_observations(self) -> dict:
         if self._goal_marker is not None:
             self._show_goal_marker()
@@ -194,16 +215,18 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         c = self.cfg
         vec_b, dist, heading, _ = self._goal_in_body()
         far, near = self._terrain_scan()
+        ahead = self._path_points(c.path_lookahead) - self.robot.data.root_pos_w.torch[:, None, :2]
+        k = ahead.shape[1]
+        ahead_b = R.world_to_body_xy(ahead.reshape(-1, 2), self._base_yaw().repeat_interleave(k))
         policy = self._obs_spec.assemble({
             "base_lin_vel": p["base_lin_vel"],
             "base_ang_vel": p["base_ang_vel"],
             "projected_gravity": p["projected_gravity"],
+            "path_points": ahead_b.reshape(self.num_envs, 2 * k),
             "goal_vec_b": vec_b / c.goal_dist_max,
             "goal_vec_near": vec_b / dist.clamp_min(c.goal_near_range).unsqueeze(-1),
             "goal_heading": heading,
             "wheel_vel": p["wheel_vel"],
-            "arm_pos": p["arm_pos"],
-            "drum_fill": self._drum_fill,
             "last_action": self._actions,
         })
         wheel_vel = self.robot.data.joint_vel.torch
@@ -217,17 +240,7 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
                 R.wheel_slip(wheel_vel[:, self._right_ids], v_fwd, WHEEL_RADIUS),
             ], dim=-1),
         })
-
-        def degrade(scan, pattern, image):
-            noisy = degrade_scan(scan, pattern, c.scan_noise_std, c.scan_dropout, c.scan_range_ref, c.scan_invalid)
-            return noisy.reshape(self.num_envs, *image)
-
-        return {
-            "policy": policy,
-            "far_scan": degrade(far, self._far_pattern, NAV_FAR_IMAGE),
-            "near_scan": degrade(near, self._near_pattern, NAV_NEAR_IMAGE),
-            "critic": critic,
-        }
+        return {"policy": policy, "critic": critic}
 
     # --- rewards ---
 
@@ -372,19 +385,27 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             markers={
                 "disc": sim_utils.CylinderCfg(radius=MARKER_DISC[0], height=MARKER_DISC[1], visual_material=look),
                 "bar": sim_utils.CuboidCfg(size=MARKER_BAR, visual_material=look),
+                "dot": sim_utils.SphereCfg(
+                    radius=PATH_DOT_RADIUS, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=PATH_RGB)
+                ),
             },
         ))
 
     def _show_goal_marker(self) -> None:
-        """A disc and a bar per env at the goal, env-major."""
+        """Per env, env-major: a disc and a bar at the goal, then PATH_DOTS dots
+        along the planned path from the chassis."""
         n = self.num_envs
         at = torch.cat([self._goal_pos_w, (self._goal_z_w + MARKER_LIFT).unsqueeze(-1)], dim=-1)
         zero = torch.zeros_like(self._goal_yaw)
         quat = torch.stack([zero, zero, torch.sin(0.5 * self._goal_yaw), torch.cos(0.5 * self._goal_yaw)], dim=-1)
+        dots = self._path_points(tuple(PATH_DOT_SPACING * (i + 1) for i in range(PATH_DOTS)))
+        dot_z = torch.nan_to_num(self._ground_heights(dots), nan=0.0) + MARKER_LIFT
+        dot_at = torch.cat([dots, dot_z.unsqueeze(-1)], dim=-1)                     # (n, PATH_DOTS, 3)
+        dot_quat = torch.tensor([0.0, 0.0, 0.0, 1.0], device=self.device).expand(n, PATH_DOTS, 4)
         self._goal_marker.visualize(
-            translations=at.repeat_interleave(2, dim=0),
-            orientations=quat.repeat_interleave(2, dim=0),
-            marker_indices=torch.tensor([0, 1], device=self.device).repeat(n),
+            translations=torch.cat([at.unsqueeze(1).expand(n, 2, 3), dot_at], dim=1).reshape(-1, 3),
+            orientations=torch.cat([quat.unsqueeze(1).expand(n, 2, 4), dot_quat], dim=1).reshape(-1, 4),
+            marker_indices=torch.tensor([0, 1] + [2] * PATH_DOTS, device=self.device).repeat(n),
         )
 
     # --- reset ---
@@ -504,7 +525,8 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             self._path_cost = torch.stack([
                 P.obstacle_cost(
                     self._ground_heights(origins[r, :, None, None, :2] + local),
-                    c.path_res, c.goal_blocked_step, c.path_zone, c.path_zone_cost, c.path_obstacle_cost,
+                    c.path_res, c.goal_blocked_step, c.path_clearance, c.path_zone, c.path_zone_cost,
+                    c.path_obstacle_cost,
                 )
                 for r in range(origins.shape[0])
             ])
@@ -515,7 +537,9 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
         cell = (self.terrain.terrain_levels[env_ids], self.terrain.terrain_types[env_ids])
         origin = self.terrain.terrain_origins[cell][:, :2]
         goal_uv = (self._goal_pos_w[env_ids] - origin - self._path_axis[0]) / self.cfg.path_res
-        field = P.path_field(self._cell_path_cost()[cell], goal_uv, self.cfg.path_res, self.cfg.path_max_iters)
+        cost = self._cell_path_cost()[cell]
+        field = P.path_field(cost, goal_uv, self.cfg.path_res, self.cfg.path_max_iters)
+        self._path_env_cost[env_ids] = cost
         self._path[env_ids] = field
         self._path_origin[env_ids] = origin
         self._path_at_goal[env_ids] = P.sample_field(field, goal_uv, self.cfg.path_res)

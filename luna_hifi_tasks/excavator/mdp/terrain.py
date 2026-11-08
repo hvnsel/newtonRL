@@ -21,9 +21,6 @@ from .observations import (
     DIG_SCAN_CELL,
     DIG_SCAN_NX,
     DIG_SCAN_NY,
-    NAV_FAR_CELL,
-    NAV_FAR_NX,
-    NAV_FAR_NY,
     NAV_NEAR_CELL,
     NAV_NEAR_NX,
     NAV_NEAR_NY,
@@ -40,10 +37,6 @@ def scan_pattern(nx: int, ny: int, cell: float, forward_bias: float = 0.0, devic
     ys = (torch.arange(ny, device=device, dtype=torch.float32) - (ny - 1) / 2) * cell
     gy, gx = torch.meshgrid(ys, xs, indexing="ij")
     return torch.stack([gx.reshape(-1), gy.reshape(-1)], dim=-1)
-
-
-def nav_far_pattern(device="cpu") -> torch.Tensor:
-    return scan_pattern(NAV_FAR_NX, NAV_FAR_NY, NAV_FAR_CELL, device=device)
 
 
 def nav_near_pattern(device="cpu") -> torch.Tensor:

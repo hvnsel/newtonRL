@@ -1,0 +1,30 @@
+#!/bin/bash
+# One-time setup on a PACE login node (compute nodes may have no internet):
+# uv and Python 3.12, Isaac Lab at the workstation's commit (kit-less, no Isaac
+# Sim), this repo installed into its venv, and the Newton MPM fix the
+# workstation has (scripts/patch_newton_mpm.py). Safe to re-run.
+#
+#   bash /storage/scratch1/5/$USER/luna/newtonRL/cluster/setup_pace.sh
+
+set -eu
+source "$(dirname "$0")/env.sh"
+
+# The workstation's ~/IsaacLab commit (release/3.0.0).
+ISAACLAB_COMMIT=961760bcb91e3af48e7d116292e57e8ecaefc31e
+
+if [ ! -x "$LUNA/bin/uv" ]; then
+  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$LUNA/bin" INSTALLER_NO_MODIFY_PATH=1 sh
+fi
+uv python install 3.12
+
+if [ ! -d "$ISAACLAB/.git" ]; then
+  git clone --filter=blob:none https://github.com/isaac-sim/IsaacLab.git "$ISAACLAB"
+fi
+git -C "$ISAACLAB" checkout --quiet "$ISAACLAB_COMMIT"
+(cd "$ISAACLAB" && uv sync)
+
+uv pip install --python "$PY" -e "$REPO"
+"$PY" "$REPO/scripts/patch_newton_mpm.py"
+
+"$PY" -c "import torch, warp, newton, isaaclab; print('torch', torch.__version__, '| warp', warp.__version__, '| newton', newton.__version__)"
+echo "setup done; next, copy the excavator asset from the workstation (cluster/ClusterSetup.md, step 3)"

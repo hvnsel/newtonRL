@@ -30,13 +30,13 @@ luna_hifi_tasks/excavator/       the whole package: the machine (excavator.py),
 luna_hifi_tasks/ground.py        ground plane spawn config (if TARGET lacks it)
 assets/ground_plane/             the ground plane USD it loads (if TARGET lacks it)
 scripts/dig_demo.py              scripted dig, prints the fill readout
-cluster/                         the whole directory: PACE setup, sbatch scripts,
-                                 patch_demo_frames.py, this file
+cluster/                         the whole directory: PACE setup, env and
+                                 sbatch scripts, this file
 TUNING.md                        which knob lives in which file
 ```
 
 Delete TARGET's root copies of `ClusterSetup.md` and `patch_demo_frames.py`;
-the `cluster/` versions replace them.
+`cluster/` replaces them.
 
 Do not copy `assets/config.yaml` or `assets/.asset_hash` (converter output,
 read by no code).
@@ -115,4 +115,3 @@ git commit -m "Add the lunar regolith excavation task"
 - SOURCE's tricycle: a triangular-frame body with its regenerated USD and
   rewritten env files. It differs from TARGET's tricycle and is a separate
   port.
-- The container image: `isaaclab.sif` (12 GB) lives in cluster scratch.

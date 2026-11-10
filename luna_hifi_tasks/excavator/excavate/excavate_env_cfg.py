@@ -326,6 +326,8 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # dig_inlet_tilt, and the drums spin up to dig_drum_speed. False holds the
     # arms at their start angle and the drums still.
     dig_tool: bool = True
+    # The rear drum digs too; False keeps it raised at the start pose, still.
+    dig_rear_drum: bool = False
     dig_cut: float = 0.10                    # m
     dig_inlet_tilt: float = 0.096            # rad off straight down
     dig_drum_speed: float = DIG_DRUM_SIGN * MAX_DRUM_SPEED   # rad/s, the loading direction
@@ -381,7 +383,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # --- success ---
     fill_success_fraction = 0.6              # of target_load_kg
     # "front": the front drum. "all": every drum. "mean": the pair's average.
-    fill_success_mode = "all"
+    fill_success_mode = "front"
 
     # --- reward weights ---
     # removal and unheld are per 2 x target_load_kg; overcut per cut_volume_ref.

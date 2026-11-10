@@ -65,7 +65,7 @@ in the training log is each term's episode total.
 | what counts as in a drum | `BORE_*` constants | inside the shroud shell: within 0.195 m of the axis, between the end plates, above the chord across the inlet; holds 150 kg |
 | nominal cut volume | `cut_volume_ref` | `0.0304` m³ |
 | commanded depth below the surface | `cut_depth_range` | `(0.04, 0.04)` m |
-| drums full (logged as `Episode/drum_full`) | `fill_success_fraction` | `0.6` of `target_load_kg`, every drum |
+| drum full (logged as `Episode/drum_full`) | `fill_success_fraction` | `0.6` of `target_load_kg`, front drum |
 
 ## Excavate tool and drive (excavate_env_cfg.py)
 
@@ -80,6 +80,7 @@ The env runs the tool; the policy's actions are `[forward, yaw]`.
 | forward | `dig_forward` | `0.15 × (1 + a0)` of top speed: 0–0.45 m/s, 0.225 at a0 = 0 |
 | heading hold, yaw action | `heading_hold_gain`, `dig_yaw_rate` | 1.0 /s capped at ±0.3 rad/s, plus 0.3 × a1 rad/s |
 | end of the pass | `work_area_length` | the episode ends when the front drum is 0.6 m past the anchor |
+| rear drum | `dig_rear_drum` | `False`: raised at the start pose, still |
 | tool off (parked machine) | `dig_tool` | `True` |
 
 ## Navigate planner (navigate_env_cfg.py)

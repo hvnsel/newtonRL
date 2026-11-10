@@ -71,17 +71,22 @@ class ExcavatorEnvBase(DirectRLEnv):
         self._forward_cmd[:] = v
         self._yaw_cmd[:] = w
 
+    @staticmethod
+    def _per_drum(x: torch.Tensor) -> torch.Tensor:
+        """(E, 2) front and rear: an (E,) target goes to both."""
+        return x if x.dim() == 2 else x.unsqueeze(-1).expand(-1, 2)
+
     def _apply_arms(self, angle: torch.Tensor) -> None:
-        """Position target (E,) rad for both arms."""
-        self.robot.set_joint_position_target(angle.unsqueeze(-1).expand(-1, 2), joint_ids=self._arm_ids)
+        """Position target (E,) or (E, 2) front and rear, rad."""
+        self.robot.set_joint_position_target(self._per_drum(angle), joint_ids=self._arm_ids)
 
     def _apply_drums(self, speed: torch.Tensor) -> None:
-        """Velocity target (E,) rad/s for both drums."""
-        self.robot.set_joint_velocity_target(speed.unsqueeze(-1).expand(-1, 2), joint_ids=self._drum_ids)
+        """Velocity target (E,) or (E, 2) front and rear, rad/s."""
+        self.robot.set_joint_velocity_target(self._per_drum(speed), joint_ids=self._drum_ids)
 
     def _apply_shrouds(self, angle: torch.Tensor) -> None:
-        """Position target (E,) rad for both shrouds (the drum inlets)."""
-        self.robot.set_joint_position_target(angle.unsqueeze(-1).expand(-1, 2), joint_ids=self._shroud_ids)
+        """Position target (E,) or (E, 2) front and rear, rad (the drum inlets)."""
+        self.robot.set_joint_position_target(self._per_drum(angle), joint_ids=self._shroud_ids)
 
     # --- observations ---
 

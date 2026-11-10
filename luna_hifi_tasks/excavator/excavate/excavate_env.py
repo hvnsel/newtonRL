@@ -138,6 +138,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._arm_start = torch.zeros(E, device=dev)
         _, self._dig_arm = cfg.boom_command_for_cut(cfg.dig_cut)
         self._dig_shroud = -self._dig_arm + cfg.dig_inlet_tilt
+        self._drum_digs = torch.tensor([1.0, float(cfg.dig_rear_drum)], device=dev)
         self._work_yaw = torch.zeros(E, device=dev)
         self._pass_done = torch.zeros(E, dtype=torch.bool, device=dev)
 
@@ -205,7 +206,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         yaw_rate = torch.where(driving, hold + c.dig_yaw_rate * a[:, 1], torch.zeros_like(err))
         self._apply_drive(forward, yaw_rate / MAX_YAW_SPEED)
         self._update_lead()
-        self._apply_arms(self._arm_start + ramp * (self._dig_arm - self._arm_start))
+        # Front drum to the dig pose; the rear one too only with dig_rear_drum,
+        # else it stays at its start pose, still.
+        ramp = ramp.unsqueeze(-1) * self._drum_digs
+        start = self._arm_start.unsqueeze(-1)
+        self._apply_arms(start + ramp * (self._dig_arm - start))
         self._apply_drums(ramp * c.dig_drum_speed)
         self._apply_shrouds(ramp * self._dig_shroud)
 

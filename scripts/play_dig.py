@@ -709,6 +709,8 @@ def main(argv=None) -> int:
         frames_off = frame_dir is None
 
         for i in range(steps):
+            # Read before the step: the reset on the step a pass ends zeroes it.
+            fill_prev = u._fill_kg[0].tolist()
             with torch.inference_mode():
                 action = policy(actor_obs).clamp(-1.0, 1.0)
                 obs, _, term, trunc, _ = env.step(action)
@@ -776,7 +778,8 @@ def main(argv=None) -> int:
                 print(f"[play] t={i*dt:5.2f}s episode ended "
                       f"(pass_done={int(scalar('_pass_done'))}, "
                       f"shape_done={int(scalar('_shape_done'))}, "
-                      f"escaped={int(scalar('_escaped'))})")
+                      f"escaped={int(scalar('_escaped'))}), "
+                      f"in the drums: front {fill_prev[0]:.1f} kg, rear {fill_prev[1]:.1f} kg")
 
         if args.probe:
             _attitude(u)

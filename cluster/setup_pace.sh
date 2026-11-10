@@ -21,7 +21,10 @@ if [ ! -d "$ISAACLAB/.git" ]; then
   git clone --filter=blob:none https://github.com/isaac-sim/IsaacLab.git "$ISAACLAB"
 fi
 git -C "$ISAACLAB" checkout --quiet "$ISAACLAB_COMMIT"
-(cd "$ISAACLAB" && uv sync)
+# PACE's glibc is 2.34; these two ship wheels for 2.35 and up only. Training
+# uses neither: omniverseclient fetches remote Nucleus/S3 assets, ovstage
+# serves the RTX renderer, and both are imported only on those paths.
+(cd "$ISAACLAB" && uv sync --no-install-package omniverseclient --no-install-package ovstage)
 
 uv pip install --python "$PY" -e "$REPO"
 

@@ -56,7 +56,7 @@ def _parse(argv):
     p.add_argument("--no_window", action="store_true", help="skip the viewer; just run the checks")
 
     p.add_argument("--cut", type=float, default=None,
-                   help="override dig_cut: how deep the shroud bottom goes below the surface, metres")
+                   help="override dig_cut: how deep the vane tips go below the surface, metres")
     p.add_argument("--drum", type=float, default=None,
                    help="override dig_drum_speed as a fraction of MAX_DRUM_SPEED. "
                         f"The loading sign is {DIG_DRUM_SIGN:+.0f}; the other dumps")
@@ -107,26 +107,27 @@ def soil_shells(u) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def cut_diagnosis(cfg, cut: float) -> list[str]:
-    """Notes on a shroud cut depth `cut` against the bed: whether the shroud
-    reaches the floor, and how much of the rotor ends up below grade."""
+    """Notes on a cut with the vane tips `cut` below the bed surface: whether
+    the shroud reaches the floor, and how much of the rotor ends up below grade."""
     wall = SHROUD_OUT_R - ROTOR_TIP_R
     floor = cfg.bed_top - cfg.bed_depth
-    shroud_z = cfg.bed_top - cut
+    shroud_z = cfg.bed_top - cut - wall
 
     out = []
     if shroud_z < floor:
         out.append(f"!! the SHROUD would sit {floor - shroud_z:.3f} m below the bed floor "
                    f"at z={floor:.3f}: it grinds on the slab, it does not dig")
-    if cut > cfg.bed_depth:
+    if cut + wall > cfg.bed_depth:
+        deepest = max(cfg.bed_depth - wall, 0.0)
         out.append(f"deepest cut this {cfg.bed_depth:.2f} m bed supports is "
-                   f"{cfg.bed_depth:.3f} m; try --cut {max(cfg.bed_depth - 0.005, 0.0):.2f}")
+                   f"{deepest:.3f} m; try --cut {max(deepest - 0.005, 0.0):.2f}")
 
     span = 2.0 * ROTOR_TIP_R
-    submerged = max(min(cut - wall, span), 0.0)
+    submerged = max(min(cut, span), 0.0)
     out.append(f"{submerged / span * 100:.0f}% of the {span:.2f} m rotor "
                f"ends up below grade")
     if submerged < ROTOR_TIP_R:
-        out.append(f"under half; a {ROTOR_TIP_R + wall:.2f} m cut buries half the rotor")
+        out.append(f"under half; a {ROTOR_TIP_R:.2f} m cut buries half the rotor")
     return out
 
 
@@ -223,7 +224,7 @@ def main(argv=None) -> int:
                   f"clears it in {ahead / max(speed, 1e-6):.1f} s")
         wall = SHROUD_OUT_R - ROTOR_TIP_R
         print(f"  to cut {cut:.3f} m -> arm {angle:+.3f} rad, shroud {u._dig_shroud:+.3f} rad")
-        print(f"  vane tips reach {cut - wall:.3f} m below grade")
+        print(f"  vane tips {cut:.3f} m below grade, shroud bottom {cut + wall:.3f} m")
         for line in cut_diagnosis(u.cfg, cut):
             print(f"  * {line}")
         print()

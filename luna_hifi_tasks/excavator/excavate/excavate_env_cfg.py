@@ -36,6 +36,7 @@ from ..excavator import (
     DIG_DRUM_SIGN,
     MAST_TOP_Z,
     ROTOR_HALF_LEN,
+    ROTOR_TIP_R,
     SHROUD_END_T,
     SHROUD_IN_R,
     SHROUD_INLET,
@@ -321,14 +322,14 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
     # --- tool, run by the env ---
     # After the settle, over dig_ramp_seconds with the wheels held: the arms
-    # lower until the shroud bottom is dig_cut below the bed surface
+    # lower until the vane tips are dig_cut below the bed surface
     # (boom_command_for_cut), the shrouds turn to minus the arm angle plus
     # dig_inlet_tilt, and the drums spin up to dig_drum_speed. False holds the
     # arms at their start angle and the drums still.
     dig_tool: bool = True
     # The rear drum digs too; False keeps it raised at the start pose, still.
     dig_rear_drum: bool = False
-    dig_cut: float = 0.10                    # m
+    dig_cut: float = 0.073                   # m, vane tips below the surface
     dig_inlet_tilt: float = 0.096            # rad off straight down
     dig_drum_speed: float = DIG_DRUM_SIGN * MAX_DRUM_SPEED   # rad/s, the loading direction
     dig_ramp_seconds: float = 2.0
@@ -448,20 +449,20 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         self.target_load_kg = self.target_load_bore_fraction * self.drum_capacity_kg
 
     def boom_command_for_cut(self, cut: float) -> tuple[float, float]:
-        """(boom command in [-1, 1], arm angle in rad) that puts the bottom of
-        the shroud `cut` metres below the bed surface.
+        """(boom command in [-1, 1], arm angle in rad) that puts the vane tips
+        `cut` metres below the bed surface.
 
         World z, with the wheels on bed_top (spawn_on_bed) or on z = 0:
 
-            shroud bottom = wheel plane + CHASSIS_Z + MAST_TOP_Z
-                            - ARM_LEN * sin(angle) - SHROUD_OUT_R
-            target        = bed_top - cut
+            vane tips = wheel plane + CHASSIS_Z + MAST_TOP_Z
+                        - ARM_LEN * sin(angle) - ROTOR_TIP_R
+            target    = bed_top - cut
 
         The angle is clamped to arm_range.
         """
         pivot = CHASSIS_Z + MAST_TOP_Z
         wheel_plane = self.bed_top if self.spawn_on_bed else 0.0
-        sin_t = (wheel_plane + pivot - SHROUD_OUT_R - (self.bed_top - cut)) / ARM_LEN
+        sin_t = (wheel_plane + pivot - ROTOR_TIP_R - (self.bed_top - cut)) / ARM_LEN
         lo, hi = self.arm_range
         angle = min(max(math.asin(min(max(sin_t, -1.0), 1.0)), lo), hi)
         return 2.0 * (angle - lo) / (hi - lo) - 1.0, angle

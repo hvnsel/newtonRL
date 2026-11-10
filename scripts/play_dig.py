@@ -99,7 +99,7 @@ def _parse(argv):
                    help="forward command during --dig, a fraction of MAX_WHEEL_SPEED")
     # Tool overrides (the env lowers and spins the tool after the settle).
     p.add_argument("--cut", type=float, default=None,
-                   help="override dig_cut: shroud bottom below the surface [m]")
+                   help="override dig_cut: vane tips below the surface [m]")
     p.add_argument("--drum", type=float, default=None,
                    help="override dig_drum_speed as a fraction of MAX_DRUM_SPEED; "
                         "the sign of DIG_DRUM_SIGN loads")

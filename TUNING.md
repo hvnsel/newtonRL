@@ -73,7 +73,7 @@ The env runs the tool; the policy's actions are `[forward, yaw]`.
 
 | what | field | value |
 |---|---|---|
-| shroud bottom below the surface | `dig_cut` | `0.10` m (`boom_command_for_cut`: arm 0.536 rad) |
+| vane tips below the surface | `dig_cut` | `0.073` m (`boom_command_for_cut`: arm 0.536 rad) |
 | inlet off straight down | `dig_inlet_tilt` | `0.096` rad (shroud −0.44 rad) |
 | drum speed | `dig_drum_speed` | `−2.9` rad/s, the loading direction |
 | lowering and spin-up after the settle | `dig_ramp_seconds` | `2` s, wheels held |
@@ -126,7 +126,9 @@ A vane sweeps `ln(TIP/HUB) · tan(rake)` = 50.6° from hub to tip, inside its
 | what | constant | value |
 |---|---|---|
 | inlet | `SHROUD_INLET` | 100° |
-| inner, outer radius | `SHROUD_IN_R`, `SHROUD_OUT_R` | `0.195`, `0.212` m |
+| inner, outer radius | `SHROUD_IN_R`, `SHROUD_OUT_R` | `0.195`, `0.212` m: the lips beside the inlet, and the end plates |
+| outer radius round the back | `SHROUD_BACK_R` | `0.275` m: a wall one excavate soil-grid cell (0.08 m) thick, so grains cannot pass through |
+| thin plates beside the inlet | `SHROUD_LIP_PLATES` | `1` each side (20°) |
 | end plate thickness | `SHROUD_END_T` | `0.012` m |
 | aiming range | `SHROUD_RANGE` | `(-1.10, 1.10)` rad |
 

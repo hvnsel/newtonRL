@@ -310,10 +310,11 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
 
     # --- start state ---
     arm_start_angle = -0.20              # rad, drums ~0.44 m up
-    arm_start_jitter = 0.10              # rad
-    spawn_yaw_jitter = 0.05              # rad
-    spawn_x_jitter = 0.05                # m
-    spawn_y_jitter = 0.05                # m
+    # No start jitter: navigation is assumed to deliver the exact pose.
+    arm_start_jitter = 0.0               # rad
+    spawn_yaw_jitter = 0.0               # rad
+    spawn_x_jitter = 0.0                 # m
+    spawn_y_jitter = 0.0                 # m
 
     # Episodes an env keeps its worked bed before the soil is re-laid.
     soil_reset_every: int = 1

@@ -26,6 +26,11 @@ git -C "$ISAACLAB" checkout --quiet "$ISAACLAB_COMMIT"
 # serves the RTX renderer, and both are imported only on those paths.
 (cd "$ISAACLAB" && uv sync --no-install-package omniverseclient --no-install-package ovstage)
 
+# torch's CUDA 12.8 build in place of the lock's CUDA 13.0 one: 13.0 needs a
+# GPU driver of 580 or newer, 12.8 runs on PACE's drivers either side of it.
+uv pip install --python "$PY" --extra-index-url https://download.pytorch.org/whl/cu128 \
+  "torch==2.11.0+cu128" "torchvision==0.26.0+cu128"
+
 uv pip install --python "$PY" -e "$REPO"
 
 # The workstation runs Newton 1.6.1 with 1.7.0's rheology kernels, plus the

@@ -283,7 +283,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # Yield surface: sqrt(J2) <= soil_cohesion + soil_friction * p.
     soil_density: float = 1500.0             # kg/m3
     soil_friction: float = 0.84              # tan(40 deg)
-    soil_cohesion: float = 150.0             # yield_stress, Pa
+    soil_cohesion: float = 0.0               # yield_stress, Pa
     soil_yield_pressure: float = 1.0e12      # Pa, compression cap
     soil_young_modulus: float = 1.0e7        # Pa
     # Solid fraction below which the solver drops cohesion; 0 disables it.

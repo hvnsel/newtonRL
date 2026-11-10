@@ -21,7 +21,7 @@
 | particles per cell, per axis | `particles_per_cell` | `2.0` | 8 per cell |
 | density | `soil_density` | `1500` kg/m³ | `--density` |
 | friction | `soil_friction` | `0.84` | about tan(phi); `--friction` |
-| cohesion | `soil_cohesion` | `150` Pa (Small/Micro `800`) | `yield_stress`; `--cohesion` |
+| cohesion | `soil_cohesion` | `0` Pa (Small/Micro `800`) | `yield_stress`; `--cohesion` |
 | compression cap | `soil_yield_pressure` | `1e12` Pa | |
 
 A soil field changed after `__post_init__` takes effect through

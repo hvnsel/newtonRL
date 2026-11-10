@@ -62,6 +62,7 @@ in the training log is each term's episode total.
 | excavate | field | value |
 |---|---|---|
 | full drum | `target_load_kg` | `40` kg |
+| what counts as in a drum | `BORE_*` constants | inside the shroud shell: within 0.195 m of the axis, between the end plates, above the chord across the inlet; holds 150 kg |
 | nominal cut volume | `cut_volume_ref` | `0.0304` m³ |
 | commanded depth below the surface | `cut_depth_range` | `(0.04, 0.04)` m |
 | drums full (logged as `Episode/drum_full`) | `fill_success_fraction` | `0.6` of `target_load_kg`, every drum |

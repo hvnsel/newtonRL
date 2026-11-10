@@ -160,6 +160,7 @@ JOINT_SHROUDS = ["shroud_front", "shroud_rear"]
 
 BODY_CHASSIS = "chassis"
 BODY_DRUMS = ["drum_front_body", "drum_rear_body"]
+BODY_SHROUDS = ["shroud_front_body", "shroud_rear_body"]
 
 FRAME_RGBA = "0.78 0.62 0.16 1"     # machine yellow
 DECK_RGBA = "0.42 0.45 0.50 1"

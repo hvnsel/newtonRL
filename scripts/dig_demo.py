@@ -101,7 +101,7 @@ def soil_shells(u) -> tuple[torch.Tensor, torch.Tensor]:
             for i in range(2)
         ], dim=-1)
 
-    shell = (within(SHROUD_OUT_R) - u._fill_kg).clamp(min=0.0)
+    shell = (within(SHROUD_OUT_R) - within(ROTOR_TIP_R)).clamp(min=0.0)
     outside = (within(SHROUD_OUT_R + 0.10) - within(SHROUD_OUT_R)).clamp(min=0.0)
     return shell, outside
 
@@ -182,7 +182,7 @@ def main(argv=None) -> int:
         print(f"\n=== bed ===\n  {u.cfg.bed_particles_per_env} particles/env, "
               f"grid {u.cfg.bed_grid_nx} x {u.cfg.bed_grid_ny}, "
               f"surface at z = {u.cfg.bed_top:.3f} m")
-        print(f"  rotor sweeps {u.cfg.drum_capacity_kg:.1f} kg each")
+        print(f"  drum interior holds {u.cfg.drum_capacity_kg:.1f} kg each")
         print("  shroud inlet held at minus the arm angle, so it stays "
               "pointed at the ground")
         print(f"  machine stands {'ON the bed' if u.cfg.spawn_on_bed else 'beside the pile'}")

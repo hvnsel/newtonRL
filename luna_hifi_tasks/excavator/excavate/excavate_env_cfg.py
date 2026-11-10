@@ -36,8 +36,9 @@ from ..excavator import (
     DIG_DRUM_SIGN,
     MAST_TOP_Z,
     ROTOR_HALF_LEN,
-    ROTOR_TIP_R,
     SHROUD_END_T,
+    SHROUD_IN_R,
+    SHROUD_INLET,
     SHROUD_OUT_R,
 )
 from ..excavator_cfg import (
@@ -86,17 +87,21 @@ SOIL_MATERIAL = MPMParticleMaterialCfg(
     yield_pressure=1.0e12,
 )
 
-# Drum bore: the rotor's swept cylinder, which fill is counted inside.
-BORE_RADIUS = ROTOR_TIP_R
+# The drum's interior, which fill is counted inside: within the shroud wall,
+# between the end plates, on the closed side of the chord across the inlet
+# (shroud frame, inlet centred on -z).
+BORE_RADIUS = SHROUD_IN_R
 BORE_HALF_LEN = ROTOR_HALF_LEN
-BORE_VOLUME = math.pi * BORE_RADIUS ** 2 * (2.0 * BORE_HALF_LEN)
+BORE_CHORD_Z = -SHROUD_IN_R * math.cos(0.5 * SHROUD_INLET)
+BORE_AREA = math.pi * BORE_RADIUS ** 2 - 0.5 * BORE_RADIUS ** 2 * (SHROUD_INLET - math.sin(SHROUD_INLET))
+BORE_VOLUME = BORE_AREA * (2.0 * BORE_HALF_LEN)
 
 # Scan cells inside this rectangle, in the lead drum's frame, are the ground
 # under the drum.
 FOOTPRINT_HALF_X = SHROUD_OUT_R
 FOOTPRINT_HALF_Y = ROTOR_HALF_LEN
 
-# Mass of a bore packed solid at SOIL_MATERIAL's density [kg].
+# Mass of the interior packed solid at SOIL_MATERIAL's density [kg].
 DRUM_CAPACITY_KG = BORE_VOLUME * SOIL_MATERIAL.density
 
 DIG_OBS = excavate_obs_spec()

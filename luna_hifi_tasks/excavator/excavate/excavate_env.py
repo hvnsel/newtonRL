@@ -34,6 +34,7 @@ from ..mdp.terrain import (
 )
 from .excavate_env_cfg import (
     BED_FLOOR_Z,
+    BORE_CHORD_Z,
     BORE_HALF_LEN,
     BORE_RADIUS,
     DIG_CRITIC,
@@ -161,7 +162,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         print(
             f"[excavate] particle mass {self._particle_mass:.4f} kg, "
             f"target load {cfg.target_load_kg:.1f} kg "
-            f"(swept volume would hold {cfg.drum_capacity_kg:.1f}), "
+            f"(the drum interior holds {cfg.drum_capacity_kg:.1f}), "
             f"cut ref {cfg.cut_volume_ref:.4f} m3, "
             f"bed grid {cfg.bed_grid_nx} x {cfg.bed_grid_ny} @ {cfg.voxel_size:.3f} m"
         )
@@ -231,13 +232,13 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         return mpm_particle_state(self.soil)
 
     def _compute_fill(self, pos: torch.Tensor, env: torch.Tensor) -> torch.Tensor:
-        """(E, 2) kg of soil inside the front and rear drum bores."""
-        dpos, dquat = self._drum_poses()
+        """(E, 2) kg of soil inside the front and rear drums' shells."""
+        spos, squat = self._shroud_poses()
         out = torch.zeros(self.num_envs, 2, device=self.device)
         for i in range(2):
             out[:, i] = drum_fill_mass(
-                pos, env, self._particle_mass, dpos[:, i], dquat[:, i],
-                BORE_RADIUS, BORE_HALF_LEN, self.num_envs,
+                pos, env, self._particle_mass, spos[:, i], squat[:, i],
+                BORE_RADIUS, BORE_HALF_LEN, self.num_envs, BORE_CHORD_Z,
             )
         return out
 

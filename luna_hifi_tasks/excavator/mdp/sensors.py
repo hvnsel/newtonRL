@@ -50,17 +50,22 @@ def drum_fill_mass(
     bore_radius: float,
     half_length: float,
     num_envs: int,
+    chord_z: float | None = None,
 ) -> torch.Tensor:
-    """(E,) kg of particles inside each drum's bore.
+    """(E,) kg of particles inside each drum.
 
-    A particle counts when, in the drum body frame, it is within `bore_radius`
-    of the spin axis (local y) and within `half_length` along it.
+    A particle counts when, in the given body frame, it is within `bore_radius`
+    of the spin axis (local y), within `half_length` along it, and, with
+    `chord_z`, above local z = chord_z: the closed side of the chord across an
+    inlet centred on local -z.
     """
     rel = particle_pos_w - drum_pos_w[particle_env]
     local = quat_apply_inverse(drum_quat_w[particle_env], rel)
 
     radial_sq = local[:, 0] ** 2 + local[:, 2] ** 2
     inside = (radial_sq < bore_radius ** 2) & (local[:, 1].abs() < half_length)
+    if chord_z is not None:
+        inside &= local[:, 2] > chord_z
     contrib = inside.to(rel.dtype) * particle_mass
 
     out = torch.zeros(num_envs, device=rel.device, dtype=contrib.dtype)

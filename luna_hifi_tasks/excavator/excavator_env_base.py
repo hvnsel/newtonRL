@@ -18,6 +18,7 @@ from .excavator import (
     JOINT_WHEELS_LEFT,
     JOINT_WHEELS_RIGHT,
     BODY_DRUMS,
+    BODY_SHROUDS,
     ROTOR_VANES,
     TRACK,
     WHEEL_RADIUS,
@@ -48,6 +49,7 @@ class ExcavatorEnvBase(DirectRLEnv):
         self._drum_ids, _ = self.robot.find_joints(JOINT_DRUMS, preserve_order=True)
         self._shroud_ids, _ = self.robot.find_joints(JOINT_SHROUDS, preserve_order=True)
         self._drum_body_ids, _ = self.robot.find_bodies(BODY_DRUMS, preserve_order=True)
+        self._shroud_body_ids, _ = self.robot.find_bodies(BODY_SHROUDS, preserve_order=True)
         # Last commanded body speeds.
         self._forward_cmd = torch.zeros(self.num_envs, device=self.device)   # m/s
         self._yaw_cmd = torch.zeros(self.num_envs, device=self.device)       # rad/s
@@ -109,6 +111,12 @@ class ExcavatorEnvBase(DirectRLEnv):
         """(E, 2, 3) positions and (E, 2, 4) xyzw quaternions of the drum bodies."""
         d = self.robot.data
         return d.body_pos_w.torch[:, self._drum_body_ids], d.body_quat_w.torch[:, self._drum_body_ids]
+
+    def _shroud_poses(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """(E, 2, 3) positions and (E, 2, 4) xyzw quaternions of the shroud bodies,
+        on the drum axis; the inlet is centred on each shroud's local -z."""
+        d = self.robot.data
+        return d.body_pos_w.torch[:, self._shroud_body_ids], d.body_quat_w.torch[:, self._shroud_body_ids]
 
     # --- terminations and reset ---
 

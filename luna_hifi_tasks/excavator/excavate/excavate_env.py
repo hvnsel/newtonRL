@@ -619,9 +619,14 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         """
         manager = self.sim.physics_manager
         solver = manager._solver
-        selected = np.zeros(int(solver.model.world_count) + 1, dtype=bool)
-        selected[env_ids.cpu().numpy()] = True
-        world_mask = wp.array(selected, dtype=wp.bool, device=solver.model.device)
+        worlds = int(solver.model.world_count)
+        # A one-world MPM grid has no per-env partition and refuses a masked
+        # reset; there the reset is the full one, as in Isaac Lab's coupler.
+        world_mask = None
+        if worlds > 1:
+            selected = np.zeros(worlds + 1, dtype=bool)
+            selected[env_ids.cpu().numpy()] = True
+            world_mask = wp.array(selected, dtype=wp.bool, device=solver.model.device)
         solver.reset(manager.backend.state_0, world_mask=world_mask, flags=newton.StateFlags.PARTICLE)
 
     def _reset_idx(self, env_ids: torch.Tensor):

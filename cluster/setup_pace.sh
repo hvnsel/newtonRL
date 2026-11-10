@@ -1,8 +1,8 @@
 #!/bin/bash
 # One-time setup on a PACE login node (compute nodes may have no internet):
 # uv and Python 3.12, Isaac Lab at the workstation's commit (kit-less, no Isaac
-# Sim), this repo installed into its venv, and the Newton MPM fix the
-# workstation has (scripts/patch_newton_mpm.py). Safe to re-run.
+# Sim), this repo installed into its venv, and the workstation's Newton: 1.6.1
+# with 1.7.0's rheology kernels and scripts/patch_newton_mpm.py. Safe to re-run.
 #
 #   bash /storage/scratch1/5/$USER/luna/newtonRL/cluster/setup_pace.sh
 
@@ -24,6 +24,14 @@ git -C "$ISAACLAB" checkout --quiet "$ISAACLAB_COMMIT"
 (cd "$ISAACLAB" && uv sync)
 
 uv pip install --python "$PY" -e "$REPO"
+
+# The workstation runs Newton 1.6.1 with 1.7.0's rheology kernels, plus the
+# colour-buffer fix. The file is replaced, not rewritten, so uv's cache keeps
+# the original.
+MPM_DIR=$("$PY" -c "import newton, os; print(os.path.join(os.path.dirname(newton.__file__), '_src', 'solvers', 'implicit_mpm'))")
+curl -sSfL https://raw.githubusercontent.com/newton-physics/newton/v1.7.0/newton/_src/solvers/implicit_mpm/rheology_solver_kernels.py \
+  -o "$TMPDIR/rheology_solver_kernels.py"
+mv "$TMPDIR/rheology_solver_kernels.py" "$MPM_DIR/rheology_solver_kernels.py"
 "$PY" "$REPO/scripts/patch_newton_mpm.py"
 
 "$PY" -c "import torch, warp, newton, isaaclab; print('torch', torch.__version__, '| warp', warp.__version__, '| newton', newton.__version__)"

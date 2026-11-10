@@ -2,7 +2,8 @@
 
 The same install as the workstation, without a container: Isaac Lab
 `release/3.0.0` at the workstation's commit in a uv venv, kit-less (no Isaac
-Sim), with the Newton MPM fix from `scripts/patch_newton_mpm.py`. Everything
+Sim), with the workstation's Newton: 1.6.1 with 1.7.0's rheology kernels and
+the fix from `scripts/patch_newton_mpm.py`. Everything
 lives in scratch, `/storage/scratch1/5/$USER/luna`; `$HOME` holds only 20 GB.
 
 | file | what |
@@ -112,5 +113,5 @@ ENVS=1024 ITERS=4000 sbatch cluster/train_navigate.sbatch
   `sbatch --gres=gpu:<type>:1 ...` overrides it per job.
 - A shell that runs anything from this repo by hand needs
   `source $REPO/cluster/env.sh` first, for `$PY` and the caches.
-- `uv sync` in `$ISAACLAB` again would reinstall Newton without the fix; rerun
-  `$PY $REPO/scripts/patch_newton_mpm.py` after it.
+- `uv sync` in `$ISAACLAB` again can reinstall Newton without these changes;
+  rerun `setup_pace.sh` after it.

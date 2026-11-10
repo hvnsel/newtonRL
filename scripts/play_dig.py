@@ -59,8 +59,9 @@ def _parse(argv):
     p.add_argument("--park", action="store_true",
                    help="no policy: wheels commanded to zero, arms held at the start angle, drums still")
     p.add_argument("--trace", default="dig_trace.csv", help="per-step CSV")
-    p.add_argument("--frames", default=None,
-                   help="directory for PNGs, if the env can render to an array")
+    p.add_argument("--video", default=None,
+                   help="record the run as an mp4 into this directory, from the Newton viewer "
+                        "(headless is fine), with the camera on the front drum")
     p.add_argument("--bed_depth", type=float, default=None, help="override bed depth [m]")
     p.add_argument("--mpm_voxel", type=float, default=None,
                    help="override the MPM solver grid cell [m]")
@@ -608,17 +609,26 @@ def main(argv=None) -> int:
         env_cfg.sim.gravity = g
         print(f"[play] gravity scaled by {args.gravity_scale}: {g}")
 
-    if not args.no_window:
+    if not args.no_window or args.video:
         from isaaclab_visualizers.newton import NewtonGLVisualizerCfg
 
+        # A video looks at the front drum; the window takes in the machine.
         env_cfg.sim.visualizer_cfgs = [
             NewtonGLVisualizerCfg(
                 show_particles=True,
                 particle_color=(0.62, 0.55, 0.45),
-                eye=(5.0, 5.0, 3.0),
-                lookat=(0.5, 0.0, 0.3),
+                eye=(3.6, 2.8, 1.5) if args.video else (5.0, 5.0, 3.0),
+                lookat=(1.6, 0.0, 0.3) if args.video else (0.5, 0.0, 0.3),
             )
         ]
+    if args.video:
+        from isaaclab.envs.utils.video_recorder_cfg import VideoRecorderCfg
+
+        # Isaac Lab 3 records through a recorder on the env cfg; render() gives no frames.
+        steps = int(args.seconds / (env_cfg.sim.dt * env_cfg.decimation))
+        env_cfg.video_recorders = [VideoRecorderCfg(
+            source="visualizer:newton", output_dir=args.video, video_length=steps, video_interval=0,
+        )]
 
     if "--device" in sys.argv:
         print(f"[play] sim device set to {args.device} (from --device)")
@@ -626,12 +636,8 @@ def main(argv=None) -> int:
     args.device = env_cfg.sim.device
     env_cfg.validate()
 
-    frame_dir = Path(args.frames) if args.frames else None
-    if frame_dir is not None:
-        frame_dir.mkdir(parents=True, exist_ok=True)
-
     with launch_simulation(env_cfg, args):
-        env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array" if frame_dir else None)
+        env = gym.make(args.task, cfg=env_cfg)
         u = env.unwrapped
         if args.park or args.dig:
             # [forward, yaw]: forward is dig_forward * (1 + a0), so -1 holds the wheels.
@@ -705,8 +711,6 @@ def main(argv=None) -> int:
         rows: list[dict] = []
         obs, _ = env.reset()
         actor_obs = obs["policy"]
-        frames_written = 0
-        frames_off = frame_dir is None
 
         for i in range(steps):
             # Read before the step: the reset on the step a pass ends zeroes it.
@@ -747,24 +751,6 @@ def main(argv=None) -> int:
                     removal,
                     scalar("_payload_kg"),
                 ])
-
-            if frame_dir is not None:
-                # The Newton backend returns no RGB buffer; frames stop at the first miss.
-                try:
-                    img = env.render()
-                except Exception as exc:                      # noqa: BLE001
-                    print(f"[play] no RGB buffer from this backend ({exc.__class__.__name__}: "
-                          f"{exc}); screen-record the viewer window instead")
-                    frame_dir, frames_off = None, True
-                else:
-                    if img is None:
-                        print("[play] render() returned None; screen-record the viewer instead")
-                        frame_dir, frames_off = None, True
-                    else:
-                        from PIL import Image
-
-                        Image.fromarray(img).save(frame_dir / f"{i:05d}.png")
-                        frames_written += 1
 
             if (i + 1) % 100 == 0:
                 now = time.perf_counter()
@@ -817,10 +803,6 @@ def main(argv=None) -> int:
             w.writeheader()
             w.writerows(rows)
         print(f"[play] wrote {len(rows)} steps to {args.trace}")
-        if frames_written:
-            print(f"[play] wrote {frames_written} PNGs to {args.frames}")
-        elif not frames_off:
-            print("[play] no frames written")
 
         wall = time.perf_counter() - t_start
         sps = steps / wall
@@ -852,6 +834,9 @@ def main(argv=None) -> int:
             verdict = f"loading {pay / rem:.2f} of what it cut"
         print(f"[play] {verdict}")
         env.close()
+        if args.video:
+            clips = sorted(Path(args.video).glob("*.mp4"), key=lambda q: q.stat().st_mtime)
+            print(f"[play] video: {clips[-1] if clips else 'none written to ' + args.video}")
     return 0
 
 

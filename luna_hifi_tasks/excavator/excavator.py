@@ -119,13 +119,7 @@ RAKE_SIGN = 1.0                 # spiral handedness
 
 # --- shroud: its own hinge and actuator on the rotor axis ---
 SHROUD_IN_R = 0.195             # running clearance of 10 mm over the vane tips
-SHROUD_OUT_R = 0.212            # the lips beside the inlet, and the end plates
-# Elsewhere the wall is one excavate soil-grid cell thick (mpm_voxel_size,
-# 0.08 m), so the soil grid always has nodes inside it and grains cannot pass
-# through. It grows outward; the lips stay thin so the inlet edges meet the
-# soil as before. The wall's mass is set below, not from its size.
-SHROUD_BACK_R = SHROUD_IN_R + 0.08
-SHROUD_LIP_PLATES = 1           # thin plates on each side of the inlet
+SHROUD_OUT_R = 0.212
 SHROUD_END_T = 0.012            # end plates, which close the pockets axially
 SHROUD_INLET = math.radians(100.0)
 # The arm swing (1.35 rad) plus room to turn the inlet up to dump.
@@ -280,34 +274,30 @@ def _vane_xml(prefix: str, index: int, phi_root: float) -> list[str]:
 
 
 def _shroud_arc_xml(prefix: str) -> list[str]:
-    """The shroud wall, closed except over SHROUD_INLET, in plates of at most
-    20 degrees: SHROUD_LIP_PLATES thin ones beside the inlet, thick ones
-    (out to SHROUD_BACK_R) round the back."""
+    """The shroud wall, closed except over SHROUD_INLET, in plates of at most 20 degrees."""
     span = 2.0 * math.pi - SHROUD_INLET
     n = max(int(math.ceil(span / math.radians(20.0))), 6)
     step = span / n
+    mid_r = 0.5 * (SHROUD_IN_R + SHROUD_OUT_R)
+    # tan, plus a fixed 2 mm, so adjacent plates overlap at the corners.
+    half_arc = mid_r * math.tan(0.5 * step) + 0.002
     # The inlet is centred on the shroud's own -z: joint angle 0 points it
     # straight down with the arm horizontal.
     start = -0.5 * math.pi + 0.5 * SHROUD_INLET
-    plates = []
-    for i in range(n):
-        lip = i < SHROUD_LIP_PLATES or i >= n - SHROUD_LIP_PLATES
-        out_r = SHROUD_OUT_R if lip else SHROUD_BACK_R
-        mid_r = 0.5 * (SHROUD_IN_R + out_r)
-        plates.append(_tangential_plate(
+    return [
+        _tangential_plate(
             f"{prefix}_arc{i}",
             start + (i + 0.5) * step,
             mid_r,
-            # tan, plus 2 mm, so adjacent plates overlap: at the outer face for
-            # the thick plates, which would otherwise open a notch there.
-            (mid_r if lip else out_r) * math.tan(0.5 * step) + 0.002,
+            half_arc,
             ROTOR_HALF_LEN + SHROUD_END_T,
-            0.5 * (out_r - SHROUD_IN_R),
+            0.5 * (SHROUD_OUT_R - SHROUD_IN_R),
             SHROUD_ARC_MASS / n,
             SHROUD_RGBA,
             DRUM_FRICTION,
-        ))
-    return plates
+        )
+        for i in range(n)
+    ]
 
 
 def _shroud(prefix: str, joint: str) -> str:
@@ -382,7 +372,7 @@ DIG_DRUM_SIGN = -RAKE_SIGN
 
 # The cross piece spans the machine at the drum's height and clears the shroud.
 YOKE_STANDOFF = 0.025
-BOOM_LEN = ARM_LEN - SHROUD_BACK_R - YOKE_HALF_W - YOKE_STANDOFF
+BOOM_LEN = ARM_LEN - SHROUD_OUT_R - YOKE_HALF_W - YOKE_STANDOFF
 _LEG_X0 = BOOM_LEN - YOKE_HALF_W            # legs overlap the cross piece slightly
 
 

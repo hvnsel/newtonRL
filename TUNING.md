@@ -127,9 +127,7 @@ A vane sweeps `ln(TIP/HUB) · tan(rake)` = 50.6° from hub to tip, inside its
 | what | constant | value |
 |---|---|---|
 | inlet | `SHROUD_INLET` | 100° |
-| inner, outer radius | `SHROUD_IN_R`, `SHROUD_OUT_R` | `0.195`, `0.212` m: the lips beside the inlet, and the end plates |
-| outer radius round the back | `SHROUD_BACK_R` | `0.275` m: a wall one excavate soil-grid cell (0.08 m) thick, so grains cannot pass through |
-| thin plates beside the inlet | `SHROUD_LIP_PLATES` | `1` each side (20°) |
+| inner, outer radius | `SHROUD_IN_R`, `SHROUD_OUT_R` | `0.195`, `0.212` m |
 | end plate thickness | `SHROUD_END_T` | `0.012` m |
 | aiming range | `SHROUD_RANGE` | `(-1.10, 1.10)` rad |
 

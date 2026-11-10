@@ -2,7 +2,7 @@
 #SBATCH -A gts-jmcnabb3
 #SBATCH -q inferno
 #SBATCH -J luna-excavate
-#SBATCH -N 1 --ntasks-per-node=8
+#SBATCH -N 1 --ntasks-per-node=4
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --mem=64G
 #SBATCH -t 12:00:00

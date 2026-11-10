@@ -41,6 +41,31 @@ def soil_heightmap(
     return flat.view(E, ny, nx)
 
 
+def inside_drum(
+    particle_pos_w: torch.Tensor,      # (P, 3)
+    particle_env: torch.Tensor,        # (P,)
+    drum_pos_w: torch.Tensor,          # (E, 3) body origin, on the spin axis
+    drum_quat_w: torch.Tensor,         # (E, 4) x, y, z, w
+    bore_radius: float,
+    half_length: float,
+    chord_z: float | None = None,
+) -> torch.Tensor:
+    """(P,) True for particles inside the drum of their env.
+
+    Inside means, in the given body frame: within `bore_radius` of the spin
+    axis (local y), within `half_length` along it, and, with `chord_z`, above
+    local z = chord_z, the closed side of the chord across an inlet centred on
+    local -z.
+    """
+    rel = particle_pos_w - drum_pos_w[particle_env]
+    local = quat_apply_inverse(drum_quat_w[particle_env], rel)
+    radial_sq = local[:, 0] ** 2 + local[:, 2] ** 2
+    inside = (radial_sq < bore_radius ** 2) & (local[:, 1].abs() < half_length)
+    if chord_z is not None:
+        inside &= local[:, 2] > chord_z
+    return inside
+
+
 def drum_fill_mass(
     particle_pos_w: torch.Tensor,      # (P, 3)
     particle_env: torch.Tensor,        # (P,)
@@ -52,23 +77,11 @@ def drum_fill_mass(
     num_envs: int,
     chord_z: float | None = None,
 ) -> torch.Tensor:
-    """(E,) kg of particles inside each drum.
+    """(E,) kg of particles inside each drum (inside_drum)."""
+    inside = inside_drum(particle_pos_w, particle_env, drum_pos_w, drum_quat_w, bore_radius, half_length, chord_z)
+    contrib = inside.to(particle_pos_w.dtype) * particle_mass
 
-    A particle counts when, in the given body frame, it is within `bore_radius`
-    of the spin axis (local y), within `half_length` along it, and, with
-    `chord_z`, above local z = chord_z: the closed side of the chord across an
-    inlet centred on local -z.
-    """
-    rel = particle_pos_w - drum_pos_w[particle_env]
-    local = quat_apply_inverse(drum_quat_w[particle_env], rel)
-
-    radial_sq = local[:, 0] ** 2 + local[:, 2] ** 2
-    inside = (radial_sq < bore_radius ** 2) & (local[:, 1].abs() < half_length)
-    if chord_z is not None:
-        inside &= local[:, 2] > chord_z
-    contrib = inside.to(rel.dtype) * particle_mass
-
-    out = torch.zeros(num_envs, device=rel.device, dtype=contrib.dtype)
+    out = torch.zeros(num_envs, device=particle_pos_w.device, dtype=contrib.dtype)
     out.scatter_add_(0, particle_env, contrib)
     return out
 

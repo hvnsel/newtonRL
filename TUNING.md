@@ -100,6 +100,7 @@ The env runs the tool; the policy's actions are `[forward, yaw]`.
 | navigate far scan (critic) | `NAV_FAR_*` | 27 × 27 at 0.45 m, centred: 5.85 m each way |
 | navigate near scan (critic, collision check) | `NAV_NEAR_*` | 25 × 25 at 0.20 m, centred: 2.4 m each way |
 | excavate scan | `DIG_SCAN_*` | 16 × 8 at 0.125 m, centred on the front drum |
+| excavate bed height map | `_bed_heightmap` | tallest grain per 0.04 m cell, leaving out grains inside the drum shells; it feeds the scans, the cut measures and the GIF |
 | excavate scan noise, dropout | `scan_noise_std`, `scan_dropout` | `0.015` / `0.02`, growing with range; a dropped cell reads `scan_invalid` |
 | actor's drum load sensor | `fill_sensor_*` | 0.3 s lag, 5% noise; the critic reads the exact mass |
 

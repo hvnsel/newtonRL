@@ -22,7 +22,7 @@ from ..excavator import ARM_LEN, PIVOT_X, ROTOR_VANES, WHEEL_RADIUS
 from ..excavator_cfg import MAX_YAW_SPEED, usd_status
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rewards as R
-from ..mdp.sensors import drum_fill_mass, mpm_grid_particle_mass, mpm_particle_state, soil_heightmap
+from ..mdp.sensors import inside_drum, mpm_grid_particle_mass, mpm_particle_state, soil_heightmap
 from ..mdp.terrain import (
     degrade_scan,
     dig_critic_far_pattern,
@@ -236,21 +236,28 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     def _particles(self) -> tuple[torch.Tensor, torch.Tensor]:
         return mpm_particle_state(self.soil)
 
-    def _compute_fill(self, pos: torch.Tensor, env: torch.Tensor) -> torch.Tensor:
-        """(E, 2) kg of soil inside the front and rear drums' shells."""
+    def _in_drums(self, pos: torch.Tensor, env: torch.Tensor) -> torch.Tensor:
+        """(2, P) whether each particle is inside the front and the rear drum's shell."""
         spos, squat = self._shroud_poses()
+        return torch.stack([
+            inside_drum(pos, env, spos[:, i], squat[:, i], BORE_RADIUS, BORE_HALF_LEN, BORE_CHORD_Z)
+            for i in range(2)
+        ])
+
+    def _compute_fill(self, env: torch.Tensor, in_drums: torch.Tensor) -> torch.Tensor:
+        """(E, 2) kg of soil inside the front and rear drums' shells."""
         out = torch.zeros(self.num_envs, 2, device=self.device)
         for i in range(2):
-            out[:, i] = drum_fill_mass(
-                pos, env, self._particle_mass, spos[:, i], squat[:, i],
-                BORE_RADIUS, BORE_HALF_LEN, self.num_envs, BORE_CHORD_Z,
-            )
+            out[:, i].scatter_add_(0, env, in_drums[i].to(out.dtype) * self._particle_mass)
         return out
 
-    def _bed_heightmap(self, pos: torch.Tensor, env: torch.Tensor) -> torch.Tensor:
+    def _bed_heightmap(self, pos: torch.Tensor, env: torch.Tensor, in_drums: torch.Tensor) -> torch.Tensor:
+        """The ground's height grid: the tallest grain per cell, leaving out
+        grains inside the drums, which are load, not ground."""
         c = self.cfg
+        ground = ~in_drums.any(dim=0)
         return soil_heightmap(
-            pos, env, self.scene.env_origins,
+            pos[ground], env[ground], self.scene.env_origins,
             c.bed_grid_lower, c.voxel_size, c.bed_grid_nx, c.bed_grid_ny, BED_FLOOR_Z,
         )
 
@@ -381,7 +388,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         c = self.cfg
         p = self._proprio()
         pos, env = self._particles()
-        actor_scan, critic_scan = self._scans(self._bed_heightmap(pos, env))
+        actor_scan, critic_scan = self._scans(self._bed_heightmap(pos, env, self._in_drums(pos, env)))
         cut = self._cut_state(actor_scan)
         policy = DIG_OBS.assemble({
             "base_lin_vel": p["base_lin_vel"],
@@ -435,7 +442,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         d_env = torch.linalg.norm(pos - self.scene.env_origins[env], dim=-1)
         d_env = torch.nan_to_num(d_env, nan=0.0, posinf=0.0, neginf=0.0)
         self._particle_max_m.scatter_reduce_(0, env, d_env, reduce="amax")
-        self._bed_grid = self._bed_heightmap(pos, env)
+        in_drums = self._in_drums(pos, env)
+        self._bed_grid = self._bed_heightmap(pos, env, in_drums)
 
         # During the settle the plane is re-placed target_depth under the mean
         # soil surface of the work area; it holds there afterwards.
@@ -454,7 +462,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         ))
 
         actor_scan, _ = self._scans(self._bed_grid)
-        self._fill_kg = self._compute_fill(pos, env)
+        self._fill_kg = self._compute_fill(env, in_drums)
         self._fill_filt.mul_(1.0 - self._fill_alpha).add_(self._fill_kg, alpha=self._fill_alpha)
         self._spill_filt.mul_(1.0 - self._spill_alpha).add_(self._fill_kg, alpha=self._spill_alpha)
         cut = self._cut_state(actor_scan)

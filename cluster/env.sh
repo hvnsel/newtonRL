@@ -7,6 +7,8 @@ export REPO="$LUNA/newtonRL"
 export ISAACLAB="$LUNA/IsaacLab"
 export PY="$ISAACLAB/.venv/bin/python"
 export PATH="$LUNA/bin:$PATH"
+# A stand-in for omni.client, whose wheel PACE cannot install (stubs/omni/client.py).
+export PYTHONPATH="$REPO/cluster/stubs${PYTHONPATH:+:$PYTHONPATH}"
 
 export UV_CACHE_DIR="$LUNA/cache/uv"
 export UV_PYTHON_INSTALL_DIR="$LUNA/python"

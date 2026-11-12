@@ -12,6 +12,7 @@ lives in scratch, `/storage/scratch1/5/$USER/luna`; `$HOME` holds only 20 GB.
 | `setup_pace.sh` | the one-time install |
 | `train_excavate.sbatch` | excavate, resuming from the newest checkpoint, up to `TOTAL` iterations |
 | `train_navigate.sbatch` | navigate from scratch |
+| `stubs/omni/client.py` | a stand-in for `omni.client`, whose wheel needs a newer glibc than PACE has; `env.sh` puts it on `PYTHONPATH` |
 
 ---
 
@@ -115,3 +116,9 @@ ENVS=1024 ITERS=4000 sbatch cluster/train_navigate.sbatch
   `source $REPO/cluster/env.sh` first, for `$PY` and the caches.
 - `uv sync` in `$ISAACLAB` again can reinstall Newton without these changes;
   rerun `setup_pace.sh` after it.
+- PACE's glibc (2.34) is too old for the `omniverseclient` and `ovstage`
+  wheels, so `setup_pace.sh` skips both. Isaac Lab still calls `omni.client`
+  for any file a USD references that is not on disk; the ground plane's
+  `OmniPBR.mdl` material is one. Without `stubs/omni/client.py` on
+  `PYTHONPATH`, the excavate env stops at startup with
+  `ModuleNotFoundError: No module named 'omni'`.

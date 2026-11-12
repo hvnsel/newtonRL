@@ -21,9 +21,11 @@ if [ ! -d "$ISAACLAB/.git" ]; then
   git clone --filter=blob:none https://github.com/isaac-sim/IsaacLab.git "$ISAACLAB"
 fi
 git -C "$ISAACLAB" checkout --quiet "$ISAACLAB_COMMIT"
-# PACE's glibc is 2.34; these two ship wheels for 2.35 and up only. Training
-# uses neither: omniverseclient fetches remote Nucleus/S3 assets, ovstage
-# serves the RTX renderer, and both are imported only on those paths.
+# PACE's glibc is 2.34; these two ship wheels for 2.35 and up only. ovstage
+# serves the RTX renderer, which training never starts. omniverseclient's
+# omni.client is asked about every file a USD references that is not on local
+# disk, which spawning the ground plane does (its OmniPBR.mdl material);
+# cluster/stubs/omni/client.py stands in for it, on PYTHONPATH from env.sh.
 (cd "$ISAACLAB" && uv sync --no-install-package omniverseclient --no-install-package ovstage)
 
 # torch's CUDA 12.8 build in place of the lock's CUDA 13.0 one: 13.0 needs a

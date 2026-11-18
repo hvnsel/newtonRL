@@ -34,6 +34,7 @@ luna_hifi_tasks/
       course.py                   fixed obstacle layouts for Navigate-Course
       symmetry.py                 180-degree symmetry for PPO augmentation
       sensors.py                  MPM soil readouts for excavate
+      rft.py                      analytical soil for the drums: RFT forces on a height grid, no MPM
     navigate/                     navigate env, cfg, PPO cfg
     excavate/                     excavate env, cfg, PPO cfg
   tricycle/                       tricycle env, cfg, MJCF, PPO cfg
@@ -48,6 +49,7 @@ scripts/
   dig_demo.py                     scripted dig on the excavate task, no policy
   play_dig.py                     excavate playback with a CSV trace and heightmap dump
   render_dig.py, render_attitude.py   GIFs from play_dig dumps
+  rft_pass.py                     scripted drum pass through the analytical soil (mdp/rft.py), no simulator
   patch_newton_mpm.py             gives the installed Newton the soil solver excavate runs on (setup step)
 workstation/                      single-box setup and run scripts (Setup.md)
 cluster/                          Georgia Tech PACE setup (ClusterSetup.md)
@@ -107,6 +109,7 @@ workstation/train.sh train --rl_library rsl_rl --task Luna-Excavator-Excavate --
 workstation/train.sh -p scripts/dig_demo.py --task Luna-Excavator-Excavate-Micro --no_window
 workstation/train.sh -p scripts/play_dig.py --no_window --trace dig.csv     # newest checkpoint
 workstation/train.sh -p scripts/play_dig.py --dig --no_window               # scripted pass, no policy
+workstation/train.sh -p scripts/rft_pass.py --cut 0.05 --drive 0.1          # analytical soil, no simulator
 
 # tricycle
 workstation/train.sh train --rl_library rsl_rl --task Luna-Tricycle-Direct --num_envs 4

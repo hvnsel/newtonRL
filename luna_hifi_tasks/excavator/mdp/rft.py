@@ -63,11 +63,12 @@ class Soil:
 
     @property
     def zeta(self) -> float:
-        """RFT stress scale, N/m3. Set so a vertical plate pushed sideways feels
-        passive earth pressure: tan^2(45 deg + phi/2) * density * gravity per
-        metre of depth. 0.370 is alpha(pi/2, 0)[0]."""
+        """RFT stress scale, N/m3: 6.15 * Kp * density * gravity, where
+        Kp = tan^2(45 deg + phi/2) is the passive earth pressure coefficient.
+        6.15 is what the three glass-sphere beds of Li et al. measure (5.5,
+        6.3, 6.6), from their scales, bulk densities and angles of repose."""
         kp = math.tan(0.25 * math.pi + 0.5 * math.atan(self.friction)) ** 2
-        return kp * self.density * self.gravity / 0.370
+        return 6.15 * kp * self.density * self.gravity
 
 
 class Patches(NamedTuple):
@@ -122,13 +123,15 @@ def drum_axis(quat: torch.Tensor) -> torch.Tensor:
     return rotate(quat, torch.tensor([0.0, 1.0, 0.0], device=quat.device))
 
 
-def drum_patches(strips: int = 5, arcs: int = 36, device="cpu") -> tuple[Patches, torch.Tensor, Patches]:
+def drum_patches(
+    strips: int = 5, arcs: int = 72, pieces: int = 4, device="cpu"
+) -> tuple[Patches, torch.Tensor, Patches]:
     """(wall, opening, vanes) in the drum's body frames, axis along y.
 
-    wall: patches round the shroud's whole outer circle, in the shroud frame.
+    wall: `arcs` patches round the shroud's whole outer circle, shroud frame.
     opening: (P,) True for the wall patches over the inlet, centred on -z.
-    vanes: one patch per straight segment of each spiral vane, rotor frame.
-    Each is repeated in `strips` strips along the axis.
+    vanes: each straight segment of each spiral vane in `pieces` patches,
+    rotor frame. Each is repeated in `strips` strips along the axis.
     """
     y = ((torch.arange(strips) + 0.5) / strips * 2.0 - 1.0) * ROTOR_HALF_LEN
     width = 2.0 * ROTOR_HALF_LEN / strips
@@ -151,7 +154,9 @@ def drum_patches(strips: int = 5, arcs: int = 36, device="cpu") -> tuple[Patches
     a, b = points[:, :-1].reshape(-1, 2), points[:, 1:].reshape(-1, 2)
     length = (b - a).norm(dim=-1)
     across = torch.stack([a[:, 1] - b[:, 1], b[:, 0] - a[:, 0]], -1) / length[:, None]
-    vanes = spread(0.5 * (a + b), across, length)
+    step = (torch.arange(pieces) + 0.5) / pieces
+    middle = (a[:, None] + step[None, :, None] * (b - a)[:, None]).reshape(-1, 2)
+    vanes = spread(middle, across.repeat_interleave(pieces, 0), (length / pieces).repeat_interleave(pieces))
     return wall, opening, vanes
 
 
@@ -222,9 +227,11 @@ def drum_loads(
     spin = (rotor_ang * axis).sum(-1)
     fresh = (lin.norm(dim=-1) / (spin.abs() * ROTOR_TIP_R + 1e-6)).clamp(max=1.0)
     force = force * (shows * fresh[..., None])[..., None]
-    # The load lies as a segment of the bore tilted to its angle of repose; its
-    # centroid is about 0.87 R (1 - fill / capacity) off the axis.
-    carry = weight * 0.87 * SHROUD_IN_R * (1.0 - fill / capacity) * math.sin(math.atan(soil.friction))
+    # Carried round by the vanes, the load sits tilted to its angle of repose.
+    # Its centroid is on the chord across the opening when the drum is near
+    # empty and on the axis when it is full.
+    lever = math.cos(0.5 * SHROUD_INLET) * SHROUD_IN_R * (1.0 - fill / capacity)
+    carry = weight * lever * math.sin(math.atan(soil.friction))
     carry = carry * spin / (spin.abs() + SPIN_STILL)
     rotor_torque = torch.linalg.cross(arm, force).sum(-2) - carry[..., None] * axis
     return shroud_force, shroud_torque, force.sum(-2), rotor_torque

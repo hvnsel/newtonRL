@@ -137,6 +137,10 @@ pkill -f Luna-Excavator-Navigate
   kinematic slab, not on the world ground plane.
 - **Sparse-grid capacities are totals over all envs**, set in `__post_init__`
   (before Hydra applies `--num_envs`), with `upper <= lower <= leaf <= active`.
+- **A sparse-grid overflow during a step** is raised by Isaac Lab from
+  `sim.step()`. The excavate env catches it in `step()`: all soil is re-laid,
+  every env is reset and the step is returned as a time-out with no reward
+  (`Episode/soil_overflow` in the log).
 - **Particles render only with** `NewtonGLVisualizerCfg.show_particles=True`.
 - **Prim paths.** Scene cfgs use `{ENV_REGEX_NS}`; coupler body lists use
   `/World/envs/env_.*`. The converter nests bodies under `Geometry/<root body>`.
@@ -159,7 +163,8 @@ pkill -f Luna-Excavator-Navigate
 | `NameNotFound: Environment ... doesn't exist` | package not installed, or entry point edited without reinstalling |
 | gym registry empty after import | a missing `__init__.py` |
 | `A prim already exists at path` | `_setup_scene` constructing assets |
-| capacity exceeded for upper/lower/leaf | raise that cap, keeping the ordering |
+| capacity exceeded for upper/lower/leaf, at startup | raise that cap, keeping the ordering |
+| `[env] soil grid overflow at step N` | a physics blow-up threw soil far enough to overflow the sparse grid; the excavate env re-laid all soil, reset every env and carried on. Two in a row stop the run with the solver's error |
 | `Failed to create volume` + CUDA 700 | GPU out of memory: grid caps too high |
 | `Keys and values array storage must be large enough to contain 2*count elements` | Newton not set up for excavate: run `scripts/patch_newton_mpm.py` |
 | `Error launching kernel ... passed N arguments but kernel requires M` | Newton's soil solver half set up: run `scripts/patch_newton_mpm.py` |

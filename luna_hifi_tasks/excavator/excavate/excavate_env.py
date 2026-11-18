@@ -100,6 +100,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._nonfinite_now = torch.zeros(E, dtype=torch.bool, device=dev)
         self._nonfinite_last: tuple[int, ...] = ()
         self._nonfinite_since = 0
+        # Soil grid overflows: True while every env is being reset for one,
+        # how many this run, and the env step of the last.
+        self._overflowed = False
+        self._overflow_count = 0
+        self._overflow_step = -2
         self._off_bed = torch.zeros(E, dtype=torch.bool, device=dev)
         self._escaped = torch.zeros(E, dtype=torch.bool, device=dev)
         # Furthest any particle has been from its env origin this episode, m.
@@ -620,15 +625,70 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         return terminated, time_out
 
     # ------------------------------------------------------------------
+    # soil grid overflow
+    # ------------------------------------------------------------------
+
+    def step(self, action: torch.Tensor):
+        """One env step.
+
+        Soil thrown far enough to overflow the MPM sparse grid makes Isaac
+        Lab's physics step raise a RuntimeError. Here that ends every env's
+        episode instead of the run: see _recover_soil_overflow.
+        """
+        try:
+            return super().step(action)
+        except RuntimeError as err:
+            if "sparse grid rebuild" not in str(err):
+                raise
+            return self._recover_soil_overflow(err)
+
+    def _recover_soil_overflow(self, err: RuntimeError):
+        """Reset every env after a sparse-grid overflow and return this step.
+
+        The physics step that overflowed solved every env's soil on an
+        incomplete grid, so all soil is re-laid, every machine respawned, and
+        the solver's history and overflow status cleared in full. The step
+        comes back as a time-out for every env, with no reward. An overflow
+        again on the very next step is raised: the reset did not clear it.
+        """
+        step = int(self.common_step_counter)
+        if step - self._overflow_step <= 1:
+            raise err
+        self._overflow_step = step
+        self._overflow_count += 1
+        print(f"[env] soil grid overflow at step {step}: {err} "
+              f"Re-laying all soil and resetting every env "
+              f"(overflow {self._overflow_count} of this run).", flush=True)
+
+        self.episode_length_buf += 1
+        self.common_step_counter += 1
+        self.reset_terminated[:] = False
+        self.reset_time_outs[:] = True
+        self.reset_buf = self.reset_terminated | self.reset_time_outs
+        self.reward_buf = torch.zeros(self.num_envs, device=self.device)
+        self._nonfinite_now[:] = False
+        self._overflowed = True
+        try:
+            self._reset_idx(torch.arange(self.num_envs, dtype=torch.int32, device=self.device))
+        finally:
+            self._overflowed = False
+        self.scene.write_data_to_sim()
+        self.sim.forward()
+        self.obs_buf = self._compute_observations()
+        return self.obs_buf, self.reward_buf, self.reset_terminated, self.reset_time_outs, self.extras
+
+    # ------------------------------------------------------------------
     # reset
     # ------------------------------------------------------------------
 
-    def _reset_particle_history(self, env_ids: torch.Tensor) -> None:
+    def _reset_particle_history(self, env_ids: torch.Tensor, full: bool = False) -> None:
         """Clear the MPM per-particle history (elastic strain, plastic state,
-        stress, velocity gradient) in these envs' Newton worlds.
+        stress, velocity gradient) in these envs' Newton worlds; with full, in
+        every world, along with all of the solver's warm starts.
 
         Env i is Newton world i; the extra last slot is the global world -1.
-        Joint state is untouched.
+        Joint state is untouched. A reset also clears the solver's sparse-grid
+        overflow status.
         """
         manager = self.sim.physics_manager
         solver = manager._solver
@@ -636,7 +696,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # A one-world MPM grid has no per-env partition and refuses a masked
         # reset; there the reset is the full one, as in Isaac Lab's coupler.
         world_mask = None
-        if worlds > 1:
+        if worlds > 1 and not full:
             selected = np.zeros(worlds + 1, dtype=bool)
             selected[env_ids.cpu().numpy()] = True
             world_mask = wp.array(selected, dtype=wp.bool, device=solver.model.device)
@@ -656,6 +716,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         )
         exits["Episode/failed"] = float(self._failed_now[env_ids].float().mean())
         exits["Episode/nonfinite"] = float(self._nonfinite_now[env_ids].float().mean())
+        exits["Episode/soil_overflow"] = float(self._overflowed)
         exits["Episode/off_bed"] = float(self._off_bed[env_ids].float().mean())
         exits["Episode/escaped"] = float(self._escaped[env_ids].float().mean())
         exits["Episode/particle_max_m"] = float(self._particle_max_m[env_ids].max())
@@ -677,14 +738,17 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._since_settle[env_ids] = 0
         self._pass_done[env_ids] = False
 
-        # Soil is re-laid every soil_reset_every episodes, and whenever a
-        # particle escaped or the articulation went non-finite.
+        # Soil is re-laid every soil_reset_every episodes, whenever a particle
+        # escaped or the articulation went non-finite, and in every env after
+        # a soil grid overflow.
         self._soil_age[env_ids] += 1
         broken = self._escaped[env_ids] | self._nonfinite_now[env_ids]
         stale = env_ids[(self._soil_age[env_ids] >= c.soil_reset_every) | broken]
+        if self._overflowed:
+            stale = env_ids
         if stale.numel() > 0:
             self.soil.reset(stale)
-            self._reset_particle_history(stale)
+            self._reset_particle_history(stale, full=self._overflowed)
             self._soil_age[stale] = 0
             self._bed_grid[stale] = c.bed_top
 

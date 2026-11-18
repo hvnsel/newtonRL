@@ -1,16 +1,15 @@
 #!/bin/bash
 # One-time setup on a PACE login node (compute nodes may have no internet):
-# uv and Python 3.12, Isaac Lab at the workstation's commit (kit-less, no Isaac
-# Sim), this repo installed into its venv, and the workstation's Newton: 1.6.1
-# with four soil-solver files from 1.7.0 and one fix (scripts/patch_newton_mpm.py).
-# Safe to re-run.
+# uv and Python 3.12, Isaac Lab release/3.0.0 (kit-less, no Isaac Sim), this
+# repo installed into its venv, and Newton 1.6.1 with four soil-solver files
+# from 1.7.0 and one fix (scripts/patch_newton_mpm.py). Safe to re-run.
 #
-#   bash /storage/scratch1/5/$USER/luna/newtonRL/cluster/setup_pace.sh
+#   bash <repo>/cluster/setup_pace.sh
 
 set -eu
 source "$(dirname "$0")/env.sh"
 
-# The workstation's ~/IsaacLab commit (release/3.0.0).
+# The Isaac Lab commit (release/3.0.0) this repo is developed on.
 ISAACLAB_COMMIT=961760bcb91e3af48e7d116292e57e8ecaefc31e
 
 if [ ! -x "$LUNA/bin/uv" ]; then
@@ -36,10 +35,10 @@ uv pip install --python "$PY" --extra-index-url https://download.pytorch.org/whl
 
 uv pip install --python "$PY" -e "$REPO"
 
-# Newton's soil solver as on the workstation: four files from 1.7.0
+# Newton's soil solver for excavate: four files from 1.7.0
 # (patches/newton_1.7.0/) and the colour-buffer fix, checked file by file.
 # Stops the setup if the result does not match.
 "$PY" "$REPO/scripts/patch_newton_mpm.py"
 
 "$PY" -c "import torch, warp, newton, isaaclab; print('torch', torch.__version__, '| warp', warp.__version__, '| newton', newton.__version__)"
-echo "setup done; next, copy the excavator asset from the workstation (cluster/ClusterSetup.md, step 3)"
+echo "setup done; next, copy in the excavator asset (cluster/ClusterSetup.md, step 3)"

@@ -63,10 +63,10 @@ cluster/                          Georgia Tech PACE setup (ClusterSetup.md)
 Training loads `assets/excavator/excavator.usda`, converted from the MJCF in
 `excavator.py`; `assets/excavator.usd.srchash` records the MJCF hash it was
 built from. Build both once per machine and after any change to the MJCF. The
-converter needs Isaac Sim in the venv (`uv sync --extra isaacsim`).
+converter needs Isaac Sim in the venv (`uv sync --extra isaacsim`). From
+the repo root:
 
 ```bash
-cd ~/newtonRL
 ~/IsaacLab/.venv/bin/python -c "from luna_hifi_tasks.excavator.excavator import write_mjcf; print(write_mjcf())"
 rm -rf assets/excavator
 ~/IsaacLab/.venv/bin/python ~/IsaacLab/scripts/tools/convert_mjcf.py <printed path> assets/excavator.usd

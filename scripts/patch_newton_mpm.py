@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Make the installed Newton's soil solver match the workstation's.
+"""Set up the installed Newton's soil solver for the excavate task.
 
 Isaac Lab 3.0 installs Newton 1.6.1. The excavate task runs on 1.6.1 with
 four files of the implicit-MPM solver taken from Newton 1.7.0, and 1.7.0's
@@ -10,7 +10,7 @@ solve. The four files are in patches/newton_1.7.0/, unchanged from the
 newton 1.7.0 wheel.
 
 This copies them in, applies the fix, then checks every file of
-newton/_src/solvers/implicit_mpm/ against the workstation's. A file that
+newton/_src/solvers/implicit_mpm/ against its expected MD5. A file that
 already matches is left alone, so a second run changes nothing. A stock
 1.6.1 file is kept as <file>.bak before it is replaced. Any other Newton is
 refused, with nothing changed.
@@ -34,7 +34,7 @@ from pathlib import Path
 
 VENDORED = Path(__file__).resolve().parents[1] / "patches" / "newton_1.7.0"
 
-# MD5 of every file of newton/_src/solvers/implicit_mpm/ on the workstation.
+# MD5 of every file of newton/_src/solvers/implicit_mpm/ once set up.
 WANT = {
     "__init__.py": "dce336d9da703f1be4eeb808a3d2a822",
     "contact_solver_kernels.py": "37bcee7d722b875ff6ad0ad2ce5c66aa",       # from 1.7.0
@@ -98,7 +98,7 @@ def locate() -> Path:
 
 
 def check(folder: Path) -> int:
-    """Print each file against the workstation's; 0 if all match."""
+    """Print each file against its expected MD5; 0 if all match."""
     off = []
     for name, want in WANT.items():
         path = folder / name
@@ -107,9 +107,9 @@ def check(folder: Path) -> int:
         if not ok:
             off.append(name)
     if off:
-        print(f"{len(off)} of {len(WANT)} files differ from the workstation's Newton")
+        print(f"{len(off)} of {len(WANT)} files differ: Newton is not set up for excavate")
         return 1
-    print(f"all {len(WANT)} files match the workstation's Newton")
+    print(f"all {len(WANT)} files match: Newton is set up for excavate")
     return 0
 
 
@@ -118,7 +118,7 @@ def install(folder: Path) -> int:
             for name in WANT}
     unknown = [name for name, h in have.items() if h not in (WANT[name], STOCK_161.get(name, WANT[name]))]
     if unknown:
-        print("This Newton is neither Isaac Lab 3.0's 1.6.1 nor the workstation's; nothing changed.")
+        print("This Newton is neither Isaac Lab 3.0's 1.6.1 nor already set up; nothing changed.")
         for name in unknown:
             print(f"  {name}: md5 {have[name]}")
         print("To put back Isaac Lab's 1.6.1, then run this again:")
@@ -155,7 +155,7 @@ def install(folder: Path) -> int:
         changed += 1
 
     if not changed:
-        print("already the workstation's; nothing changed")
+        print("already set up; nothing changed")
     return check(folder)
 
 

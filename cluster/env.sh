@@ -3,7 +3,8 @@
 # runs this repo by hand.
 
 export LUNA="${LUNA:-/storage/scratch1/5/$USER/luna}"
-export REPO="$LUNA/newtonRL"
+# This repository: the folder above cluster/, whatever the clone is called.
+export REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export ISAACLAB="$LUNA/IsaacLab"
 export PY="$ISAACLAB/.venv/bin/python"
 export PATH="$LUNA/bin:$PATH"

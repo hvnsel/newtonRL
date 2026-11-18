@@ -2,9 +2,10 @@
 
 The same install as the workstation, without a container: Isaac Lab
 `release/3.0.0` at the workstation's commit in a uv venv, kit-less (no Isaac
-Sim), with the workstation's Newton: 1.6.1 with 1.7.0's rheology kernels and
-the fix from `scripts/patch_newton_mpm.py`. Everything
-lives in scratch, `/storage/scratch1/5/$USER/luna`; `$HOME` holds only 20 GB.
+Sim), with the workstation's Newton: 1.6.1 with four soil-solver files from
+1.7.0 and one fix, installed and checked by `scripts/patch_newton_mpm.py`.
+Everything lives in scratch, `/storage/scratch1/5/$USER/luna`; `$HOME` holds
+only 20 GB.
 
 | file | what |
 |---|---|
@@ -32,8 +33,16 @@ Compute nodes may have no internet, so this runs on the login node.
 bash /storage/scratch1/5/$USER/luna/newtonRL/cluster/setup_pace.sh
 ```
 
-The last line prints the versions: `newton 1.6.1` and `warp 1.17.0`, as on
-the workstation.
+Near the end it prints `all 10 files match the workstation's Newton`; if
+any file differs, the setup stops there. The last line prints the versions,
+`warp 1.17.0` among them. Newton reports `1.6.1` here and `1.7.0` on the
+workstation: only the label differs, the code is the same.
+
+Already set up before this check existed? Update the code (step 6), then:
+
+```bash
+source /storage/scratch1/5/$USER/luna/newtonRL/cluster/env.sh && $PY $REPO/scripts/patch_newton_mpm.py
+```
 
 ## 3. Copy the excavator asset from the workstation (once)
 
@@ -115,7 +124,9 @@ ENVS=1024 ITERS=4000 sbatch cluster/train_navigate.sbatch
 - A shell that runs anything from this repo by hand needs
   `source $REPO/cluster/env.sh` first, for `$PY` and the caches.
 - `uv sync` in `$ISAACLAB` again can reinstall Newton without these changes;
-  rerun `setup_pace.sh` after it.
+  rerun `setup_pace.sh` after it. Without them excavate stops when the soil
+  solver is built (`RuntimeError: Keys and values array storage must be
+  large enough to contain 2*count elements`).
 - PACE's glibc (2.34) is too old for the `omniverseclient` and `ovstage`
   wheels, so `setup_pace.sh` skips both. Isaac Lab still calls `omni.client`
   for any file a USD references that is not on disk; the ground plane's

@@ -39,14 +39,16 @@ luna_hifi_tasks/
   tricycle/                       tricycle env, cfg, MJCF, PPO cfg
   planner/site.py                 heightfield site model with greedy and beam dig planners
 assets/                           converted USDs (excavator USD is built per machine, see below)
-patches/                          Newton implicit-MPM patch
+patches/
+  newton_1.7.0/                   four soil-solver files from Newton 1.7.0, installed by patch_newton_mpm.py
+  newton-implicit-mpm-creep.patch an experimental solver change; not applied anywhere
 scripts/
   peek.py                         print a run's TensorBoard scalars
   read_trace.py, plot_nav.py      navigate playback traces: tables and figures
   dig_demo.py                     scripted dig on the excavate task, no policy
   play_dig.py                     excavate playback with a CSV trace and heightmap dump
   render_dig.py, render_attitude.py   GIFs from play_dig dumps
-  patch_newton_mpm.py             patches the installed Newton MPM solver
+  patch_newton_mpm.py             gives the installed Newton the soil solver excavate runs on (setup step)
 workstation/                      single-box setup and run scripts (Setup.md)
 cluster/                          Georgia Tech PACE setup (ClusterSetup.md)
 ```
@@ -159,6 +161,8 @@ pkill -f Luna-Excavator-Navigate
 | `A prim already exists at path` | `_setup_scene` constructing assets |
 | capacity exceeded for upper/lower/leaf | raise that cap, keeping the ordering |
 | `Failed to create volume` + CUDA 700 | GPU out of memory: grid caps too high |
+| `Keys and values array storage must be large enough to contain 2*count elements` | Newton not set up for excavate: run `scripts/patch_newton_mpm.py` |
+| `Error launching kernel ... passed N arguments but kernel requires M` | Newton's soil solver half set up: run `scripts/patch_newton_mpm.py` |
 | `Mean episode length: 1.00` | a termination firing on the first step |
 | reward explodes to 1e8+ | physics diverged |
 | soil invisible | `show_particles=False` |

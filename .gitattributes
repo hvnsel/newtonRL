@@ -4,3 +4,6 @@
 # Binary assets: never LF-normalize. A CRLF-mangled texture is silent
 # corruption that only shows up as a broken material on someone else's checkout.
 *.png binary
+
+# Copied byte for byte into Newton and checked by MD5: LF in every checkout.
+patches/newton_1.7.0/*.py text eol=lf

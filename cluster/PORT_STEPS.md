@@ -30,6 +30,8 @@ luna_hifi_tasks/excavator/       the whole package: the machine (excavator.py),
 luna_hifi_tasks/ground.py        ground plane spawn config (if TARGET lacks it)
 assets/ground_plane/             the ground plane USD it loads (if TARGET lacks it)
 scripts/dig_demo.py              scripted dig, prints the fill readout
+scripts/patch_newton_mpm.py      gives Newton the soil solver excavate runs on
+patches/                         the whole directory: the four Newton 1.7.0 files it installs
 cluster/                         the whole directory: PACE setup, env and
                                  sbatch scripts, this file
 TUNING.md                        which knob lives in which file

@@ -17,7 +17,7 @@ Isaac Lab `release/3.0.0` pins:
 |---|---|
 | Python | `>=3.12,<3.13` |
 | Isaac Sim | `isaacsim[all,extscache]==6.2.0.0` (optional extra) |
-| newton | `newton[sim]==1.6.1` |
+| newton | `newton[sim]==1.6.1`, then `scripts/patch_newton_mpm.py` |
 | warp-lang | `1.17.0` |
 | mujoco | `~=3.12.0`, `mujoco-warp~=3.12.0` |
 
@@ -33,7 +33,15 @@ uv sync --extra isaacsim                       # Isaac Sim, for the MJCF -> USD 
 
 cd ~/newtonRL
 uv pip install --python ~/IsaacLab/.venv/bin/python -e .
+~/IsaacLab/.venv/bin/python scripts/patch_newton_mpm.py
 ```
+
+The last line gives Newton the soil solver the excavate task runs on: four
+files from Newton 1.7.0 (`patches/newton_1.7.0/`) over Isaac Lab's 1.6.1,
+and one fix. It checks every file and ends with `all 10 files match the
+workstation's Newton`. Without it the excavate env stops when the soil
+solver is built. A `uv sync` in `~/IsaacLab` can reinstall Newton; run it
+again afterwards (`--check` only looks). Navigate does not need it.
 
 `workstation/train.sh <args>` runs the Isaac Lab CLI with that venv from the
 repo root.
@@ -47,6 +55,8 @@ workstation/dev.sh isaaclab -p -m pip install --user -e .
 
 `workstation/dev.sh isaaclab <args>` takes the same arguments as `train.sh`.
 Kit caches and the install persist in `$LUNA_STATE` (default `~/.luna`).
+The image's own Newton is not patched, and `dev.sh` discards the container
+after every run, so excavate needs the venv install (section 1).
 
 ## 3. Excavator asset
 

@@ -6,7 +6,8 @@
 #   isaaclab -p scripts/dig_demo.py
 #
 # -Small is the same task on a 0.9 x 1.1 x 0.16 m pile in front of the machine,
-# -Micro on a 1.0 x 1.0 x 0.21 m pile.
+# -Micro on a 1.0 x 1.0 x 0.21 m pile. -RFT is the main task with the analytical
+# soil of mdp/rft.py in place of MPM, rigid physics only.
 
 import gymnasium as gym
 
@@ -39,5 +40,15 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": f"{__name__}.excavate_env_cfg:ExcavatorExcavateMicroEnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:ExcavatorExcavatePPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Luna-Excavator-Excavate-RFT",
+    entry_point=f"{__name__}.excavate_rft_env:ExcavatorExcavateRftEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.excavate_env_cfg:ExcavatorExcavateRftEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:ExcavatorExcavateRftPPORunnerCfg",
     },
 )

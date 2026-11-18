@@ -66,7 +66,6 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._actions = torch.zeros(E, 2, device=dev)
         self._prev_actions = torch.zeros(E, 2, device=dev)
 
-        self._particle_mass = mpm_grid_particle_mass(cfg.scene.soil.spawn)
         self._fill_kg = torch.zeros(E, 2, device=dev)           # front, rear
 
         self._dig_pattern = dig_scan_pattern(dev)
@@ -164,6 +163,25 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
         print(DIG_OBS.describe())
         print(DIG_CRITIC.describe())
+        self._init_soil()
+        print(
+            f"[excavate] tool: arm {self._dig_arm:+.3f} rad, shroud {self._dig_shroud:+.3f} rad, "
+            f"drums {cfg.dig_drum_speed:+.2f} rad/s"
+            + ("" if cfg.dig_tool else " (dig_tool False: arms held at the start angle)")
+        )
+
+    def _setup_scene(self):
+        super()._setup_scene()
+        self.soil: MPMObject = self.scene["soil"]
+
+    # ------------------------------------------------------------------
+    # soil, from the MPM particles. excavate_rft_env.py overrides these.
+    # ------------------------------------------------------------------
+
+    def _init_soil(self) -> None:
+        """The mass of one particle, which drum fill is counted in."""
+        cfg = self.cfg
+        self._particle_mass = mpm_grid_particle_mass(cfg.scene.soil.spawn)
         mat = cfg.scene.soil.spawn.material
         print(
             f"[excavate] particle mass {self._particle_mass:.4f} kg, "
@@ -177,15 +195,22 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             f"friction {mat.friction:.2f}, cohesion (yield_stress) {mat.yield_stress:.0f} Pa, "
             f"yield_pressure {mat.yield_pressure:.3g} Pa"
         )
-        print(
-            f"[excavate] tool: arm {self._dig_arm:+.3f} rad, shroud {self._dig_shroud:+.3f} rad, "
-            f"drums {cfg.dig_drum_speed:+.2f} rad/s"
-            + ("" if cfg.dig_tool else " (dig_tool False: arms held at the start angle)")
-        )
 
-    def _setup_scene(self):
-        super()._setup_scene()
-        self.soil: MPMObject = self.scene["soil"]
+    def _soil(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """(E, ny, nx) env-local bed heights and (E, 2) kg in the front and rear
+        drums, read from the particles. Also tracks how far any particle got."""
+        pos, env = self._particles()
+        d_env = torch.linalg.norm(pos - self.scene.env_origins[env], dim=-1)
+        d_env = torch.nan_to_num(d_env, nan=0.0, posinf=0.0, neginf=0.0)
+        self._particle_max_m.scatter_reduce_(0, env, d_env, reduce="amax")
+        in_drums = self._in_drums(pos, env)
+        return self._bed_heightmap(pos, env, in_drums), self._compute_fill(env, in_drums)
+
+    def _relay_soil(self, env_ids: torch.Tensor) -> None:
+        """Lay fresh soil in these envs."""
+        self.soil.reset(env_ids)
+        self._reset_particle_history(env_ids, full=self._overflowed)
+        self._bed_grid[env_ids] = self.cfg.bed_top
 
     # ------------------------------------------------------------------
     # actions
@@ -392,8 +417,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     def _get_observations(self) -> dict:
         c = self.cfg
         p = self._proprio()
-        pos, env = self._particles()
-        actor_scan, critic_scan = self._scans(self._bed_heightmap(pos, env, self._in_drums(pos, env)))
+        actor_scan, critic_scan = self._scans(self._soil()[0])
         cut = self._cut_state(actor_scan)
         policy = DIG_OBS.assemble({
             "base_lin_vel": p["base_lin_vel"],
@@ -443,12 +467,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         p = self._proprio()
         d = self.robot.data
 
-        pos, env = self._particles()
-        d_env = torch.linalg.norm(pos - self.scene.env_origins[env], dim=-1)
-        d_env = torch.nan_to_num(d_env, nan=0.0, posinf=0.0, neginf=0.0)
-        self._particle_max_m.scatter_reduce_(0, env, d_env, reduce="amax")
-        in_drums = self._in_drums(pos, env)
-        self._bed_grid = self._bed_heightmap(pos, env, in_drums)
+        self._bed_grid, self._fill_kg = self._soil()
 
         # During the settle the plane is re-placed target_depth under the mean
         # soil surface of the work area; it holds there afterwards.
@@ -467,7 +486,6 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         ))
 
         actor_scan, _ = self._scans(self._bed_grid)
-        self._fill_kg = self._compute_fill(env, in_drums)
         self._fill_filt.mul_(1.0 - self._fill_alpha).add_(self._fill_kg, alpha=self._fill_alpha)
         self._spill_filt.mul_(1.0 - self._spill_alpha).add_(self._fill_kg, alpha=self._spill_alpha)
         cut = self._cut_state(actor_scan)
@@ -747,10 +765,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         if self._overflowed:
             stale = env_ids
         if stale.numel() > 0:
-            self.soil.reset(stale)
-            self._reset_particle_history(stale, full=self._overflowed)
+            self._relay_soil(stale)
             self._soil_age[stale] = 0
-            self._bed_grid[stale] = c.bed_top
 
         self._fill_kg[env_ids] = 0.0
         self._fill_filt[env_ids] = 0.0

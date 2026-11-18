@@ -467,7 +467,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         angle = min(max(math.asin(min(max(sin_t, -1.0), 1.0)), lo), hi)
         return 2.0 * (angle - lo) / (hi - lo) - 1.0, angle
 
-    def __post_init__(self) -> None:
+    def derive_bed(self) -> None:
+        """Cut reference volume, bed surface, height grid and spawn height, from
+        the bed and work-area fields."""
         # Work area taken down by the mean cut depth [m3].
         lo, hi = self.cut_depth_range
         self.cut_volume_ref = (
@@ -475,6 +477,17 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
             * self.work_area_width
             * 0.5 * (lo + hi)
         )
+        self.bed_top = 0.5 * self.voxel_size + self.bed_depth
+        hm = self.heightmap_margin
+        self.bed_grid_lower = (self.bed_x[0] - hm, self.bed_y[0] - hm)
+        self.bed_grid_nx = int(math.ceil((self.bed_x[1] - self.bed_x[0] + 2.0 * hm) / self.voxel_size))
+        self.bed_grid_ny = int(math.ceil((self.bed_y[1] - self.bed_y[0] + 2.0 * hm) / self.voxel_size))
+        # The asset cfg spawns with the wheels on z = 0.
+        z = SPAWN_Z + (self.bed_top if self.spawn_on_bed else 0.0)
+        self.scene.excavator.init_state.pos = (0.0, 0.0, z)
+
+    def __post_init__(self) -> None:
+        self.derive_bed()
 
         # --- bed ---
         margin = 0.5 * self.voxel_size
@@ -482,12 +495,6 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
         upper = (self.bed_x[1], self.bed_y[1], margin + self.bed_depth)
         length = self.bed_x[1] - self.bed_x[0]
         width = self.bed_y[1] - self.bed_y[0]
-
-        self.bed_top = margin + self.bed_depth
-        hm = self.heightmap_margin
-        self.bed_grid_lower = (self.bed_x[0] - hm, self.bed_y[0] - hm)
-        self.bed_grid_nx = int(math.ceil((length + 2.0 * hm) / self.voxel_size))
-        self.bed_grid_ny = int(math.ceil((width + 2.0 * hm) / self.voxel_size))
         self.bed_particles_per_env = math.prod(
             mpm_grid_resolution(lower, upper, self.mpm_voxel_size, self.particles_per_cell)
         )
@@ -566,10 +573,6 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
                 if railed
                 else (0.0, 0.0, -10.0)
             )
-
-        # The asset cfg spawns with the wheels on z = 0.
-        z = SPAWN_Z + (self.bed_top if self.spawn_on_bed else 0.0)
-        self.scene.excavator.init_state.pos = (0.0, 0.0, z)
 
         # Sparse-grid capacities, absolute over all envs: upper <= lower <= leaf <= active.
         total_particles = self.bed_particles_per_env * self.max_num_envs
@@ -768,3 +771,55 @@ class ExcavatorExcavateMicroEnvCfg(ExcavatorExcavateSmallEnvCfg):
     bed_x: tuple[float, float] = (1.80, 2.80)
     bed_y: tuple[float, float] = (-0.50, 0.50)
     bed_depth: float = 0.21
+
+
+# ---------------------------------------------------------------------------
+# Analytical soil (mdp/rft.py) in place of MPM
+# ---------------------------------------------------------------------------
+
+
+@configclass
+class ExcavateRftSceneCfg(InteractiveSceneCfg):
+    """The machine on a rigid ground plane at the bed surface. The soil is the
+    env's height grid, and only the wheels touch the plane."""
+
+    ground = AssetBaseCfg(
+        prim_path="/World/GroundPlane",
+        spawn=ground_plane_spawn(),
+        collision_group=-1,
+    )
+    light = AssetBaseCfg(
+        prim_path="/World/Light",
+        spawn=sim_utils.DomeLightCfg(color=(0.8, 0.8, 0.8), intensity=2500.0),
+    )
+    excavator: ArticulationCfg = EXCAVATOR_CFG
+
+
+@configclass
+class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
+    """The excavate task with the soil of mdp/rft.py: the same observations,
+    actions and rewards, rigid physics only."""
+
+    scene: ExcavateRftSceneCfg = ExcavateRftSceneCfg(num_envs=256, env_spacing=5.12, replicate_physics=True)
+    # No sparse grid to size.
+    max_num_envs = 4096
+
+    def __post_init__(self) -> None:
+        self.derive_bed()
+        self.drum_capacity_kg = BORE_VOLUME * self.soil_density
+        self.target_load_kg = self.target_load_bore_fraction * self.drum_capacity_kg
+        self.scene.ground.init_state.pos = (0.0, 0.0, self.bed_top)
+        self.sim.physics = NewtonCfg(
+            solver_cfg=MJWarpSolverCfg(
+                njmax=2048,
+                nconmax=1024,
+                cone="pyramidal",
+                impratio=1,
+                integrator="implicitfast",
+                use_mujoco_contacts=False,
+            ),
+            collision_cfg=NewtonCollisionPipelineCfg(),
+            num_substeps=2,
+            use_cuda_graph=self.use_cuda_graph,
+        )
+        self.sim.use_newton_actuators = True

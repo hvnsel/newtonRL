@@ -39,3 +39,9 @@ class ExcavatorExcavatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class ExcavatorExcavateRftPPORunnerCfg(ExcavatorExcavatePPORunnerCfg):
+    # Its own log folder, so MPM runs never resume from an RFT checkpoint.
+    experiment_name = "excavator_excavate_rft"

@@ -10,6 +10,7 @@ end.
 | `Luna-Excavator-Navigate-Course` | the navigate policy on one fixed obstacle layout (mdp/course.py), for playback |
 | `Luna-Excavator-Excavate` | one straight pass cutting a strip of an implicit-MPM soil bed into the drums; the env lowers and spins the tool, the policy drives |
 | `Luna-Excavator-Excavate-Small`, `-Micro` | one env, a small soil pile in front of the machine |
+| `Luna-Excavator-Excavate-RFT` | the excavate task with the analytical soil of `mdp/rft.py` in place of MPM; rigid physics only, so hundreds of envs |
 | `Luna-Tricycle-Direct` | a tricycle on an MPM strip: the minimal rigid ↔ MPM coupling example |
 
 `docs/tricycle_manual/main.pdf` explains the tricycle task line by line.
@@ -36,7 +37,7 @@ luna_hifi_tasks/
       sensors.py                  MPM soil readouts for excavate
       rft.py                      analytical soil for the drums: RFT forces on a height grid, no MPM
     navigate/                     navigate env, cfg, PPO cfg
-    excavate/                     excavate env, cfg, PPO cfg
+    excavate/                     excavate env, cfg, PPO cfg; excavate_rft_env.py is the RFT-soil version
   tricycle/                       tricycle env, cfg, MJCF, PPO cfg
   planner/site.py                 heightfield site model with greedy and beam dig planners
 assets/                           converted USDs (excavator USD is built per machine, see below)
@@ -106,6 +107,7 @@ bash workstation/nav_course.sh          # the obstacle course in ~/nav_course
 
 # excavate
 workstation/train.sh train --rl_library rsl_rl --task Luna-Excavator-Excavate --num_envs 4
+workstation/train.sh train --rl_library rsl_rl --task Luna-Excavator-Excavate-RFT --num_envs 256 > dig_rft_train.log 2>&1 &
 workstation/train.sh -p scripts/dig_demo.py --task Luna-Excavator-Excavate-Micro --no_window
 workstation/train.sh -p scripts/play_dig.py --no_window --trace dig.csv     # newest checkpoint
 workstation/train.sh -p scripts/play_dig.py --dig --no_window               # scripted pass, no policy

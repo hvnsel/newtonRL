@@ -372,7 +372,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         residual = t - actor_scan[:, self._footprint]
 
         bed_z = self._bed_grid + self.scene.env_origins[:, 2].view(-1, 1, 1)
-        plane_z = self._plane_z(self._grid_xy.unsqueeze(0))
+        plane_z = self._plane_z(self._grid_xy.unsqueeze(0) + self.scene.env_origins[:, None, None, :2])
         # Cells at the floor hold no soil and are left out of both volumes.
         floor = (self.scene.env_origins[:, 2] + BED_FLOOR_Z).view(-1, 1, 1)
         soil = self._work_mask & (bed_z > floor + 0.5 * self.cfg.voxel_size)

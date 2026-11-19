@@ -717,7 +717,7 @@ def main(argv=None) -> int:
             fill_prev = u._fill_kg[0].tolist()
             with torch.inference_mode():
                 action = policy(actor_obs).clamp(-1.0, 1.0)
-                obs, _, term, trunc, _ = env.step(action)
+                obs, _, term, trunc, extras = env.step(action)
                 actor_obs = obs["policy"]
                 dones = term | trunc
 
@@ -761,10 +761,14 @@ def main(argv=None) -> int:
 
             if bool(dones.any()):
                 reset_steps.append(i)
+                # The reset inside the step clears the env's flags; its exit log has them.
+                log = extras["log"]
                 print(f"[play] t={i*dt:5.2f}s episode ended "
-                      f"(pass_done={int(scalar('_pass_done'))}, "
-                      f"shape_done={int(scalar('_shape_done'))}, "
-                      f"escaped={int(scalar('_escaped'))}), "
+                      f"(pass_done={log['Episode/pass_done']:.0f}, "
+                      f"off_bed={log['Episode/off_bed']:.0f}, "
+                      f"failed={log['Episode/failed']:.0f}, "
+                      f"shape_done={log['Episode/shape_done']:.0f}, "
+                      f"escaped={log['Episode/escaped']:.0f}), "
                       f"in the drums: front {fill_prev[0]:.1f} kg, rear {fill_prev[1]:.1f} kg")
 
         if args.probe:

@@ -9,9 +9,11 @@
 
 from __future__ import annotations
 
-import torch
+import re
 
-import isaaclab.sim as sim_utils
+import torch
+from isaaclab_newton.physics import NewtonBuilderCfg
+from newton import ShapeFlags
 
 from ..excavator_cfg import EXCAVATOR_PRIM_REGEX, LUNAR_G
 from ..excavator_env_base import ExcavatorEnvBase
@@ -28,9 +30,14 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
 
     def _setup_scene(self):
         ExcavatorEnvBase._setup_scene(self)
-        off = [sim_utils.UsdPhysicsCollisionCfg(collision_enabled=False)]
-        if not sim_utils.apply_collision_properties(ARM_COLLIDERS, off):
-            raise RuntimeError(f"could not switch off the colliders matching {ARM_COLLIDERS}")
+        # The scene is already cloned into Newton's model builder, which becomes the
+        # model at sim.reset(). Clear the arm shapes' collide flags there, as Newton's
+        # USD importer does for a disabled collider. Body masses are already set.
+        builder = self.sim.get_or_create_backend(NewtonBuilderCfg(physics_cfg=self.sim.cfg.physics))
+        arm = [i for i, label in enumerate(builder.shape_label) if re.fullmatch(ARM_COLLIDERS, label)]
+        for i in arm:
+            builder.shape_flags[i] &= ~(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
+        print(f"[excavate] collisions off for {len(arm) // self.num_envs} arm shapes per env")
 
     def _init_soil(self) -> None:
         c, dev = self.cfg, self.device

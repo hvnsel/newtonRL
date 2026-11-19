@@ -27,13 +27,22 @@
 # Soil inside the vane-tip circle comes off the grid into the drum until the
 # drum is full. Its weight loads the shroud; carrying it round loads the rotor.
 #
+# A wheel is the tyre and its grousers, loaded the same way where they face
+# their own motion. Its depth is measured from the higher of the bed surfaces
+# just ahead of and just behind it, so a wheel stands on the soil beside its
+# own rut. The soil under a tyre is pressed down to it: compacted, not moved.
+#
 # Positions are env-local metres. Forces and torques are world-frame, torques
-# about the drum's axis point. Tensors lead with (E, D): envs, drums.
+# about the drum's or wheel's axis point. Tensors lead with (E, D): envs, drums
+# (or wheels).
 #
 #   once        patches = drum_patches()
 #               cells = cell_centres(soil, nx, ny)
 #   each step   loads = drum_loads(patches, <drum state>, height, fill, capacity, soil)
 #               height, fill = excavate(height, fill, cells, centre, drum_axis(shroud_quat), capacity, soil)
+#   wheels      wheels = wheel_patches()
+#               force, torque = wheel_loads(wheels, <wheel state>, height, soil)
+#               height = press(height, cells, centre, drum_axis(wheel_quat))
 
 from __future__ import annotations
 
@@ -44,6 +53,8 @@ from typing import NamedTuple
 import torch
 
 from ..excavator import (
+    GROUSER_HALF_T,
+    GROUSER_PROTRUDE,
     POCKET_ARC,
     ROTOR_HALF_LEN,
     ROTOR_TIP_R,
@@ -51,6 +62,9 @@ from ..excavator import (
     SHROUD_IN_R,
     SHROUD_INLET,
     SHROUD_OUT_R,
+    WHEEL_GROUSERS,
+    WHEEL_HALF_W,
+    WHEEL_RADIUS,
     vane_points,
 )
 
@@ -134,8 +148,21 @@ def rotate(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
 
 
 def drum_axis(quat: torch.Tensor) -> torch.Tensor:
-    """(..., 3) world direction of a drum's axis, its bodies' +y."""
+    """(..., 3) world direction of a drum's or wheel's axis, its bodies' +y."""
     return rotate(quat, torch.tensor([0.0, 1.0, 0.0], device=quat.device))
+
+
+def strips_of(xz, normal_xz, length, strips: int, half_len: float, device) -> Patches:
+    """(N, 2) patches in the x-z plane, of the given lengths, copied into
+    `strips` strips across 2 half_len along y."""
+    y = ((torch.arange(strips) + 0.5) / strips * 2.0 - 1.0) * half_len
+    width = 2.0 * half_len / strips
+    zero = torch.zeros_like(length)
+    pos = torch.stack([xz[:, 0], zero, xz[:, 1]], -1)[:, None].repeat(1, strips, 1)
+    pos[..., 1] = y
+    normal = torch.stack([normal_xz[:, 0], zero, normal_xz[:, 1]], -1)[:, None].repeat(1, strips, 1)
+    area = (length * width)[:, None].repeat(1, strips)
+    return Patches(pos.reshape(-1, 3).to(device), normal.reshape(-1, 3).to(device), area.reshape(-1).to(device))
 
 
 def drum_patches(
@@ -148,17 +175,9 @@ def drum_patches(
     vanes: each straight segment of each spiral vane in `pieces` patches,
     rotor frame. Each is repeated in `strips` strips along the axis.
     """
-    y = ((torch.arange(strips) + 0.5) / strips * 2.0 - 1.0) * ROTOR_HALF_LEN
-    width = 2.0 * ROTOR_HALF_LEN / strips
 
     def spread(xz, normal_xz, length) -> Patches:
-        """(N, 2) in-plane patches of the given lengths, copied into every strip."""
-        zero = torch.zeros_like(length)
-        pos = torch.stack([xz[:, 0], zero, xz[:, 1]], -1)[:, None].repeat(1, strips, 1)
-        pos[..., 1] = y
-        normal = torch.stack([normal_xz[:, 0], zero, normal_xz[:, 1]], -1)[:, None].repeat(1, strips, 1)
-        area = (length * width)[:, None].repeat(1, strips)
-        return Patches(pos.reshape(-1, 3).to(device), normal.reshape(-1, 3).to(device), area.reshape(-1).to(device))
+        return strips_of(xz, normal_xz, length, strips, ROTOR_HALF_LEN, device)
 
     phi = (torch.arange(arcs) + 0.5) / arcs * 2.0 * math.pi
     ring = torch.stack([phi.cos(), phi.sin()], -1)
@@ -173,6 +192,30 @@ def drum_patches(
     middle = (a[:, None] + step[None, :, None] * (b - a)[:, None]).reshape(-1, 2)
     vanes = spread(middle, across.repeat_interleave(pieces, 0), (length / pieces).repeat_interleave(pieces))
     return wall, opening, vanes
+
+
+def wheel_patches(strips: int = 4, arcs: int = 72, device="cpu") -> Patches:
+    """A wheel in its body frame, axis along y: `arcs` patches round the tyre,
+    and each grouser's two faces and tip, in `strips` strips across the tyre."""
+    phi = (torch.arange(arcs) + 0.5) / arcs * 2.0 * math.pi
+    ring = torch.stack([phi.cos(), phi.sin()], -1)
+    g = torch.arange(WHEEL_GROUSERS) * 2.0 * math.pi / WHEEL_GROUSERS
+    radial = torch.stack([g.cos(), g.sin()], -1)
+    across = torch.stack([-g.sin(), g.cos()], -1)
+    mid = (WHEEL_RADIUS + 0.5 * GROUSER_PROTRUDE) * radial
+    xz = torch.cat([
+        WHEEL_RADIUS * ring,
+        mid + GROUSER_HALF_T * across,
+        mid - GROUSER_HALF_T * across,
+        (WHEEL_RADIUS + GROUSER_PROTRUDE) * radial,
+    ])
+    normal = torch.cat([ring, across, -across, radial])
+    length = torch.cat([
+        torch.full((arcs,), WHEEL_RADIUS * 2.0 * math.pi / arcs),
+        torch.full((2 * WHEEL_GROUSERS,), GROUSER_PROTRUDE),
+        torch.full((WHEEL_GROUSERS,), 2.0 * GROUSER_HALF_T),
+    ])
+    return strips_of(xz, normal, length, strips, WHEEL_HALF_W, device)
 
 
 def cell_centres(soil: Soil, nx: int, ny: int, device="cpu") -> torch.Tensor:
@@ -261,13 +304,54 @@ def excavate(height, fill, cells, centre, axis, capacity, soil: Soil) -> tuple[t
     axis (E, D, 3) the drum's axis point and drum_axis(). Returns the new
     height and fill.
     """
-    rel = cells - centre[..., None, None, :2]                           # (E, D, ny, nx, 2)
-    along = (rel * axis[..., None, None, :2]).sum(-1)
-    across = rel[..., 0] * axis[..., None, None, 1] - rel[..., 1] * axis[..., None, None, 0]
-    under = (along.abs() <= ROTOR_HALF_LEN) & (across.abs() < ROTOR_TIP_R)
-    lowest = centre[..., None, None, 2] - (ROTOR_TIP_R ** 2 - across ** 2).clamp(min=0.0).sqrt()
+    under, lowest = beneath(cells, centre, axis, ROTOR_TIP_R, ROTOR_HALF_LEN)
     excess = (height[:, None] - lowest).clamp(min=0.0) * under          # m of soil above the tip circle
     offered = excess.sum((-2, -1)) * soil.cell ** 2 * soil.density      # (E, D) kg
     taken = torch.minimum(offered, capacity - fill)
     share = taken / offered.clamp(min=1e-9)
     return height - (share[..., None, None] * excess).sum(1), fill + taken
+
+
+def beneath(cells, centre, axis, radius: float, half_len: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """Which grid cells lie under each cylinder of `radius` and `half_len`, and
+    the cylinder's lowest point over each: (E, D, ny, nx) both."""
+    rel = cells - centre[..., None, None, :2]                           # (E, D, ny, nx, 2)
+    along = (rel * axis[..., None, None, :2]).sum(-1)
+    across = rel[..., 0] * axis[..., None, None, 1] - rel[..., 1] * axis[..., None, None, 0]
+    under = (along.abs() <= half_len) & (across.abs() < radius)
+    lowest = centre[..., None, None, 2] - (radius ** 2 - across ** 2).clamp(min=0.0).sqrt()
+    return under, lowest
+
+
+def wheel_loads(patches: Patches, centre, lin, quat, ang, height, soil: Soil) -> tuple[torch.Tensor, torch.Tensor]:
+    """Soil force and torque on each wheel, (E, W, 3) each.
+
+    patches: wheel_patches(). centre, lin, ang: (E, W, 3) the wheel's axis
+    point, velocity and angular velocity; quat (E, W, 4) its orientation.
+    height (E, ny, nx): the soil grid.
+    """
+    up = torch.tensor([0.0, 0.0, 1.0], device=centre.device)
+    axis = drum_axis(quat)
+    u = torch.nn.functional.normalize(torch.linalg.cross(up.expand_as(axis), axis), dim=-1)
+    arm = rotate(quat[..., None, :], patches.pos)
+    normal = rotate(quat[..., None, :], patches.normal)
+    vel = lin[..., None, :] + torch.linalg.cross(ang[..., None, :], arm)
+    # Depth below the higher of the surfaces one cell beyond the grousers, ahead
+    # and behind, in the patch's own strip.
+    strip = (arm * axis[..., None, :]).sum(-1, keepdim=True) * axis[..., None, :]
+    xy = centre[..., None, :2] + strip[..., :2]
+    reach = ((WHEEL_RADIUS + GROUSER_PROTRUDE + soil.cell) * u)[..., None, :2]
+    surface = torch.maximum(height_at(height, soil, xy + reach), height_at(height, soil, xy - reach))
+    depth = (surface - centre[..., None, 2] - arm[..., 2]).clamp(min=0.0)
+    depth = torch.where(depth > 0.0, depth + soil.cohesion_depth, depth)
+    force = patch_force(normal, vel, patches.area * depth, u[..., None, :], soil.zeta)
+    force = force * ((normal * vel).sum(-1) > 0.0)[..., None]
+    return force.sum(-2), torch.linalg.cross(arm, force).sum(-2)
+
+
+def press(height, cells, centre, axis) -> torch.Tensor:
+    """The grid (E, ny, nx) with the soil under each wheel's tyre pressed down
+    to it. centre and axis (E, W, 3): the wheels' axis points and drum_axis()."""
+    under, lowest = beneath(cells, centre, axis, WHEEL_RADIUS, WHEEL_HALF_W)
+    tyre = torch.where(under, lowest, torch.full_like(lowest, math.inf)).amin(1)
+    return torch.minimum(height, tyre)

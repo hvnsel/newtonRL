@@ -39,6 +39,7 @@ from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 import luna_hifi_tasks  # noqa: F401  (registers Luna-* tasks)
 from luna_hifi_tasks.excavator.excavator import (
     ARM_LEN,
+    BODY_WHEELS,
     CHASSIS_Z,
     DIG_DRUM_SIGN,
     MAST_TOP_Z,
@@ -106,6 +107,9 @@ def _parse(argv):
                         "+ rises (the cut gets shallower), - falls (deeper); the RFT task trains on +-0.10")
     p.add_argument("--depth", type=float, default=None,
                    help="this run's cut depth where the front drum meets soil [m]; the RFT task trains on 0.03 to 0.08")
+    p.add_argument("--wheel_soil", action="store_true",
+                   help="RFT task: the wheels stand on the RFT soil and press ruts, instead of on rigid ground "
+                        "at the bed surface (training uses the rigid ground)")
     p.add_argument("--dig_speed", type=float, default=0.15,
                    help="forward command during --dig, a fraction of MAX_WHEEL_SPEED; negative backs up")
     p.add_argument("--arm_action", type=float, default=0.0,
@@ -571,6 +575,10 @@ def main(argv=None) -> int:
         env_cfg.soil_young_modulus = args.young
         print(f"[play] soil_young_modulus set to {args.young:g} Pa")
 
+    if args.wheel_soil:
+        env_cfg.wheel_soil = True
+        print("[play] wheel_soil: the wheels stand on the RFT soil")
+
     if args.cohesion is not None:
         env_cfg.soil_cohesion = args.cohesion
         print(f"[play] soil_cohesion set to {args.cohesion} Pa")
@@ -757,6 +765,7 @@ def main(argv=None) -> int:
         poses: list = []
 
         rows: list[dict] = []
+        wheel_bodies = u.robot.find_bodies(BODY_WHEELS, preserve_order=True)[0]
         obs, _ = env.reset()
         actor_obs = obs["policy"]
         # This episode's cut command. Set here, before the settle places the plane
@@ -800,6 +809,7 @@ def main(argv=None) -> int:
             tau = u.robot.data.applied_torque.torch[0]
             soil_f = _front_drum_soil_force(u)
             drum_z = float(u.robot.data.body_link_pos_w.torch[0, u._drum_body_ids[0], 2] - u.scene.env_origins[0, 2])
+            wheel_z = u.robot.data.body_link_pos_w.torch[0, wheel_bodies, 2] - u.scene.env_origins[0, 2]
             below = scalar("_below_prev") * soil
             removal = scalar("_removed_kg")
             rows.append({
@@ -819,6 +829,9 @@ def main(argv=None) -> int:
                 "soil_fx_n": round(float(soil_f[0]), 1),
                 "soil_fz_n": round(float(soil_f[2]), 1),
                 "drum_depth_mm": round(1000.0 * (u.cfg.bed_top - (drum_z - ROTOR_TIP_R)), 1),
+                # Tyre bottoms below the bed surface, and the tyres' rim speed; mean of the four.
+                "wheel_sink_mm": round(1000.0 * float((u.cfg.bed_top - (wheel_z - WHEEL_RADIUS)).mean()), 1),
+                "wheel_speed_mps": round(float(u.robot.data.joint_vel.torch[0, u._wheel_ids].mean()) * WHEEL_RADIUS, 4),
             })
 
             if args.dump and i % args.dump_every == 0:
@@ -904,6 +917,11 @@ def main(argv=None) -> int:
         print(f"[play] front drum after the ramp, mean: soil force x {mean['soil_fx_n']:+.1f} N, "
               f"z {mean['soil_fz_n']:+.1f} N; vane tips {mean['drum_depth_mm']:.1f} mm deep; "
               f"advance {mean['advance_mps']:.3f} m/s")
+        # Slip: 1 - advance / rim speed, over the steps the wheels turn.
+        turning = [r for r in moving if abs(r["wheel_speed_mps"]) > 0.05]
+        slip = sum(1.0 - r["advance_mps"] / r["wheel_speed_mps"] for r in turning) / max(len(turning), 1)
+        print(f"[play] wheels after the ramp, mean: tyres {sum(r['wheel_sink_mm'] for r in moving) / len(moving):.1f} mm "
+              f"below the bed surface, slip {slip:+.2f} over the {len(turning)} steps they turn")
         rem, pay = last["removal_kg"], peak
         if rem < 1.0:
             verdict = "the work area was barely touched"

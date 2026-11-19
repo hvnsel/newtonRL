@@ -6,7 +6,8 @@
 # rotor and shroud bodies as world-frame wrenches, then the soil inside the
 # vane-tip circles moves from the grid into the drums. Observations, rewards
 # and resets are the excavate env's. With soil_marker the grid is drawn in the
-# viewer, one box per cell.
+# viewer, one box per cell. With wheel_soil the wheels stand on the same soil:
+# their colliders are off, rft.py carries them, and their tyres press ruts.
 
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
 from isaaclab_newton.physics import NewtonBuilderCfg
 
+from ..excavator import BODY_WHEELS
 from ..excavator_cfg import EXCAVATOR_PRIM_REGEX, LUNAR_G
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rft
@@ -29,6 +31,8 @@ from .excavate_env_cfg import BED_FLOOR_Z
 # The arms and everything on them. Their colliders are off: the drums and
 # shrouds meet the soil through rft.py, and only the wheels touch the ground.
 ARM_COLLIDERS = EXCAVATOR_PRIM_REGEX + r"/Geometry/chassis/arm_(front|rear)_body/.*"
+# The tyres and grousers, off with wheel_soil.
+WHEEL_COLLIDERS = EXCAVATOR_PRIM_REGEX + r"/Geometry/chassis/wheel_(fl|fr|rl|rr)_body/.*"
 
 SOIL_RGB = (0.62, 0.55, 0.45)    # as play_dig colours MPM particles
 CUT_RGB = (0.36, 0.30, 0.24)     # cells the drums have cut into
@@ -40,12 +44,17 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         ExcavatorEnvBase._setup_scene(self)
         # The scene is already cloned into Newton's model builder, which becomes the
         # model at sim.reset(). Clear the arm shapes' collide flags there, as Newton's
-        # USD importer does for a disabled collider. Body masses are already set.
+        # USD importer does for a disabled collider, and the wheels' with wheel_soil.
+        # Body masses are already set.
         builder = self.sim.get_or_create_backend(NewtonBuilderCfg(physics_cfg=self.sim.cfg.physics))
-        arm = [i for i, label in enumerate(builder.shape_label) if re.fullmatch(ARM_COLLIDERS, label)]
-        for i in arm:
-            builder.shape_flags[i] &= ~(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
-        print(f"[excavate] collisions off for {len(arm) // self.num_envs} arm shapes per env")
+        colliders = {"arm": ARM_COLLIDERS, "wheel": WHEEL_COLLIDERS} if self.cfg.wheel_soil else {"arm": ARM_COLLIDERS}
+        for name, pattern in colliders.items():
+            shapes = [i for i, label in enumerate(builder.shape_label) if re.fullmatch(pattern, label)]
+            if not shapes:
+                raise RuntimeError(f"no {name} shapes match {pattern}")
+            for i in shapes:
+                builder.shape_flags[i] &= ~(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
+            print(f"[excavate] collisions off for {len(shapes) // self.num_envs} {name} shapes per env")
         if self.cfg.soil_marker:
             # The ground sits at bed_top, over the cut: hide it. _show_soil draws the soil.
             for i, label in enumerate(builder.shape_label):
@@ -68,6 +77,9 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         self._capacity = torch.full((self.num_envs, 2), c.drum_capacity_kg, device=dev)
         # Front rotor, rear rotor, front shroud, rear shroud.
         self._tool_ids = self._drum_body_ids + self._shroud_body_ids
+        # Wheels on the soil: left front, left rear, right front, right rear.
+        self._wheel_patches = rft.wheel_patches(device=dev)
+        self._wheel_body_ids = self.robot.find_bodies(BODY_WHEELS, preserve_order=True)[0] if c.wheel_soil else []
         self._soil_marker = self._make_soil_marker() if c.soil_marker else None
         print(
             f"[excavate] soil: rft.py, density {c.soil_density:.0f} kg/m3, friction {c.soil_friction:.2f} "
@@ -76,33 +88,46 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
             f"@ {c.voxel_size:.3f} m; drums hold {c.drum_capacity_kg:.1f} kg, target load {c.target_load_kg:.1f} kg, "
             f"cut ref {c.cut_volume_ref:.4f} m3"
         )
+        if c.wheel_soil:
+            print(f"[excavate] wheels on the soil: {self._wheel_patches.area.numel()} patches per wheel, ruts pressed into the grid")
 
     def _apply_action(self):
         super()._apply_action()
         d = self.robot.data
-        ids = self._tool_ids
-        pos = d.body_link_pos_w.torch[:, ids]                   # (E, 4, 3), on the drum axes
+        # Front and rear rotor, front and rear shroud, then any wheels: (E, B, ...),
+        # positions on the drum and wheel axes.
+        ids = self._tool_ids + self._wheel_body_ids
+        pos = d.body_link_pos_w.torch[:, ids]
         quat = d.body_link_quat_w.torch[:, ids]
         lin = d.body_link_lin_vel_w.torch[:, ids]
         ang = d.body_link_ang_vel_w.torch[:, ids]
-        centre = pos[:, 2:] - self.scene.env_origins[:, None]  # env-local axis points
+        centre = pos - self.scene.env_origins[:, None]          # env-local axis points
 
         shroud_f, shroud_t, rotor_f, rotor_t = rft.drum_loads(
-            self._patches, centre, lin[:, 2:], quat[:, 2:], ang[:, 2:], quat[:, :2], ang[:, :2],
+            self._patches, centre[:, 2:4], lin[:, 2:4], quat[:, 2:4], ang[:, 2:4], quat[:, :2], ang[:, :2],
             self._bed_grid, self._fill_kg, self._capacity, self._rft,
         )
         self._soil_force = rotor_f + shroud_f                    # (E, 2, 3) on each drum, for play_dig
+        forces, torques = [rotor_f, shroud_f], [rotor_t, shroud_t]
+        if self.cfg.wheel_soil:
+            wheel_f, wheel_t = rft.wheel_loads(
+                self._wheel_patches, centre[:, 4:], lin[:, 4:], quat[:, 4:], ang[:, 4:], self._bed_grid, self._rft,
+            )
+            forces.append(wheel_f)
+            torques.append(wheel_t)
         self.robot.instantaneous_wrench_composer.set_forces_and_torques_index(
-            forces=torch.cat([rotor_f, shroud_f], dim=1),
-            torques=torch.cat([rotor_t, shroud_t], dim=1),
+            forces=torch.cat(forces, dim=1),
+            torques=torch.cat(torques, dim=1),
             positions=pos,
             body_ids=ids,
             is_global=True,
         )
         self._bed_grid, self._fill_kg = rft.excavate(
-            self._bed_grid, self._fill_kg, self._cells, centre, rft.drum_axis(quat[:, 2:]),
+            self._bed_grid, self._fill_kg, self._cells, centre[:, 2:4], rft.drum_axis(quat[:, 2:4]),
             self._capacity, self._rft,
         )
+        if self.cfg.wheel_soil:
+            self._bed_grid = rft.press(self._bed_grid, self._cells, centre[:, 4:], rft.drum_axis(quat[:, 4:]))
         if self._soil_marker is not None:
             self._show_soil()
 

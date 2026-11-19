@@ -842,6 +842,11 @@ class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     # Draw the soil grid in the viewer, and hide the ground's grid that would
     # cover the cut. play_dig turns it on for a window or a video.
     soil_marker: bool = False
+    # The wheels on the same soil instead of the rigid ground: their colliders
+    # off, rft.py carries them and their tyres press ruts. The chassis still
+    # meets the ground at the bed surface if they sink 16 cm. Off in training;
+    # play_dig --wheel_soil turns it on.
+    wheel_soil: bool = False
 
     def __post_init__(self) -> None:
         self.derive_bed()

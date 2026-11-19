@@ -57,19 +57,22 @@ dig_demo's crawl speed is `--drive` × `MAX_WHEEL_SPEED` × `WHEEL_RADIUS`:
 The value horizon is `1 / (1 - gamma)` policy steps: 333 steps, 13 s at 25 Hz.
 
 Reward weights are the `w_<term>` fields of each env cfg; `Episode_Reward/<term>`
-in the training log is each term's episode total.
+in the training log is each term's episode total. Excavate's `w_removal`,
+`w_unheld`, `w_overcut` and `w_spill` are per kilogram of soil.
 
 | excavate | field | value |
 |---|---|---|
 | full drum | `target_load_kg` | `40` kg |
 | what counts as in a drum | `BORE_*` constants | inside the shroud shell: within 0.195 m of the axis, between the end plates, above the chord across the inlet; holds 150 kg |
-| nominal cut volume | `cut_volume_ref` | `0.0304` m³ |
+| nominal cut volume (prints and GIFs) | `cut_volume_ref` | `0.0304` m³ |
+| shape achieved | `shape_success_fraction` | soil left above the plane plus soil cut below it within `0.30` of the episode's layer, and half the cut held |
 | commanded depth below the surface | `cut_depth_range` | `(0.04, 0.04)` m |
 | drum full (logged as `Episode/drum_full`) | `fill_success_fraction` | `0.6` of `target_load_kg`, front drum |
 
 ## Excavate tool and drive (excavate_env_cfg.py)
 
-The env runs the tool; the policy's actions are `[forward, yaw]`.
+The env sets the tool over the ramp; then the policy's actions are
+`[drive, yaw, front arm rate]`.
 
 | what | field | value |
 |---|---|---|
@@ -77,11 +80,26 @@ The env runs the tool; the policy's actions are `[forward, yaw]`.
 | inlet off straight down | `dig_inlet_tilt` | `0.096` rad (shroud −0.44 rad) |
 | drum speed | `dig_drum_speed` | `−2.9` rad/s, the loading direction |
 | lowering and spin-up after the settle | `dig_ramp_seconds` | `2` s, wheels held |
-| forward | `dig_forward` | `0.15 × (1 + a0)` of top speed: 0–0.45 m/s, 0.225 at a0 = 0 |
+| drive | `dig_forward` | `0.30 × a0` of top speed: ±0.45 m/s, wheels held at a0 = 0 |
 | heading hold, yaw action | `heading_hold_gain`, `dig_yaw_rate` | 1.0 /s capped at ±0.3 rad/s, plus 0.3 × a1 rad/s |
+| front arm | `dig_arm_rate` | `0.25 × a2` rad/s from the angle the ramp left it at, inside `arm_range`; + lowers the drum, and the shroud turns back by the same angle |
 | end of the pass | `work_area_length` | the episode ends when the front drum is 0.6 m past the anchor |
-| rear drum | `dig_rear_drum` | `False`: raised at the start pose, still |
+| rear drum | `dig_rear_drum` | `False`: raised at the start pose, still; the scan stays at the front drum in reverse |
 | tool off (parked machine) | `dig_tool` | `True` |
+
+## Excavate-RFT (ExcavatorExcavateRftEnvCfg)
+
+The excavate task on the analytical soil of `mdp/rft.py`. What differs:
+
+| what | field | value |
+|---|---|---|
+| commanded depth at the anchor | `cut_depth_range` | `(0.03, 0.08)` m, drawn per episode |
+| slope | `cut_gradient_max`, `cut_ramp_fraction` | half the episodes: up to ±0.10 along the pass, ±0.03 across it |
+| ramp depth | `dig_cut` | `0.03` m, the shallowest command; the policy lowers the arm from there |
+| payload counted up to | `target_load_bore_fraction` | `1.0`: the drum's capacity, 149.6 kg |
+| episode | `episode_length_s` | `20` s |
+| soil | `soil_friction`, `soil_cohesion`, `rft_scale` | tan 40°, 500 Pa, stress factor 12.3 |
+| envs | `scene.num_envs` | `256` |
 
 ## Navigate planner (navigate_env_cfg.py)
 

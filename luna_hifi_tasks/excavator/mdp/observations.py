@@ -132,7 +132,7 @@ def excavate_obs_spec(terrain_cells: int = DIG_SCAN_CELLS, num_arms: int = 2, nu
         ObsTerm("depth_error", 1, "ground minus target over the footprint"),
         ObsTerm("cut_progress", 1, "fraction of the footprint at or below target"),
         ObsTerm("terrain_scan", terrain_cells, "drum-centred heights"),
-        ObsTerm("last_action", 2, "[forward, yaw]"),
+        ObsTerm("last_action", 3, "[drive, yaw, front arm rate]"),
     ])
 
 

@@ -34,6 +34,7 @@ from isaaclab.app import add_launcher_args, launch_simulation
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import setup_preset_cli
 from isaaclab_tasks.utils.hydra import resolve_task_config
+from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 
 import luna_hifi_tasks  # noqa: F401  (registers Luna-* tasks)
 from luna_hifi_tasks.excavator.excavator import (
@@ -47,7 +48,6 @@ from luna_hifi_tasks.excavator.excavator import (
 from luna_hifi_tasks.excavator.excavator_cfg import MAX_DRUM_SPEED, MAX_WHEEL_SPEED, usd_status
 
 TASK = "Luna-Excavator-Excavate"
-LOG_ROOT = "logs/rsl_rl/excavator_excavate"
 
 
 def _parse(argv):
@@ -56,7 +56,7 @@ def _parse(argv):
     p.add_argument("--num_envs", type=int, default=1)
     p.add_argument("--seconds", type=float, default=25.0)
     p.add_argument("--run", default=None,
-                   help=f"run directory under {LOG_ROOT}; default is the newest")
+                   help="run directory under the task's logs/rsl_rl/<experiment>; default is the newest")
     p.add_argument("--checkpoint", default=None,
                    help="model file inside the run; default is the highest-numbered")
     p.add_argument("--no_window", action="store_true", help="skip the viewer")
@@ -101,7 +101,10 @@ def _parse(argv):
     p.add_argument("--straight", action="store_true",
                    help="zero the spawn yaw, xy, arm and gradient jitter")
     p.add_argument("--dig_speed", type=float, default=0.15,
-                   help="forward command during --dig, a fraction of MAX_WHEEL_SPEED")
+                   help="forward command during --dig, a fraction of MAX_WHEEL_SPEED; negative backs up")
+    p.add_argument("--arm_action", type=float, default=0.0,
+                   help="front-arm action held during --dig, in [-1, 1]: + lowers the drum at "
+                        "dig_arm_rate times it. 0 leaves the arm where the ramp put it")
     # Tool overrides (the env lowers and spins the tool after the settle).
     p.add_argument("--cut", type=float, default=None,
                    help="override dig_cut: vane tips below the surface [m]")
@@ -127,9 +130,10 @@ def _parse(argv):
     return args
 
 
-def _resolve_checkpoint(run: str | None, ckpt: str | None) -> Path:
-    """The named or newest run directory, and the named or highest-numbered model_*.pt in it."""
-    root = Path(LOG_ROOT)
+def _resolve_checkpoint(task: str, run: str | None, ckpt: str | None) -> Path:
+    """The named or newest run directory of the task's experiment, and the
+    named or highest-numbered model_*.pt in it."""
+    root = Path("logs/rsl_rl") / load_cfg_from_registry(task, "rsl_rl_cfg_entry_point").experiment_name
     if run is None:
         run_dir = sorted((d for d in root.iterdir() if d.is_dir()), key=lambda d: d.stat().st_mtime)[-1]
     else:
@@ -536,7 +540,7 @@ def main(argv=None) -> int:
     elif args.dig:
         print("[play] scripted pass, no policy")
     else:
-        ckpt = _resolve_checkpoint(args.run, args.checkpoint)
+        ckpt = _resolve_checkpoint(args.task, args.run, args.checkpoint)
         print(f"[play] checkpoint {ckpt}")
 
     problem = usd_status()
@@ -674,9 +678,12 @@ def main(argv=None) -> int:
         env = gym.make(args.task, cfg=env_cfg)
         u = env.unwrapped
         if args.park or args.dig:
-            # [forward, yaw]: forward is dig_forward * (1 + a0), so -1 holds the wheels.
-            fixed = torch.zeros(u.num_envs, 2, device=u.device)
-            fixed[:, 0] = -1.0 if args.park else args.dig_speed / u.cfg.dig_forward - 1.0
+            # [drive, yaw, front arm rate]: the drive is dig_forward * a0, and zeros
+            # hold the wheels and leave the arm where the ramp put it.
+            fixed = torch.zeros(u.num_envs, u.cfg.action_space, device=u.device)
+            if not args.park:
+                fixed[:, 0] = args.dig_speed / u.cfg.dig_forward
+                fixed[:, 2] = args.arm_action
             if args.dig:
                 angle = u._dig_arm
                 drum = u.cfg.dig_drum_speed
@@ -690,6 +697,7 @@ def main(argv=None) -> int:
                       f"shroud {u._dig_shroud:+.4f} rad, drums {drum:+.2f} rad/s; rotor tip "
                       f"{1000 * (tip - float(u.cfg.bed_top)):+.0f} mm from the bed surface; "
                       f"forward {args.dig_speed * MAX_WHEEL_SPEED * WHEEL_RADIUS:.2f} m/s "
+                      f"and arm {args.arm_action * u.cfg.dig_arm_rate:+.3f} rad/s "
                       f"after {u.cfg.settle_seconds:.1f} s settle + {u.cfg.dig_ramp_seconds:.1f} s ramp")
             k = [0]
             ramp_end = u._settle_steps + u._ramp_steps

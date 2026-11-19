@@ -6,8 +6,8 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class ExcavatorExcavatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    # Steps per env per update. An episode is at most 400 steps: 25 settling,
-    # 50 lowering the tool, then the pass (about 80 at the default speed).
+    # Steps per env per update. An episode is at most 400 steps (500 in the RFT
+    # task): 25 settling, 50 lowering the tool, then the dig.
     num_steps_per_env = 256
     max_iterations = 800
     save_interval = 5

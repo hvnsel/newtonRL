@@ -8,9 +8,9 @@ end.
 |---|---|
 | `Luna-Excavator-Navigate` | drive to a goal pose over generated terrain with craters and boulders, along a path planned around them; the actor sees the path ahead, not the terrain (MJWarp, rigid terrain mesh) |
 | `Luna-Excavator-Navigate-Course` | the navigate policy on one fixed obstacle layout (mdp/course.py), for playback |
-| `Luna-Excavator-Excavate` | one straight pass cutting a strip of an implicit-MPM soil bed into the drums; the env lowers and spins the tool, the policy drives |
+| `Luna-Excavator-Excavate` | cutting a strip of an implicit-MPM soil bed down to a commanded plane and into the drums; the env lowers and spins the tool, then the policy drives either way, steers and moves the front arm |
 | `Luna-Excavator-Excavate-Small`, `-Micro` | one env, a small soil pile in front of the machine |
-| `Luna-Excavator-Excavate-RFT` | the excavate task with the analytical soil of `mdp/rft.py` in place of MPM; rigid physics only, so hundreds of envs |
+| `Luna-Excavator-Excavate-RFT` | the excavate task with the analytical soil of `mdp/rft.py` in place of MPM; rigid physics only, so hundreds of envs. Each episode commands a depth of 3 to 8 cm and, half the time, a slope |
 | `Luna-Tricycle-Direct` | a tricycle on an MPM strip: the minimal rigid ↔ MPM coupling example |
 
 `docs/tricycle_manual/main.pdf` explains the tricycle task line by line.

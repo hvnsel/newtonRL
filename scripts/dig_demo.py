@@ -230,9 +230,10 @@ def main(argv=None) -> int:
         print()
 
         obs, _ = env.reset()
-        # [forward, yaw]: forward is dig_forward * (1 + a0) once the tool is down.
-        action = torch.zeros(u.num_envs, 2, device=u.device)
-        action[:, 0] = args.drive / u.cfg.dig_forward - 1.0
+        # [drive, yaw, front arm rate]: the drive is dig_forward * a0 once the tool
+        # is down; the arm stays where the ramp put it.
+        action = torch.zeros(u.num_envs, u.cfg.action_space, device=u.device)
+        action[:, 0] = args.drive / u.cfg.dig_forward
         t_start = time.perf_counter()
 
         peak = torch.zeros(u.num_envs, 2, device=u.device)

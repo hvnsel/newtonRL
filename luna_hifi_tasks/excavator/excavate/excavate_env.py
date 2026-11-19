@@ -1,10 +1,11 @@
 # excavate_env.py
 #
-# Cut a strip of an MPM regolith bed in one straight pass and carry the spoil
-# in the drums. The env runs the tool: after the settle, over dig_ramp_seconds
-# with the wheels held, both arms lower to the dig angle, both shrouds turn to
-# hold the inlet at dig_inlet_tilt off straight down, and both drums spin up.
-# Then the policy drives: actions are [forward, yaw] in [-1, 1]. The episode
+# Cut a strip of an MPM regolith bed down to a commanded plane and carry the
+# spoil in the drums. The env sets the tool: after the settle, over
+# dig_ramp_seconds with the wheels held, the front arm lowers to the dig angle,
+# its shroud turns to hold the inlet at dig_inlet_tilt off straight down, and
+# its drum spins up (the rear tool too with dig_rear_drum). Then the policy
+# takes over: actions are [drive, yaw, front arm rate] in [-1, 1]. The episode
 # ends when the front drum passes the end of the work area.
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import warp as wp
 from isaaclab_newton.assets import MPMObject
 
 from ..excavator import ARM_LEN, PIVOT_X, ROTOR_VANES, WHEEL_RADIUS
-from ..excavator_cfg import MAX_YAW_SPEED, usd_status
+from ..excavator_cfg import MAX_WHEEL_SPEED, MAX_YAW_SPEED, usd_status
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rewards as R
 from ..mdp.sensors import inside_drum, mpm_grid_particle_mass, mpm_particle_state, soil_heightmap
@@ -63,8 +64,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         super().__init__(cfg, render_mode, **kwargs)
 
         E, dev = self.num_envs, self.device
-        self._actions = torch.zeros(E, 2, device=dev)
-        self._prev_actions = torch.zeros(E, 2, device=dev)
+        self._actions = torch.zeros(E, cfg.action_space, device=dev)
+        self._prev_actions = torch.zeros(E, cfg.action_space, device=dev)
 
         self._fill_kg = torch.zeros(E, 2, device=dev)           # front, rear
 
@@ -114,8 +115,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._bed_grid = torch.full((E, cfg.bed_grid_ny, cfg.bed_grid_nx), cfg.bed_top, device=dev)
         # Episodes since each env's soil was re-laid, staggered across envs.
         self._soil_age = torch.randint(0, max(cfg.soil_reset_every, 1), (E,), device=dev)
-        # Work-area soil volume above the plane when the settle ended, m3.
+        # Work-area soil volume above the plane when the settle ended, m3, and
+        # the volume the surface already lay below it (a plane sloping up out of
+        # the ground), which is not the machine's cut.
         self._above_init = torch.zeros(E, device=dev)
+        self._below_init = torch.zeros(E, device=dev)
         # Previous step's removal, unheld and below-plane volume, for the deltas.
         self._removal_prev = torch.zeros(E, device=dev)
         self._unheld_prev = torch.zeros(E, device=dev)
@@ -142,6 +146,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._arm_start = torch.zeros(E, device=dev)
         _, self._dig_arm = cfg.boom_command_for_cut(cfg.dig_cut)
         self._dig_shroud = -self._dig_arm + cfg.dig_inlet_tilt
+        # The policy's offset on the front arm's dig angle, rad.
+        self._arm_offset = torch.zeros(E, device=dev)
         self._drum_digs = torch.tensor([1.0, float(cfg.dig_rear_drum)], device=dev)
         self._work_yaw = torch.zeros(E, device=dev)
         self._pass_done = torch.zeros(E, dtype=torch.bool, device=dev)
@@ -168,6 +174,13 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             f"[excavate] tool: arm {self._dig_arm:+.3f} rad, shroud {self._dig_shroud:+.3f} rad, "
             f"drums {cfg.dig_drum_speed:+.2f} rad/s"
             + ("" if cfg.dig_tool else " (dig_tool False: arms held at the start angle)")
+        )
+        lo, hi = cfg.cut_depth_range
+        print(
+            f"[excavate] cut command: depth {lo:.3f} to {hi:.3f} m, slope up to {cfg.cut_gradient_max:.2f} "
+            f"in {cfg.cut_ramp_fraction:.0%} of episodes. actions: drive +-"
+            f"{cfg.dig_forward * MAX_WHEEL_SPEED * WHEEL_RADIUS:.2f} m/s, yaw +-{cfg.dig_yaw_rate:.2f} rad/s, "
+            f"front arm +-{cfg.dig_arm_rate:.2f} rad/s"
         )
 
     def _setup_scene(self):
@@ -217,22 +230,29 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     # ------------------------------------------------------------------
 
     def _pre_physics_step(self, actions: torch.Tensor):
-        s = self.cfg.action_smoothing
+        c = self.cfg
+        s = c.action_smoothing
         self._prev_actions[:] = self._actions
         self._actions[:] = (1.0 - s) * actions.clamp(-1.0, 1.0) + s * self._actions
+        # Once the ramp is done, a2 moves the front arm: its rate, summed into an
+        # offset on the dig angle that keeps the arm inside its range.
+        driving = self._since_settle >= self._ramp_steps
+        lo, hi = c.arm_range
+        step = c.dig_arm_rate * self.step_dt * self._actions[:, 2] * driving
+        self._arm_offset = (self._arm_offset + step).clamp(lo - self._dig_arm, hi - self._dig_arm)
 
     def _apply_action(self):
         c = self.cfg
         a = self._actions
         driving = self._since_settle >= self._ramp_steps
         ramp = (self._since_settle.float() / self._ramp_steps).clamp(0.0, 1.0) * float(c.dig_tool)
-        # Forward: dig_forward * (1 + a0) of top speed. Yaw rate: a heading hold
-        # on the handover heading plus dig_yaw_rate * a1. Wheels held until the
-        # ramp is done.
+        # Drive: dig_forward * a0 of top speed, either way. Yaw rate: a heading
+        # hold on the handover heading plus dig_yaw_rate * a1. Wheels held until
+        # the ramp is done.
         err = self._work_yaw - self._base_yaw()
         err = torch.atan2(torch.sin(err), torch.cos(err))
         hold = (c.heading_hold_gain * err).clamp(-c.dig_yaw_rate, c.dig_yaw_rate)
-        forward = torch.where(driving, c.dig_forward * (1.0 + a[:, 0]), torch.zeros_like(err))
+        forward = torch.where(driving, c.dig_forward * a[:, 0], torch.zeros_like(err))
         yaw_rate = torch.where(driving, hold + c.dig_yaw_rate * a[:, 1], torch.zeros_like(err))
         self._apply_drive(forward, yaw_rate / MAX_YAW_SPEED)
         self._update_lead()
@@ -240,16 +260,25 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # else it stays at its start pose, still.
         ramp = ramp.unsqueeze(-1) * self._drum_digs
         start = self._arm_start.unsqueeze(-1)
-        self._apply_arms(start + ramp * (self._dig_arm - start))
+        arm = start + ramp * (self._dig_arm - start)
+        shroud = ramp * self._dig_shroud
+        # The policy's offset on the front arm. Its shroud turns back by the
+        # same angle, so the inlet stays dig_inlet_tilt off straight down.
+        arm[:, 0] += self._arm_offset
+        shroud[:, 0] -= self._arm_offset
+        self._apply_arms(arm)
         self._apply_drums(ramp * c.dig_drum_speed)
-        self._apply_shrouds(ramp * self._dig_shroud)
+        self._apply_shrouds(shroud)
 
     # ------------------------------------------------------------------
     # soil sensing
     # ------------------------------------------------------------------
 
     def _update_lead(self) -> None:
-        """Lead drum from the sign of the commanded drive; held inside +-dig_lead_deadband."""
+        """Lead drum from the sign of the commanded drive; held inside
+        +-dig_lead_deadband. The front drum throughout unless the rear one digs too."""
+        if not self.cfg.dig_rear_drum:
+            return
         v = self._forward_cmd
         db = self.cfg.dig_lead_deadband
         front = torch.zeros_like(self._lead)
@@ -501,6 +530,9 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
         above = cut["above_volume"]
         self._above_init = torch.where(self._cut_fresh, above, self._above_init)
+        self._below_init = torch.where(self._cut_fresh, cut["below_volume"], self._below_init)
+        # m3 taken from below the plane since the settle.
+        below = (cut["below_volume"] - self._below_init).clamp_min(0.0)
 
         # Mass balance, kg:
         #   removal   work-area soil gone from above the plane since the settle
@@ -508,7 +540,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         #   payload   held in the drums, capped at target_load_kg per drum
         #   unheld    |removal - payload|
         removal = ((self._above_init - above) * c.soil_density).clamp_min(0.0)
-        cut_total = removal + cut["below_volume"] * c.soil_density
+        cut_total = removal + below * c.soil_density
         payload = self._fill_kg.clamp(max=c.target_load_kg).sum(dim=-1)
         unheld = (removal - payload).abs()
         self._removed_kg = removal
@@ -521,16 +553,17 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             self._cut_fresh, torch.zeros_like(unheld), unheld - self._unheld_prev,
         )
 
-        # Shape achieved: residual within tolerance and enough of the cut held.
-        residual = above + cut["below_volume"]
+        # Shape achieved: the residual within a fraction of the episode's layer
+        # and enough of the cut held.
+        residual = above + below
         was_done = self._shape_done
         self._shape_done = (
-            (residual <= c.shape_success_fraction * c.cut_volume_ref)
+            (residual <= c.shape_success_fraction * self._above_init)
             & (payload >= c.capture_min_fraction * cut_total)
             & ~self._cut_fresh
         )
         self._shape_newly_done = self._shape_done & ~was_done
-        overcut_delta = R.progress_delta(self._below_prev, cut["below_volume"], self._cut_fresh)
+        overcut_delta = R.progress_delta(self._below_prev, below, self._cut_fresh)
 
         wheel_cmd_rad = self._forward_cmd / WHEEL_RADIUS
 
@@ -541,15 +574,15 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         all_tau = finite(d.applied_torque.torch)
         base_lin_vel = finite(p["base_lin_vel"])
         projected_gravity = finite(p["projected_gravity"])
-        load_ref = 2.0 * c.target_load_kg
 
+        # removal, unheld and spill are in kg; overcut is m3 times the density.
         self._last_terms = {
-            "removal": c.w_removal * removal_delta / load_ref,
-            "unheld": -c.w_unheld * unheld_delta / load_ref,
+            "removal": c.w_removal * removal_delta,
+            "unheld": -c.w_unheld * unheld_delta,
             "success": c.w_success * self._shape_newly_done.float(),
             "fail": -c.w_fail * self._failed_now.float(),
-            "overcut": c.w_overcut * overcut_delta / c.cut_volume_ref,
-            "spill": -c.w_spill * R.spill_penalty(spill_delta) / load_ref,
+            "overcut": c.w_overcut * overcut_delta * c.soil_density,
+            "spill": -c.w_spill * R.spill_penalty(spill_delta),
             "stall": -c.w_stall * R.stall_penalty(wheel_cmd_rad, base_lin_vel[:, 0], WHEEL_RADIUS),
             "drift": -c.w_drift * R.drift_penalty(base_lin_vel, self._forward_cmd),
             "upright": -c.w_upright * R.upright_penalty(projected_gravity),
@@ -576,7 +609,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._spill_filt_prev[:] = self._spill_filt
         self._removal_prev[:] = removal
         self._unheld_prev[:] = unheld
-        self._below_prev[:] = cut["below_volume"]
+        self._below_prev[:] = below
         self._settle_left = (self._settle_left - 1).clamp_min(0)
         self._cut_fresh[:] = self._settle_left > 0
         self._since_settle = torch.where(self._cut_fresh, torch.zeros_like(self._since_settle), self._since_settle + 1)
@@ -752,6 +785,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         drum = torch.rand(n, device=dev) * (2.0 * math.pi / ROTOR_VANES)
         spawn_xy = self._reset_robot(env_ids, yaw, arm, xy_off, drum)
         self._arm_start[env_ids] = arm
+        self._arm_offset[env_ids] = 0.0
         self._work_yaw[env_ids] = yaw
         self._since_settle[env_ids] = 0
         self._pass_done[env_ids] = False
@@ -795,6 +829,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._set_work_area(env_ids, anchor_xy, yaw)
 
         self._above_init[env_ids] = 0.0
+        self._below_init[env_ids] = 0.0
         self._removal_prev[env_ids] = 0.0
         self._unheld_prev[env_ids] = 0.0
         self._below_prev[env_ids] = 0.0

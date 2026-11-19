@@ -311,9 +311,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # which may not exceed it.
     max_num_envs = 4
 
-    # actions: [forward, yaw] in [-1, 1]
-    action_space = 2
-    observation_space = DIG_OBS.dim      # 166
+    # actions: [drive, yaw, front arm rate] in [-1, 1]
+    action_space = 3
+    observation_space = DIG_OBS.dim      # 167
     state_space = DIG_CRITIC.dim         # 231
 
     # --- start state ---
@@ -342,15 +342,20 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     dig_ramp_seconds: float = 2.0
 
     # --- actions, once the ramp is done ---
-    # Forward: dig_forward * (1 + a0) of top speed, 0 to 0.45 m/s.
-    dig_forward: float = 0.15
+    # Drive: dig_forward * a0 of top speed, +-0.45 m/s; zero holds the wheels.
+    dig_forward: float = 0.30
     # Yaw rate [rad/s]: heading_hold_gain * (handover heading - heading),
     # clamped to dig_yaw_rate, plus dig_yaw_rate * a1.
     heading_hold_gain: float = 1.0
     dig_yaw_rate: float = 0.3
+    # Front arm: dig_arm_rate * a2 [rad/s], from the angle the ramp left it at
+    # and inside arm_range; + lowers the drum. The shroud turns back by the
+    # same angle, so the inlet stays dig_inlet_tilt off straight down.
+    dig_arm_rate: float = 0.25
     action_smoothing = 0.3
-    # The leading drum, which the actor's scan is taken at, switches only when
-    # the commanded drive passes this speed [m/s].
+    # With dig_rear_drum, the leading drum, which the actor's scan is taken at,
+    # switches when the commanded drive passes this speed [m/s]. Without it the
+    # scan stays at the front drum.
     dig_lead_deadband: float = 0.05
 
     arm_range = ARM_RANGE
@@ -372,7 +377,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     work_area_behind: float = 0.20           # m behind it
     work_area_width: float = 0.95            # m, the drums' swath
 
-    # Residual volume, as a fraction of cut_volume_ref, at which the shape is achieved.
+    # The shape is achieved when the soil left above the plane plus the soil cut
+    # below it is within this fraction of the episode's layer: the work area's
+    # soil above the plane when the settle ended.
     shape_success_fraction: float = 0.30
 
     # --- load sensor ---
@@ -394,15 +401,15 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     fill_success_mode = "front"
 
     # --- reward weights ---
-    # removal and unheld are per 2 x target_load_kg; overcut per cut_volume_ref.
-    w_removal = 100.0                    # mass cut from the work area
-    w_unheld = 120.0                     # |removal - payload|
+    # removal, unheld, overcut and spill are per kilogram of soil.
+    w_removal = 1.25                     # cut from the work area, above the plane
+    w_unheld = 1.5                       # |removal - payload|
     # Payload as a fraction of cut_total required for the shape to count.
     capture_min_fraction: float = 0.50
     # Distance from the env origin at which a particle counts as escaped [m].
     particle_escape_m: float = 15.0
-    w_overcut = 200.0                    # volume taken below the plane
-    w_spill = 20.0                       # loss from the slow fill reading
+    w_overcut = 4.386                    # taken from below the plane
+    w_spill = 0.25                       # lost, by the slow fill reading
     w_success = 40.0                     # once, when the shape is first achieved
     w_fail = 20.0                        # on the step _failed() fires
     w_stall = 0.025                      # commanded speed not achieved
@@ -805,11 +812,26 @@ class ExcavateRftSceneCfg(InteractiveSceneCfg):
 @configclass
 class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     """The excavate task with the soil of mdp/rft.py: the same observations,
-    actions and rewards, rigid physics only."""
+    actions and rewards, rigid physics only. Each episode commands its own
+    depth and, half the time, a slope."""
 
     scene: ExcavateRftSceneCfg = ExcavateRftSceneCfg(num_envs=256, env_spacing=5.12, replicate_physics=True)
     # No sparse grid to size.
     max_num_envs = 4096
+    # Room to back up and take a second pass.
+    episode_length_s = 20.0
+
+    # --- cut command ---
+    cut_depth_range: tuple[float, float] = (0.03, 0.08)     # m, at the anchor
+    # Along the pass up to +-0.10 (5.7 deg), across it up to +-0.03.
+    cut_gradient_max: float = 0.10
+    cut_ramp_fraction: float = 0.5
+    # The ramp stops at the shallowest commanded depth; the policy lowers the
+    # arm from there.
+    dig_cut: float = 0.03
+    # The payload counts up to the drum's capacity: an 8 cm layer is 91 kg.
+    target_load_bore_fraction: float = 1.0
+
     # rft.py takes tan(phi) and the Mohr-Coulomb cohesion.
     soil_friction: float = math.tan(REGOLITH_FRICTION_ANGLE)    # 0.839
     soil_cohesion: float = REGOLITH_COHESION                    # Pa

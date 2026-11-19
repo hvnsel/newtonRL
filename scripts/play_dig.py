@@ -2,7 +2,8 @@
 #
 # Run a trained excavate policy (or a parked or scripted machine) with the
 # Newton viewer, and write a per-step CSV trace of the mass balance and a
-# heightmap dump for render_dig.py / render_attitude.py.
+# heightmap dump for render_dig.py / render_attitude.py. The run ends when the
+# episode does, so all of these cover that one episode.
 #
 #   bash workstation/train.sh -p scripts/play_dig.py
 #   bash workstation/train.sh -p scripts/play_dig.py --run 2026-10-24_11-20-38
@@ -692,7 +693,7 @@ def main(argv=None) -> int:
 
         dt = u.step_dt
         steps = int(args.seconds / dt)
-        reset_steps: list[int] = []
+        end_t = None   # when the episode ended; the run stops there
         bodies: list = []
         t_start = time.perf_counter()
         t_mark = t_start
@@ -711,6 +712,8 @@ def main(argv=None) -> int:
         rows: list[dict] = []
         obs, _ = env.reset()
         actor_obs = obs["policy"]
+        # This episode's work area; a reset marks a new one.
+        work_mask = u._work_mask[0].detach().cpu().numpy()
 
         for i in range(steps):
             # Read before the step: the reset on the step a pass ends zeroes it.
@@ -720,6 +723,21 @@ def main(argv=None) -> int:
                 obs, _, term, trunc, extras = env.step(action)
                 actor_obs = obs["policy"]
                 dones = term | trunc
+
+            if bool(dones[0]):
+                # The step that ends the episode also resets the env, so the run stops
+                # here: the trace, frames and summary cover the episode that ran. The
+                # reset cleared the env's flags; its exit log has them.
+                end_t = i * dt
+                log = extras["log"]
+                print(f"[play] t={end_t:5.2f}s episode ended "
+                      f"(pass_done={log['Episode/pass_done']:.0f}, "
+                      f"off_bed={log['Episode/off_bed']:.0f}, "
+                      f"failed={log['Episode/failed']:.0f}, "
+                      f"shape_done={log['Episode/shape_done']:.0f}, "
+                      f"escaped={log['Episode/escaped']:.0f}), "
+                      f"in the drums: front {fill_prev[0]:.1f} kg, rear {fill_prev[1]:.1f} kg")
+                break
 
             root = u.robot.data.root_pos_w.torch
             below = scalar("_below_prev") * soil
@@ -759,27 +777,11 @@ def main(argv=None) -> int:
                 print(f"[play] step {i + 1}/{steps}  {sps:6.2f} env-steps/s  "
                       f"eta {(steps - i - 1) / sps:6.0f}s", flush=True)
 
-            if bool(dones.any()):
-                reset_steps.append(i)
-                # The reset inside the step clears the env's flags; its exit log has them.
-                log = extras["log"]
-                print(f"[play] t={i*dt:5.2f}s episode ended "
-                      f"(pass_done={log['Episode/pass_done']:.0f}, "
-                      f"off_bed={log['Episode/off_bed']:.0f}, "
-                      f"failed={log['Episode/failed']:.0f}, "
-                      f"shape_done={log['Episode/shape_done']:.0f}, "
-                      f"escaped={log['Episode/escaped']:.0f}), "
-                      f"in the drums: front {fill_prev[0]:.1f} kg, rear {fill_prev[1]:.1f} kg")
-
         if args.probe:
             _attitude(u)
-            if reset_steps:
-                since = steps - 1 - reset_steps[-1]
-                print(
-                    f"\n[probe] WARNING: the episode reset {since} step(s) before "
-                    f"this probe (t={reset_steps[-1]*dt:.2f}s); the readings below "
-                    f"describe a freshly reset scene."
-                )
+            if end_t is not None:
+                print(f"\n[probe] WARNING: the episode ended at t={end_t:.2f}s; the readings "
+                      f"below describe a freshly reset scene.")
             _probe(u)
 
         if args.dump and beds:
@@ -787,7 +789,7 @@ def main(argv=None) -> int:
                 args.dump,
                 bed=np.stack(beds).astype("float32"),
                 pose=np.asarray(poses, dtype="float32"),
-                work_mask=u._work_mask[0].detach().cpu().numpy(),
+                work_mask=work_mask,
                 body_pos=np.stack(bodies).astype("float32"),
                 # Unicode, readable without allow_pickle.
                 body_names=np.asarray(u.robot.body_names, dtype="U64"),
@@ -809,8 +811,9 @@ def main(argv=None) -> int:
         print(f"[play] wrote {len(rows)} steps to {args.trace}")
 
         wall = time.perf_counter() - t_start
-        sps = steps / wall
-        print(f"[play] {steps} steps in {wall:.1f}s = {sps:.2f} env-steps/s "
+        ran = i + 1
+        sps = ran / wall
+        print(f"[play] {ran} steps in {wall:.1f}s = {sps:.2f} env-steps/s "
               f"at {u.num_envs} env(s), {sps * dt:.2f}x realtime")
 
         last = rows[-1]

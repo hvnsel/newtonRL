@@ -23,6 +23,7 @@ import math
 import re
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 import gymnasium as gym
@@ -60,7 +61,7 @@ def _parse(argv):
     p.add_argument("--run", default=None,
                    help="run directory under the task's logs/rsl_rl/<experiment>; default is the newest")
     p.add_argument("--checkpoint", default=None,
-                   help="model file inside the run; default is the highest-numbered")
+                   help="model file inside the run; default is the highest-numbered intact one")
     p.add_argument("--no_window", action="store_true", help="skip the viewer")
     p.add_argument("--park", action="store_true",
                    help="no policy: wheels commanded to zero, arms held at the start angle, drums still")
@@ -141,16 +142,24 @@ def _parse(argv):
 
 
 def _resolve_checkpoint(task: str, run: str | None, ckpt: str | None) -> Path:
-    """The named or newest run directory of the task's experiment, and the
-    named or highest-numbered model_*.pt in it."""
+    """The named model file in the named or newest run directory of the task's
+    experiment; by default the highest-numbered intact model_*.pt, newest run
+    first. A checkpoint that a run is still writing, or that a crash cut off,
+    is not yet a complete zip archive, and is skipped."""
     root = Path("logs/rsl_rl") / load_cfg_from_registry(task, "rsl_rl_cfg_entry_point").experiment_name
     if run is None:
-        run_dir = sorted((d for d in root.iterdir() if d.is_dir()), key=lambda d: d.stat().st_mtime)[-1]
+        runs = sorted((d for d in root.iterdir() if d.is_dir()), key=lambda d: d.stat().st_mtime, reverse=True)
     else:
-        run_dir = root / run
+        runs = [root / run]
     if ckpt is not None:
-        return run_dir / ckpt
-    return max(run_dir.glob("model_*.pt"), key=lambda p: int(p.stem.split("_")[-1]))
+        return runs[0] / ckpt
+    for run_dir in runs:
+        models = sorted(run_dir.glob("model_*.pt"), key=lambda p: int(p.stem.split("_")[-1]), reverse=True)
+        for path in models:
+            if zipfile.is_zipfile(path):
+                return path
+            print(f"[play] skipping {path}: not a complete checkpoint")
+    raise FileNotFoundError(f"no complete model_*.pt under {root}")
 
 
 def _load_policy(device: str, ckpt: Path):

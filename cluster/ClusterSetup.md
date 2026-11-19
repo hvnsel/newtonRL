@@ -14,6 +14,7 @@ cloned on PACE, e.g. `/storage/scratch1/5/<user>/luna/Luna_HiFi`.
 | `setup_pace.sh` | the one-time install |
 | `train_excavate.sbatch` | excavate, resuming from the newest checkpoint, up to `TOTAL` iterations |
 | `train_navigate.sbatch` | navigate from scratch |
+| `play_mpm.sbatch` | one episode of the RFT-trained policy on MPM soil, with video, trace and GIF |
 | `stubs/omni/client.py` | a stand-in for `omni.client`, whose wheel needs a newer glibc than PACE has; `env.sh` puts it on `PYTHONPATH` |
 
 ---
@@ -114,6 +115,31 @@ A change to `excavator.py`'s MJCF needs the asset rebuilt and copied again
 source <repo>/cluster/env.sh && cd $REPO
 ENVS=1024 ITERS=4000 sbatch cluster/train_navigate.sbatch
 ```
+
+## 8. The RFT policy on MPM soil
+
+Copy the asset (step 3) and an RFT checkpoint into the same path under
+`<repo>`, from the repo folder on the machine that trained it:
+
+```bash
+R=logs/rsl_rl/excavator_excavate_rft/<run>
+ssh <user>@login-phoenix.pace.gatech.edu mkdir -p <repo>/$R
+scp $R/model_<N>.pt <user>@login-phoenix.pace.gatech.edu:<repo>/$R/
+```
+
+Then submit from the repo root. The job plays one episode with the cut set
+to a -0.10 slope from 5 cm and writes `dig_mpm_4cm.{csv,npz,gif,mp4}` there;
+every job appends to `dig_mpm_play.log`.
+
+```bash
+source <repo>/cluster/env.sh && cd $REPO
+sbatch cluster/play_mpm.sbatch
+VOXEL=0.03 sbatch cluster/play_mpm.sbatch    # finer grid, dig_mpm_3cm.*
+VIDEO=0 sbatch cluster/play_mpm.sbatch       # if the node cannot render the video
+```
+
+MPM's drum contact reaches half a voxel beyond the drum: 2 cm on the 4 cm
+grid, 4 cm on the 8 cm default, which the policy never met in training.
 
 ---
 

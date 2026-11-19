@@ -622,6 +622,9 @@ def main(argv=None) -> int:
                 lookat=(1.6, 0.0, 0.3) if args.video else (0.5, 0.0, 0.3),
             )
         ]
+        # The RFT soil has no particles; its env draws the height grid instead.
+        if hasattr(env_cfg, "soil_marker"):
+            env_cfg.soil_marker = True
     if args.video:
         from isaaclab.envs.utils.video_recorder_cfg import VideoRecorderCfg
 

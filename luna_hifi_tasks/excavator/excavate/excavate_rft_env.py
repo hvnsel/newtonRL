@@ -5,15 +5,20 @@
 # time the actions are applied: the soil's loads on both drums go onto the
 # rotor and shroud bodies as world-frame wrenches, then the soil inside the
 # vane-tip circles moves from the grid into the drums. Observations, rewards
-# and resets are the excavate env's.
+# and resets are the excavate env's. With soil_marker the grid is drawn in the
+# viewer, one box per cell.
 
 from __future__ import annotations
 
 import re
 
 import torch
-from isaaclab_newton.physics import NewtonBuilderCfg
 from newton import ShapeFlags
+
+import isaaclab.sim as sim_utils
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+
+from isaaclab_newton.physics import NewtonBuilderCfg
 
 from ..excavator_cfg import EXCAVATOR_PRIM_REGEX, LUNAR_G
 from ..excavator_env_base import ExcavatorEnvBase
@@ -24,6 +29,9 @@ from .excavate_env_cfg import BED_FLOOR_Z
 # The arms and everything on them. Their colliders are off: the drums and
 # shrouds meet the soil through rft.py, and only the wheels touch the ground.
 ARM_COLLIDERS = EXCAVATOR_PRIM_REGEX + r"/Geometry/chassis/arm_(front|rear)_body/.*"
+
+SOIL_RGB = (0.62, 0.55, 0.45)    # as play_dig colours MPM particles
+CUT_RGB = (0.36, 0.30, 0.24)     # cells the drums have cut into
 
 
 class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
@@ -38,6 +46,11 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         for i in arm:
             builder.shape_flags[i] &= ~(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
         print(f"[excavate] collisions off for {len(arm) // self.num_envs} arm shapes per env")
+        if self.cfg.soil_marker:
+            # The ground sits at bed_top, over the cut: hide it. _show_soil draws the soil.
+            for i, label in enumerate(builder.shape_label):
+                if label.startswith(self.cfg.scene.ground.prim_path):
+                    builder.shape_flags[i] &= ~ShapeFlags.VISIBLE
 
     def _init_soil(self) -> None:
         c, dev = self.cfg, self.device
@@ -55,6 +68,7 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         self._capacity = torch.full((self.num_envs, 2), c.drum_capacity_kg, device=dev)
         # Front rotor, rear rotor, front shroud, rear shroud.
         self._tool_ids = self._drum_body_ids + self._shroud_body_ids
+        self._soil_marker = self._make_soil_marker() if c.soil_marker else None
         print(
             f"[excavate] soil: rft.py, density {c.soil_density:.0f} kg/m3, friction {c.soil_friction:.2f} "
             f"-> stress scale {self._rft.zeta:.0f} N/m3; height grid {c.bed_grid_nx} x {c.bed_grid_ny} "
@@ -87,9 +101,35 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
             self._bed_grid, self._fill_kg, self._cells, centre, rft.drum_axis(quat[:, 2:]),
             self._capacity, self._rft,
         )
+        if self._soil_marker is not None:
+            self._show_soil()
 
     def _soil(self) -> tuple[torch.Tensor, torch.Tensor]:
         return self._bed_grid, self._fill_kg
 
     def _relay_soil(self, env_ids: torch.Tensor) -> None:
         self._bed_grid[env_ids] = self._fresh_bed
+
+    # --- soil in the viewer ---
+
+    def _make_soil_marker(self) -> VisualizationMarkers:
+        look = sim_utils.PreviewSurfaceCfg
+        return VisualizationMarkers(VisualizationMarkersCfg(
+            prim_path="/Visuals/soil",
+            markers={
+                "soil": sim_utils.CuboidCfg(size=(1.0, 1.0, 1.0), visual_material=look(diffuse_color=SOIL_RGB)),
+                "cut": sim_utils.CuboidCfg(size=(1.0, 1.0, 1.0), visual_material=look(diffuse_color=CUT_RGB)),
+            },
+        ))
+
+    def _show_soil(self) -> None:
+        """Every grid cell as a box from the floor to its height, darker where cut."""
+        top = self._bed_grid                                              # (E, ny, nx)
+        o = self.scene.env_origins[:, None, None]                         # (E, 1, 1, 3)
+        centre = torch.cat([self._cells + o[..., :2], (o[..., 2] + 0.5 * (top + BED_FLOOR_Z)).unsqueeze(-1)], -1)
+        side = torch.full_like(top, self.cfg.voxel_size)
+        self._soil_marker.visualize(
+            translations=centre.reshape(-1, 3),
+            scales=torch.stack([side, side, top - BED_FLOOR_Z], -1).reshape(-1, 3),
+            marker_indices=(top < self._fresh_bed - 1e-3).reshape(-1).int(),
+        )

@@ -12,6 +12,8 @@
 # Trace columns: removal_kg, payload_kg and cut_total_kg are the env's mass
 # balance; below_kg is soil taken from under the plane. The torques are the
 # front arm's and front drum's joints and the sum over the wheels, N.m.
+# soil_fx_n and soil_fz_n are the soil's force on the front drum (rotor and
+# shroud), world frame, and drum_depth_mm its vane tips below the bed surface.
 
 from __future__ import annotations
 
@@ -258,6 +260,33 @@ def _attitude(u) -> None:
               f"{'BELOW' if bot < surf else 'above'} the bed")
     wz = [bz[i] for i in want if "wheel" in bl[i]]
     print(f"[attitude]   wheel z spread {1000 * (max(wz) - min(wz)):.0f} mm")
+
+
+def _front_drum_soil_force(u) -> np.ndarray:
+    """The soil's force on env 0's front drum (rotor and shroud), world frame, N.
+
+    RFT: the loads rft.py applied. MPM: the soil's contact impulses on the two
+    bodies over the last physics step (the MPM entry steps once per physics
+    step), over its dt.
+    """
+    if hasattr(u, "_soil_force"):
+        return u._soil_force[0, 0].detach().cpu().numpy()
+    from luna_hifi_tasks.excavator.excavate.excavate_env_cfg import MPM_ENTRY
+
+    coupled = u.sim.physics_manager._solver
+    solver = coupled.solver(MPM_ENTRY)
+    impulse, _, ids = solver.collect_collider_impulses(coupled.entry_state(MPM_ENTRY, "current"))
+    impulse, ids = impulse.numpy(), ids.numpy()
+    body = solver.collider_body_index.numpy()
+    env0 = u.scene.env_prim_paths[0] + "/"
+    labels = list(solver.model.body_label)
+    front = [b for b, label in enumerate(labels)
+             if label.startswith(env0) and label.rsplit("/", 1)[-1] in ("drum_front_body", "shroud_front_body")]
+    if len(front) != 2:
+        raise RuntimeError(f"front drum and shroud not found among the MPM entry's bodies: {labels}")
+    ok = (ids >= 0) & (ids < body.shape[0])
+    on_front = np.isin(body[ids[ok]], front)
+    return impulse[ok][on_front].sum(axis=0) / u.physics_dt
 
 
 def _probe(u) -> None:
@@ -745,6 +774,8 @@ def main(argv=None) -> int:
 
             root = u.robot.data.root_pos_w.torch
             tau = u.robot.data.applied_torque.torch[0]
+            soil_f = _front_drum_soil_force(u)
+            drum_z = float(u.robot.data.body_link_pos_w.torch[0, u._drum_body_ids[0], 2] - u.scene.env_origins[0, 2])
             below = scalar("_below_prev") * soil
             removal = scalar("_removed_kg")
             rows.append({
@@ -761,6 +792,9 @@ def main(argv=None) -> int:
                 "arm_torque_nm": round(float(tau[u._arm_ids[0]]), 1),
                 "drum_torque_nm": round(float(tau[u._drum_ids[0]]), 1),
                 "wheel_torque_nm": round(float(tau[u._wheel_ids].sum()), 1),
+                "soil_fx_n": round(float(soil_f[0]), 1),
+                "soil_fz_n": round(float(soil_f[2]), 1),
+                "drum_depth_mm": round(1000.0 * (u.cfg.bed_top - (drum_z - ROTOR_TIP_R)), 1),
             })
 
             if args.dump and i % args.dump_every == 0:
@@ -839,9 +873,13 @@ def main(argv=None) -> int:
               f"(peak {peak:.2f}), hole {last['below_kg']} kg, "
               f"particle_max {last['particle_max_m']} m")
         moving = rows[u._settle_steps + u._ramp_steps:] or rows
-        mean = {k: sum(r[k] for r in moving) / len(moving) for k in ("arm_torque_nm", "drum_torque_nm", "wheel_torque_nm")}
+        keys = ("arm_torque_nm", "drum_torque_nm", "wheel_torque_nm", "soil_fx_n", "soil_fz_n", "drum_depth_mm", "advance_mps")
+        mean = {k: sum(r[k] for r in moving) / len(moving) for k in keys}
         print(f"[play] torque after the ramp, mean: front arm {mean['arm_torque_nm']:+.1f}, "
               f"front drum {mean['drum_torque_nm']:+.1f}, wheels {mean['wheel_torque_nm']:+.1f} N.m")
+        print(f"[play] front drum after the ramp, mean: soil force x {mean['soil_fx_n']:+.1f} N, "
+              f"z {mean['soil_fz_n']:+.1f} N; vane tips {mean['drum_depth_mm']:.1f} mm deep; "
+              f"advance {mean['advance_mps']:.3f} m/s")
         rem, pay = last["removal_kg"], peak
         if rem < 1.0:
             verdict = "the work area was barely touched"

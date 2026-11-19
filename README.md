@@ -157,8 +157,9 @@ pkill -f Luna-Excavator-Navigate
 - **`MPMParticleMaterialCfg` fields:** `density`, `young_modulus`,
   `poisson_ratio`, `viscosity`, `friction`, `damping`, `yield_pressure`,
   `tensile_yield_ratio`, `yield_stress`, `hardening`, `dilatancy`. The yield
-  surface is `tau_max(p) = yield_stress + friction * (p - p_min)`: `friction`
-  is about tan(phi) and `yield_stress` is cohesion in Pa.
+  surface is `sqrt(J2) = yield_stress + friction * (p - p_min)`. With no
+  dilatancy and in plane strain that is Mohr-Coulomb with `friction` = sin(phi)
+  and `yield_stress` = c cos(phi), in Pa.
 
 ## Troubleshooting
 

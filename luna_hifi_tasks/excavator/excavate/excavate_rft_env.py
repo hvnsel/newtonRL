@@ -91,6 +91,7 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
             self._patches, centre, lin[:, 2:], quat[:, 2:], ang[:, 2:], quat[:, :2], ang[:, :2],
             self._bed_grid, self._fill_kg, self._capacity, self._rft,
         )
+        self._soil_force = rotor_f + shroud_f                    # (E, 2, 3) on each drum, for play_dig
         self.robot.instantaneous_wrench_composer.set_forces_and_torques_index(
             forces=torch.cat([rotor_f, shroud_f], dim=1),
             torques=torch.cat([rotor_t, shroud_t], dim=1),

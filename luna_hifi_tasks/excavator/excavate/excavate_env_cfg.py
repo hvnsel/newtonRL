@@ -80,8 +80,13 @@ MPM_VISUAL_COLOR = (0.62, 0.55, 0.45)
 # Env-local z of the hard floor under the bed.
 BED_FLOOR_Z = 0.0
 
-# friction is ~tan(phi), yield_pressure caps compression [Pa]. Overwritten
-# from the soil_* fields in __post_init__.
+# The regolith both soils stand for: near-surface lunar values. Apollo puts the
+# friction angle at 30-50 deg and the cohesion at 0.1-1 kPa.
+REGOLITH_FRICTION_ANGLE = math.radians(40.0)
+REGOLITH_COHESION = 500.0                    # Pa, Mohr-Coulomb c
+
+# yield_pressure caps compression [Pa]. __post_init__ overwrites the values
+# from the soil_* fields.
 SOIL_MATERIAL = MPMParticleMaterialCfg(
     density=1800.0,
     friction=0.84,
@@ -281,10 +286,12 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     mpm_separate_worlds: bool = True
 
     # --- regolith ---
-    # Yield surface: sqrt(J2) <= soil_cohesion + soil_friction * p.
-    soil_density: float = 1500.0             # kg/m3
-    soil_friction: float = 0.84              # tan(40 deg)
-    soil_cohesion: float = 0.0               # yield_stress, Pa
+    # Newton's MPM yields at sqrt(J2) = soil_cohesion + soil_friction * p, with no
+    # dilatancy. In plane strain, as across the drums' wide cut, that is
+    # Mohr-Coulomb with sin(phi) = soil_friction and c cos(phi) = soil_cohesion.
+    soil_density: float = 1500.0                                                   # kg/m3
+    soil_friction: float = math.sin(REGOLITH_FRICTION_ANGLE)                       # 0.643
+    soil_cohesion: float = REGOLITH_COHESION * math.cos(REGOLITH_FRICTION_ANGLE)   # yield_stress, 383 Pa
     soil_yield_pressure: float = 1.0e12      # Pa, compression cap
     soil_young_modulus: float = 1.0e7        # Pa
     # Solid fraction below which the solver drops cohesion; 0 disables it.
@@ -803,10 +810,9 @@ class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     scene: ExcavateRftSceneCfg = ExcavateRftSceneCfg(num_envs=256, env_spacing=5.12, replicate_physics=True)
     # No sparse grid to size.
     max_num_envs = 4096
-    # Mohr-Coulomb cohesion for rft.py, Pa: mid-range of the Apollo estimate for
-    # the near-surface regolith, 0.1-1 kPa. (In the MPM task this field is the
-    # Drucker-Prager yield stress.)
-    soil_cohesion: float = 500.0
+    # rft.py takes tan(phi) and the Mohr-Coulomb cohesion.
+    soil_friction: float = math.tan(REGOLITH_FRICTION_ANGLE)    # 0.839
+    soil_cohesion: float = REGOLITH_COHESION                    # Pa
     # Draw the soil grid in the viewer, and hide the ground's grid that would
     # cover the cut. play_dig turns it on for a window or a video.
     soil_marker: bool = False

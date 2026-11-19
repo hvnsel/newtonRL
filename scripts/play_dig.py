@@ -51,6 +51,12 @@ from luna_hifi_tasks.excavator.excavator_cfg import MAX_DRUM_SPEED, MAX_WHEEL_SP
 from luna_hifi_tasks.excavator.mdp.rewards import body_to_world_xy, world_to_body_xy
 
 TASK = "Luna-Excavator-Excavate"
+# What a policy is commanded and how its drum-load reading is scaled; --policy_task
+# copies these from the policy's task onto the task it runs in.
+POLICY_FIELDS = (
+    "episode_length_s", "cut_depth_range", "cut_gradient_max", "cut_ramp_fraction", "dig_cut",
+    "target_load_bore_fraction",
+)
 
 
 def _parse(argv):
@@ -60,6 +66,9 @@ def _parse(argv):
     p.add_argument("--seconds", type=float, default=25.0)
     p.add_argument("--run", default=None,
                    help="run directory under the task's logs/rsl_rl/<experiment>; default is the newest")
+    p.add_argument("--policy_task", default=None,
+                   help="run the newest complete checkpoint of this task instead, with its command, tool "
+                        "and drum-load settings: e.g. the RFT policy on MPM soil")
     p.add_argument("--checkpoint", default=None,
                    help="model file inside the run; default is the highest-numbered intact one")
     p.add_argument("--no_window", action="store_true", help="skip the viewer")
@@ -559,7 +568,7 @@ def main(argv=None) -> int:
     elif args.dig:
         print("[play] scripted pass, no policy")
     else:
-        ckpt = _resolve_checkpoint(args.task, args.run, args.checkpoint)
+        ckpt = _resolve_checkpoint(args.policy_task or args.task, args.run, args.checkpoint)
         print(f"[play] checkpoint {ckpt}")
 
     problem = usd_status()
@@ -568,6 +577,11 @@ def main(argv=None) -> int:
         return 2
 
     env_cfg, _ = resolve_task_config(args.task, "")
+    if args.policy_task:
+        source = load_cfg_from_registry(args.policy_task, "env_cfg_entry_point")
+        for field in POLICY_FIELDS:
+            setattr(env_cfg, field, getattr(source, field))
+        print(f"[play] policy from {args.policy_task}: " + ", ".join(f"{f} {getattr(source, f)}" for f in POLICY_FIELDS))
     env_cfg.scene.num_envs = args.num_envs
     # The sparse grid is sized from max_num_envs; __post_init__ re-derives it below.
     env_cfg.max_num_envs = args.num_envs

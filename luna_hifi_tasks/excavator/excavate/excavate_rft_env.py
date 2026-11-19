@@ -56,7 +56,7 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         c, dev = self.cfg, self.device
         self._rft = rft.Soil(
             density=c.soil_density, friction=c.soil_friction, gravity=LUNAR_G,
-            cell=c.voxel_size, lower=c.bed_grid_lower, cohesion=c.soil_cohesion,
+            cell=c.voxel_size, lower=c.bed_grid_lower, cohesion=c.soil_cohesion, scale=c.rft_scale,
         )
         self._patches = rft.drum_patches(device=dev)
         self._cells = rft.cell_centres(self._rft, c.bed_grid_nx, c.bed_grid_ny, device=dev)
@@ -71,7 +71,7 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         self._soil_marker = self._make_soil_marker() if c.soil_marker else None
         print(
             f"[excavate] soil: rft.py, density {c.soil_density:.0f} kg/m3, friction {c.soil_friction:.2f} "
-            f"-> stress scale {self._rft.zeta:.0f} N/m3, cohesion {c.soil_cohesion:.0f} Pa "
+            f"-> stress scale {c.rft_scale:.2f} Kp rho g = {self._rft.zeta:.0f} N/m3, cohesion {c.soil_cohesion:.0f} Pa "
             f"-> +{self._rft.cohesion_depth:.3f} m depth; height grid {c.bed_grid_nx} x {c.bed_grid_ny} "
             f"@ {c.voxel_size:.3f} m; drums hold {c.drum_capacity_kg:.1f} kg, target load {c.target_load_kg:.1f} kg, "
             f"cut ref {c.cut_volume_ref:.4f} m3"

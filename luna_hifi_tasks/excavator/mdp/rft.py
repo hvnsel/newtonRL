@@ -66,6 +66,7 @@ class Soil:
     cell: float = 0.04                          # height-grid cell, m
     lower: tuple[float, float] = (0.0, 0.0)     # env-local (x, y) of the grid's low corner
     cohesion: float = 0.0                       # Pa, Mohr-Coulomb c
+    scale: float = 6.15                         # stress per Kp rho g; see zeta
 
     @property
     def kp(self) -> float:
@@ -74,10 +75,10 @@ class Soil:
 
     @property
     def zeta(self) -> float:
-        """RFT stress scale, N/m3: 6.15 * Kp * density * gravity. 6.15 is what
-        the three glass-sphere beds of Li et al. measure (5.5, 6.3, 6.6), from
-        their scales, bulk densities and angles of repose."""
-        return 6.15 * self.kp * self.density * self.gravity
+        """RFT stress scale, N/m3: scale * Kp * density * gravity. The default
+        6.15 is what the three glass-sphere beds of Li et al. measure (5.5, 6.3,
+        6.6), from their scales, bulk densities and angles of repose."""
+        return self.scale * self.kp * self.density * self.gravity
 
     @property
     def cohesion_depth(self) -> float:

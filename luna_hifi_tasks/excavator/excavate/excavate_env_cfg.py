@@ -813,6 +813,10 @@ class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     # rft.py takes tan(phi) and the Mohr-Coulomb cohesion.
     soil_friction: float = math.tan(REGOLITH_FRICTION_ANGLE)    # 0.839
     soil_cohesion: float = REGOLITH_COHESION                    # Pa
+    # RFT stress per Kp rho g: twice Li et al.'s glass-bead 6.15. On the 4 cm MPM
+    # grid the scripted dig met about twice rft.py's force at the same depth,
+    # counting MPM's 2 cm contact band.
+    rft_scale: float = 12.3
     # Draw the soil grid in the viewer, and hide the ground's grid that would
     # cover the cut. play_dig turns it on for a window or a video.
     soil_marker: bool = False

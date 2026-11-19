@@ -46,6 +46,7 @@ from luna_hifi_tasks.excavator.excavator import (
     WHEEL_RADIUS,
 )
 from luna_hifi_tasks.excavator.excavator_cfg import MAX_DRUM_SPEED, MAX_WHEEL_SPEED, usd_status
+from luna_hifi_tasks.excavator.mdp.rewards import body_to_world_xy, world_to_body_xy
 
 TASK = "Luna-Excavator-Excavate"
 
@@ -100,6 +101,11 @@ def _parse(argv):
                    help="no policy: a straight pass at --dig_speed once the env has lowered the tool")
     p.add_argument("--straight", action="store_true",
                    help="zero the spawn yaw, xy, arm and gradient jitter")
+    p.add_argument("--slope", type=float, default=None,
+                   help="this run's cut plane, rise over run along the pass and level across it: "
+                        "+ rises (the cut gets shallower), - falls (deeper); the RFT task trains on +-0.10")
+    p.add_argument("--depth", type=float, default=None,
+                   help="this run's cut depth where the front drum meets soil [m]; the RFT task trains on 0.03 to 0.08")
     p.add_argument("--dig_speed", type=float, default=0.15,
                    help="forward command during --dig, a fraction of MAX_WHEEL_SPEED; negative backs up")
     p.add_argument("--arm_action", type=float, default=0.0,
@@ -753,6 +759,16 @@ def main(argv=None) -> int:
         rows: list[dict] = []
         obs, _ = env.reset()
         actor_obs = obs["policy"]
+        # This episode's cut command. Set here, before the settle places the plane
+        # under the surface; the machine does not move before the ramp is done.
+        if args.slope is not None:
+            grad = torch.tensor([[args.slope, 0.0]], device=u.device).expand(u.num_envs, 2)
+            u._target_grad[:] = body_to_world_xy(grad, u._work_yaw)
+        if args.depth is not None:
+            u._target_depth[:] = args.depth
+        g = world_to_body_xy(u._target_grad, u._work_yaw)[0]
+        print(f"[play] cut command: {100 * scalar('_target_depth'):.1f} cm deep where the drum meets soil, "
+              f"slope {float(g[0]):+.3f} along the pass, {float(g[1]):+.3f} across")
         # This episode's work area; a reset marks a new one.
         work_mask = u._work_mask[0].detach().cpu().numpy()
 

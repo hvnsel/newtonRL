@@ -134,7 +134,7 @@ every job appends to `dig_mpm_play.log`.
 ```bash
 source <repo>/cluster/env.sh && cd $REPO
 sbatch cluster/play_mpm.sbatch
-VOXEL=0.03 sbatch cluster/play_mpm.sbatch    # finer grid, dig_mpm_3cm.*
+VOXEL=0.03 sbatch -t 1:15:00 cluster/play_mpm.sbatch    # finer grid, dig_mpm_3cm.*
 VIDEO=0 sbatch cluster/play_mpm.sbatch       # if the node cannot render the video
 ```
 
@@ -145,7 +145,7 @@ grid, 4 cm on the 8 cm default, which the policy never met in training.
 
 ## Notes
 
-- Both sbatch files ask for an L40S (`--gres=gpu:l40s:1`).
+- The train sbatch files ask for an L40S (`--gres=gpu:l40s:1`); `play_mpm.sbatch` takes any GPU.
   `sinfo -o "%.20P %.18G" | grep -i gpu` lists the other GPU types;
   `sbatch --gres=gpu:<type>:1 ...` overrides it per job.
 - A shell that runs anything from this repo by hand needs

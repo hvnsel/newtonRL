@@ -3,9 +3,9 @@
 #SBATCH -q inferno
 #SBATCH -J luna-play-mpm
 #SBATCH -N 1 --ntasks-per-node=4
-#SBATCH --gres=gpu:l40s:1
+#SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH -t 4:00:00
+#SBATCH -t 0:45:00
 #SBATCH -o dig_mpm_play.log
 #SBATCH --open-mode=append
 #
@@ -13,10 +13,11 @@
 # slope from 5 cm: trace, heightmap dump, GIF and video in the repo root, named
 # by the MPM grid (dig_mpm_4cm.*). Needs a complete checkpoint under
 # logs/rsl_rl/excavator_excavate_rft/. Submit from the repo root; every job
-# appends to ./dig_mpm_play.log.
+# appends to ./dig_mpm_play.log. Any GPU type: one env fits in 24 GB. About
+# 15 minutes of a 45-minute limit on the 4 cm grid.
 #
 #   cd $REPO && sbatch cluster/play_mpm.sbatch
-#   VOXEL=0.03 sbatch cluster/play_mpm.sbatch     # finer grid: contact band 1.5 cm, ~2.4x the particles
+#   VOXEL=0.03 sbatch -t 1:15:00 cluster/play_mpm.sbatch   # finer grid: contact band 1.5 cm, ~2.4x the particles
 #   VIDEO=0 sbatch cluster/play_mpm.sbatch        # no video, if the node cannot render headless
 
 set -u

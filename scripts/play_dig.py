@@ -10,7 +10,8 @@
 #   bash workstation/train.sh -p scripts/play_dig.py --no_window --trace dig.csv
 #
 # Trace columns: removal_kg, payload_kg and cut_total_kg are the env's mass
-# balance; below_kg is soil taken from under the plane.
+# balance; below_kg is soil taken from under the plane. The torques are the
+# front arm's and front drum's joints and the sum over the wheels, N.m.
 
 from __future__ import annotations
 
@@ -743,6 +744,7 @@ def main(argv=None) -> int:
                 break
 
             root = u.robot.data.root_pos_w.torch
+            tau = u.robot.data.applied_torque.torch[0]
             below = scalar("_below_prev") * soil
             removal = scalar("_removed_kg")
             rows.append({
@@ -756,6 +758,9 @@ def main(argv=None) -> int:
                 "particle_max_m": round(scalar("_particle_max_m"), 2),
                 "shape_done": int(scalar("_shape_done")),
                 "escaped": int(scalar("_escaped")),
+                "arm_torque_nm": round(float(tau[u._arm_ids[0]]), 1),
+                "drum_torque_nm": round(float(tau[u._drum_ids[0]]), 1),
+                "wheel_torque_nm": round(float(tau[u._wheel_ids].sum()), 1),
             })
 
             if args.dump and i % args.dump_every == 0:
@@ -833,6 +838,10 @@ def main(argv=None) -> int:
         print(f"[play] end: removal {last['removal_kg']} kg, payload {last['payload_kg']} kg "
               f"(peak {peak:.2f}), hole {last['below_kg']} kg, "
               f"particle_max {last['particle_max_m']} m")
+        moving = rows[u._settle_steps + u._ramp_steps:] or rows
+        mean = {k: sum(r[k] for r in moving) / len(moving) for k in ("arm_torque_nm", "drum_torque_nm", "wheel_torque_nm")}
+        print(f"[play] torque after the ramp, mean: front arm {mean['arm_torque_nm']:+.1f}, "
+              f"front drum {mean['drum_torque_nm']:+.1f}, wheels {mean['wheel_torque_nm']:+.1f} N.m")
         rem, pay = last["removal_kg"], peak
         if rem < 1.0:
             verdict = "the work area was barely touched"

@@ -803,6 +803,10 @@ class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     scene: ExcavateRftSceneCfg = ExcavateRftSceneCfg(num_envs=256, env_spacing=5.12, replicate_physics=True)
     # No sparse grid to size.
     max_num_envs = 4096
+    # Mohr-Coulomb cohesion for rft.py, Pa: mid-range of the Apollo estimate for
+    # the near-surface regolith, 0.1-1 kPa. (In the MPM task this field is the
+    # Drucker-Prager yield stress.)
+    soil_cohesion: float = 500.0
     # Draw the soil grid in the viewer, and hide the ground's grid that would
     # cover the cut. play_dig turns it on for a window or a video.
     soil_marker: bool = False

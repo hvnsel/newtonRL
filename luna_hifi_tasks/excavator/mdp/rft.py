@@ -8,6 +8,11 @@
 # The stress per metre of depth depends on the patch's tilt and its direction
 # of motion, times one scale for the soil.
 #
+# RFT is for dry, cohesionless grains. Cohesion c is added the classical way: a
+# cohesive soil behaves like a cohesionless one under an extra pressure, which
+# here is an extra depth 2c / (sqrt(Kp) rho g) for every patch in the soil. It
+# turns Rankine's passive pressure Kp rho g z into Kp rho g z + 2c sqrt(Kp).
+#
 # A drum is three sets of patches:
 #   wall     the shroud's outer surface. Loaded where it faces its own motion.
 #   opening  the gap in the wall. Soil passes through it into the drum, so it
@@ -60,15 +65,24 @@ class Soil:
     gravity: float = 1.62                       # m/s2
     cell: float = 0.04                          # height-grid cell, m
     lower: tuple[float, float] = (0.0, 0.0)     # env-local (x, y) of the grid's low corner
+    cohesion: float = 0.0                       # Pa, Mohr-Coulomb c
+
+    @property
+    def kp(self) -> float:
+        """Passive earth pressure coefficient, tan^2(45 deg + phi/2)."""
+        return math.tan(0.25 * math.pi + 0.5 * math.atan(self.friction)) ** 2
 
     @property
     def zeta(self) -> float:
-        """RFT stress scale, N/m3: 6.15 * Kp * density * gravity, where
-        Kp = tan^2(45 deg + phi/2) is the passive earth pressure coefficient.
-        6.15 is what the three glass-sphere beds of Li et al. measure (5.5,
-        6.3, 6.6), from their scales, bulk densities and angles of repose."""
-        kp = math.tan(0.25 * math.pi + 0.5 * math.atan(self.friction)) ** 2
-        return 6.15 * kp * self.density * self.gravity
+        """RFT stress scale, N/m3: 6.15 * Kp * density * gravity. 6.15 is what
+        the three glass-sphere beds of Li et al. measure (5.5, 6.3, 6.6), from
+        their scales, bulk densities and angles of repose."""
+        return 6.15 * self.kp * self.density * self.gravity
+
+    @property
+    def cohesion_depth(self) -> float:
+        """Extra depth that stands in for cohesion, m: 2c / (sqrt(Kp) * density * gravity)."""
+        return 2.0 * self.cohesion / (math.sqrt(self.kp) * self.density * self.gravity)
 
 
 class Patches(NamedTuple):
@@ -208,6 +222,7 @@ def drum_loads(
         strip = (arm * axis[..., None, :]).sum(-1, keepdim=True) * axis[..., None, :]
         surface = height_at(height, soil, (centre + ahead)[..., None, :2] + strip[..., :2])
         depth = (surface - centre[..., None, 2] - arm[..., 2]).clamp(min=0.0)
+        depth = torch.where(depth > 0.0, depth + soil.cohesion_depth, depth)
         return arm, normal, vel, patch_force(normal, vel, p.area * depth, u[..., None, :], soil.zeta)
 
     arm, normal, vel, force = loads(wall, shroud_quat, shroud_ang)

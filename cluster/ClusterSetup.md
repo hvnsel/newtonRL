@@ -148,7 +148,9 @@ grid, 4 cm on the 8 cm default, which the policy never met in training.
 
 ## Notes
 
-- The train sbatch files ask for an L40S (`--gres=gpu:l40s:1`); `play_mpm.sbatch` takes any GPU.
+- All three sbatch files ask for an L40S (`--gres=gpu:l40s:1`). The venv's torch
+  (CUDA 12.8) has no kernels for the V100s: a job there stops with `no kernel
+  image is available for execution on the device`.
   `sinfo -o "%.20P %.18G" | grep -i gpu` lists the other GPU types;
   `sbatch --gres=gpu:<type>:1 ...` overrides it per job.
 - A shell that runs anything from this repo by hand needs

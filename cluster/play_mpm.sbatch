@@ -3,7 +3,7 @@
 #SBATCH -q inferno
 #SBATCH -J luna-play-mpm
 #SBATCH -N 1 --ntasks-per-node=4
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:l40s:1
 #SBATCH --mem=64G
 #SBATCH -t 0:45:00
 #SBATCH -o dig_mpm_play.log
@@ -13,8 +13,9 @@
 # slope from 5 cm: trace, heightmap dump, GIF and video in the repo root, named
 # by the MPM grid (dig_mpm_4cm.*). Needs a complete checkpoint under
 # logs/rsl_rl/excavator_excavate_rft/. Submit from the repo root; every job
-# appends to ./dig_mpm_play.log. Any GPU type: one env fits in 24 GB. About
-# 15 minutes of a 45-minute limit on the 4 cm grid.
+# appends to ./dig_mpm_play.log. About 15 minutes of a 45-minute limit on the
+# 4 cm grid. An L40S, as for training: the venv's torch (CUDA 12.8) has no
+# kernels for PACE's V100s; --gres=gpu:a100:1 or gpu:h100:1 should also work.
 #
 #   cd $REPO && sbatch cluster/play_mpm.sbatch
 #   VOXEL=0.03 sbatch -t 1:15:00 cluster/play_mpm.sbatch   # finer grid: contact band 1.5 cm, ~2.4x the particles
@@ -27,8 +28,8 @@ source "$SLURM_SUBMIT_DIR/cluster/env.sh"
 cd "$REPO"
 
 NAME="dig_mpm_$(awk "BEGIN { print int($VOXEL * 100 + 0.5) }")cm"
-echo "=== job $SLURM_JOB_ID on $(hostname), $(date): MPM grid $VOXEL m -> $NAME.* ==="
-nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
+GPU="$(nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader | head -1)"
+echo "=== job $SLURM_JOB_ID on $(hostname) ($GPU), $(date): MPM grid $VOXEL m -> $NAME.* ==="
 
 RECORD=()
 if [ "$VIDEO" = 1 ]; then

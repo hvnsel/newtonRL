@@ -33,7 +33,8 @@ git -C "$ISAACLAB" checkout --quiet "$ISAACLAB_COMMIT"
 uv pip install --python "$PY" --extra-index-url https://download.pytorch.org/whl/cu128 \
   "torch==2.11.0+cu128" "torchvision==0.26.0+cu128"
 
-uv pip install --python "$PY" -e "$REPO"
+# With the video extra (moviepy), which play --video and play_mpm.sbatch record through.
+uv pip install --python "$PY" -e "$REPO[video]"
 
 # Newton's soil solver for excavate: four files from 1.7.0
 # (patches/newton_1.7.0/) and the colour-buffer fix, checked file by file.

@@ -138,6 +138,9 @@ VOXEL=0.03 sbatch -t 1:15:00 cluster/play_mpm.sbatch    # finer grid, dig_mpm_3c
 VIDEO=0 sbatch cluster/play_mpm.sbatch       # if the node cannot render the video
 ```
 
+The video needs moviepy in the venv; `setup_pace.sh` installs it. An install
+from before that gets it with `uv pip install --python $PY -e "$REPO[video]"`.
+
 MPM's drum contact reaches half a voxel beyond the drum: 2 cm on the 4 cm
 grid, 4 cm on the 8 cm default, which the policy never met in training.
 

@@ -133,6 +133,9 @@ def _parse(argv):
                         "the sign of DIG_DRUM_SIGN loads")
     p.add_argument("--inlet_tilt", type=float, default=None,
                    help="override dig_inlet_tilt: inlet angle off straight down [rad]")
+    p.add_argument("--intake", type=float, default=None, help="RFT task: override drum_intake [kg/s]")
+    p.add_argument("--repose", type=float, default=None,
+                   help="RFT task: override soil_repose [deg], which shoves the soil a drum leaves")
     p.add_argument("--dig_ramp", type=float, default=None,
                    help="override dig_ramp_seconds: time to lower the arms and spin the drums up")
     p.add_argument("--limp", action="store_true",
@@ -607,7 +610,8 @@ def main(argv=None) -> int:
         print(f"[play] soil_cohesion set to {args.cohesion} Pa")
 
     for value, field, scale in ((args.cut, "dig_cut", 1.0), (args.drum, "dig_drum_speed", MAX_DRUM_SPEED),
-                                (args.inlet_tilt, "dig_inlet_tilt", 1.0), (args.dig_ramp, "dig_ramp_seconds", 1.0)):
+                                (args.inlet_tilt, "dig_inlet_tilt", 1.0), (args.dig_ramp, "dig_ramp_seconds", 1.0),
+                                (args.intake, "drum_intake", 1.0), (args.repose, "soil_repose", 1.0)):
         if value is not None:
             setattr(env_cfg, field, value * scale)
             print(f"[play] {field} set to {value * scale:g}")

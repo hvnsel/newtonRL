@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 
 import torch
@@ -66,6 +67,7 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         self._rft = rft.Soil(
             density=c.soil_density, friction=c.soil_friction, gravity=LUNAR_G,
             cell=c.voxel_size, lower=c.bed_grid_lower, cohesion=c.soil_cohesion, scale=c.rft_scale,
+            intake=c.drum_intake, repose=math.tan(math.radians(c.soil_repose)),
         )
         self._patches = rft.drum_patches(device=dev)
         self._cells = rft.cell_centres(self._rft, c.bed_grid_nx, c.bed_grid_ny, device=dev)
@@ -75,6 +77,9 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         self._fresh_bed = torch.where(on_bed, c.bed_top, BED_FLOOR_Z)
         self._bed_grid[:] = self._fresh_bed
         self._capacity = torch.full((self.num_envs, 2), c.drum_capacity_kg, device=dev)
+        # Loose soil on the grid, and the share of what each drum reached that it left.
+        self._loose = torch.zeros_like(self._bed_grid)
+        self._left = torch.zeros(self.num_envs, 2, device=dev)
         # Front rotor, rear rotor, front shroud, rear shroud.
         self._tool_ids = self._drum_body_ids + self._shroud_body_ids
         # Wheels on the soil: left front, left rear, right front, right rear.
@@ -105,7 +110,7 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
 
         shroud_f, shroud_t, rotor_f, rotor_t = rft.drum_loads(
             self._patches, centre[:, 2:4], lin[:, 2:4], quat[:, 2:4], ang[:, 2:4], quat[:, :2], ang[:, :2],
-            self._bed_grid, self._fill_kg, self._capacity, self._rft,
+            self._bed_grid, self._fill_kg, self._capacity, self._left, self._rft,
         )
         self._soil_force = rotor_f + shroud_f                    # (E, 2, 3) on each drum, for play_dig
         forces, torques = [rotor_f, shroud_f], [rotor_t, shroud_t]
@@ -122,12 +127,17 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
             body_ids=ids,
             is_global=True,
         )
-        self._bed_grid, self._fill_kg = rft.excavate(
-            self._bed_grid, self._fill_kg, self._cells, centre[:, 2:4], rft.drum_axis(quat[:, 2:4]),
-            self._capacity, self._rft,
+        # Once per env step: Newton runs the decimation inside one physics step.
+        self._bed_grid, self._loose, self._fill_kg, self._left = rft.excavate(
+            self._bed_grid, self._loose, self._fill_kg, self._cells, centre[:, 2:4], rft.drum_axis(quat[:, 2:4]),
+            self._capacity, self.step_dt, self._rft,
         )
+        if self._rft.repose:
+            self._bed_grid, self._loose = rft.slump(self._bed_grid, self._loose, self._rft)
         if self.cfg.wheel_soil:
-            self._bed_grid = rft.press(self._bed_grid, self._cells, centre[:, 4:], rft.drum_axis(quat[:, 4:]))
+            pressed = rft.press(self._bed_grid, self._cells, centre[:, 4:], rft.drum_axis(quat[:, 4:]))
+            self._loose = (self._loose - (self._bed_grid - pressed)).clamp(min=0.0)
+            self._bed_grid = pressed
         if self._soil_marker is not None:
             self._show_soil()
 
@@ -136,6 +146,8 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
 
     def _relay_soil(self, env_ids: torch.Tensor) -> None:
         self._bed_grid[env_ids] = self._fresh_bed
+        self._loose[env_ids] = 0.0
+        self._left[env_ids] = 0.0
 
     # --- soil in the viewer ---
 

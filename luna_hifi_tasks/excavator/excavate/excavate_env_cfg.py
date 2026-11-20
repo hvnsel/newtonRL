@@ -839,6 +839,11 @@ class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     # grid the scripted dig met about twice rft.py's force at the same depth,
     # counting MPM's 2 cm contact band.
     rft_scale: float = 12.3
+    # How fast a drum swallows soil [kg/s]: inf takes all its vane-tip circle reaches.
+    drum_intake: float = math.inf
+    # Angle of repose of loose soil [deg]. Above 0, soil a drum reaches but does not
+    # take is shoved out of its circle and slumps; 0 leaves it where it is.
+    soil_repose: float = 0.0
     # Draw the soil grid in the viewer, and hide the ground's grid that would
     # cover the cut. play_dig turns it on for a window or a video.
     soil_marker: bool = False

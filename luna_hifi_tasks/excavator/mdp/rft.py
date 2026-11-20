@@ -16,7 +16,8 @@
 # A drum is three sets of patches:
 #   wall     the shroud's outer surface. Loaded where it faces its own motion.
 #   opening  the gap in the wall. Soil passes through it into the drum, so it
-#            is loaded only once the drum is full.
+#            is loaded only by the soil the drum cannot take: all once it is
+#            full, in part while it takes less than it reaches.
 #   vanes    the rotor blades. Loaded where they show through the opening,
 #            scaled by drum speed / tip speed: they meet new soil only as fast
 #            as the drum moves into it.
@@ -24,8 +25,12 @@
 # in the vertical plane across the drum's axis is resisted; sliding along the
 # axis is not.
 #
-# Soil inside the vane-tip circle comes off the grid into the drum until the
-# drum is full. Its weight loads the shroud; carrying it round loads the rotor.
+# Soil inside the vane-tip circle comes off the grid into the drum, at most
+# soil.intake kg/s and until the drum is full. Its weight loads the shroud;
+# carrying it round loads the rotor. With soil.repose the soil it does not take
+# is shoved out of the circle, ahead of the shroud or behind it, as loose soil:
+# loose soil runs downhill wherever it stands steeper than its angle of repose,
+# while the undisturbed bed, cohesive, keeps its shape.
 #
 # A wheel is the tyre and its grousers, loaded the same way where they face
 # their own motion. Its depth is measured from the higher of the bed surfaces
@@ -38,8 +43,10 @@
 #
 #   once        patches = drum_patches()
 #               cells = cell_centres(soil, nx, ny)
-#   each step   loads = drum_loads(patches, <drum state>, height, fill, capacity, soil)
-#               height, fill = excavate(height, fill, cells, centre, drum_axis(shroud_quat), capacity, soil)
+#   each step   loads = drum_loads(patches, <drum state>, height, fill, capacity, left, soil)
+#               height, loose, fill, left = excavate(height, loose, fill, cells, centre,
+#                                                    drum_axis(shroud_quat), capacity, dt, soil)
+#               height, loose = slump(height, loose, soil)        # with soil.repose
 #   wheels      wheels = wheel_patches()
 #               force, torque = wheel_loads(wheels, <wheel state>, height, soil)
 #               height = press(height, cells, centre, drum_axis(wheel_quat))
@@ -81,6 +88,8 @@ class Soil:
     lower: tuple[float, float] = (0.0, 0.0)     # env-local (x, y) of the grid's low corner
     cohesion: float = 0.0                       # Pa, Mohr-Coulomb c
     scale: float = 6.15                         # stress per Kp rho g; see zeta
+    intake: float = math.inf                    # kg/s a drum takes at most; inf: all it reaches
+    repose: float = 0.0                         # tan(angle of repose) of loose soil; 0: none is shoved
 
     @property
     def kp(self) -> float:
@@ -237,7 +246,7 @@ def height_at(height: torch.Tensor, soil: Soil, xy: torch.Tensor) -> torch.Tenso
 
 
 def drum_loads(
-    patches, centre, lin, shroud_quat, shroud_ang, rotor_quat, rotor_ang, height, fill, capacity, soil: Soil
+    patches, centre, lin, shroud_quat, shroud_ang, rotor_quat, rotor_ang, height, fill, capacity, left, soil: Soil
 ):
     """Soil force and torque on each drum's shroud and rotor.
 
@@ -245,7 +254,8 @@ def drum_loads(
     its velocity. shroud_quat, rotor_quat (E, D, 4) and shroud_ang, rotor_ang
     (E, D, 3): orientation (x, y, z, w) and angular velocity of the two bodies.
     height (E, ny, nx): the soil grid. fill, capacity: (E, D) kg in the drum
-    and the most it holds.
+    and the most it holds. left (E, D): the share of the soil it reached that
+    excavate() last left, which loads the opening.
 
     Returns shroud force, shroud torque, rotor force, rotor torque: (E, D, 3) each.
     """
@@ -271,8 +281,8 @@ def drum_loads(
 
     arm, normal, vel, force = loads(wall, shroud_quat, shroud_ang)
     faces_motion = (normal * vel).sum(-1) > 0.0
-    full = (fill >= capacity)[..., None]
-    force = force * (faces_motion & (~opening | full))[..., None]
+    blocked = torch.maximum((fill >= capacity).float(), left)[..., None]
+    force = force * (faces_motion * torch.where(opening, blocked, 1.0))[..., None]
     weight = fill * soil.gravity
     shroud_force = force.sum(-2)
     shroud_force[..., 2] -= weight
@@ -296,31 +306,82 @@ def drum_loads(
     return shroud_force, shroud_torque, force.sum(-2), rotor_torque
 
 
-def excavate(height, fill, cells, centre, axis, capacity, soil: Soil) -> tuple[torch.Tensor, torch.Tensor]:
+def excavate(height, loose, fill, cells, centre, axis, capacity, dt: float, soil: Soil):
     """Move the soil inside each drum's vane-tip circle off the grid into the
-    drum, as far as the drum has room.
+    drum, at most soil.intake * dt and as far as it has room. With soil.repose
+    the soil it leaves is shoved out of the circle as loose soil; without, it
+    stays where it is.
 
-    height (E, ny, nx), fill (E, D), cells from cell_centres(), centre and
-    axis (E, D, 3) the drum's axis point and drum_axis(). Returns the new
-    height and fill.
+    height, loose (E, ny, nx): the grid and the loose soil on it. fill (E, D),
+    cells from cell_centres(), centre and axis (E, D, 3) the drum's axis point and
+    drum_axis(). Returns height, loose, fill, and the share of the soil each drum
+    reached that it left (E, D).
     """
-    under, lowest = beneath(cells, centre, axis, ROTOR_TIP_R, ROTOR_HALF_LEN)
+    under, lowest, along, across = beneath(cells, centre, axis, ROTOR_TIP_R, ROTOR_HALF_LEN)
     excess = (height[:, None] - lowest).clamp(min=0.0) * under          # m of soil above the tip circle
     offered = excess.sum((-2, -1)) * soil.cell ** 2 * soil.density      # (E, D) kg
-    taken = torch.minimum(offered, capacity - fill)
+    taken = torch.minimum(torch.minimum(offered, capacity - fill), torch.full_like(offered, soil.intake * dt))
     share = taken / offered.clamp(min=1e-9)
-    return height - (share[..., None, None] * excess).sum(1), fill + taken
+    gone = share[..., None, None] * excess
+    if soil.repose:
+        shoved = shove(excess - gone, along, across, centre, axis, soil)
+        gone = excess
+    gone = gone.sum(1)
+    height, loose = height - gone, (loose - gone).clamp(min=0.0)         # loose soil lies on top
+    if soil.repose:
+        height, loose = height + shoved, loose + shoved
+    return height, loose, fill + taken, (1.0 - share) * (offered > 0.0)
 
 
-def beneath(cells, centre, axis, radius: float, half_len: float) -> tuple[torch.Tensor, torch.Tensor]:
-    """Which grid cells lie under each cylinder of `radius` and `half_len`, and
-    the cylinder's lowest point over each: (E, D, ny, nx) both."""
+def beneath(cells, centre, axis, radius: float, half_len: float):
+    """Which grid cells lie under each cylinder of `radius` and `half_len`, the
+    cylinder's lowest point over each, and each cell's offset along the axis
+    and across it: (E, D, ny, nx) each."""
     rel = cells - centre[..., None, None, :2]                           # (E, D, ny, nx, 2)
     along = (rel * axis[..., None, None, :2]).sum(-1)
     across = rel[..., 0] * axis[..., None, None, 1] - rel[..., 1] * axis[..., None, None, 0]
     under = (along.abs() <= half_len) & (across.abs() < radius)
     lowest = centre[..., None, None, 2] - (radius ** 2 - across ** 2).clamp(min=0.0).sqrt()
-    return under, lowest
+    return under, lowest, along, across
+
+
+def shove(soil_left, along, across, centre, axis, soil: Soil) -> torch.Tensor:
+    """The height (E, ny, nx) that soil_left (E, D, ny, nx), in each drum's
+    vane-tip circle, adds where it is shoved: the cell just outside the shroud
+    on the side of the axis it lay, in its own lane along the axis."""
+    E, D, ny, nx = soil_left.shape
+    side = torch.stack([axis[..., 1], -axis[..., 0]], -1)[..., None, None, :]   # unit +across
+    reach = torch.sign(across)[..., None] * (SHROUD_OUT_R + 0.5 * soil.cell)
+    xy = centre[..., None, None, :2] + along[..., None] * axis[..., None, None, :2] + reach * side
+    ix = torch.floor((xy[..., 0] - soil.lower[0]) / soil.cell).long().clamp(0, nx - 1)
+    iy = torch.floor((xy[..., 1] - soil.lower[1]) / soil.cell).long().clamp(0, ny - 1)
+    out = torch.zeros(E, ny * nx, device=soil_left.device)
+    return out.scatter_add_(1, (iy * nx + ix).reshape(E, -1), soil_left.reshape(E, -1)).reshape(E, ny, nx)
+
+
+# Each pair of neighbouring cells once: (row, column) offsets.
+NEIGHBOURS = ((0, 1), (1, 0), (1, 1), (1, -1))
+
+
+def slump(height, loose, soil: Soil, sweeps: int = 4) -> tuple[torch.Tensor, torch.Tensor]:
+    """Let the loose soil (E, ny, nx), part of height, run downhill wherever two
+    neighbouring cells differ by more than soil.repose allows. Each pair moves a
+    quarter of its excess per sweep, and a cell gives each of its two neighbours
+    in a direction at most half its loose soil."""
+    height, loose = height.clone(), loose.clone()
+    ny, nx = height.shape[-2:]
+    for _ in range(sweeps):
+        for dy, dx in NEIGHBOURS:
+            here = (slice(None), slice(0, ny - dy), slice(max(0, -dx), nx - max(0, dx)))
+            there = (slice(None), slice(dy, ny), slice(max(0, dx), nx - max(0, -dx)))
+            step = height[here] - height[there]
+            over = 0.25 * (step.abs() - soil.repose * soil.cell * math.hypot(dy, dx)).clamp(min=0.0)
+            flow = torch.where(step > 0.0, torch.minimum(over, 0.5 * loose[here]), -torch.minimum(over, 0.5 * loose[there]))
+            height[here] -= flow
+            height[there] += flow
+            loose[here] -= flow
+            loose[there] += flow
+    return height, loose
 
 
 def wheel_loads(patches: Patches, centre, lin, quat, ang, height, soil: Soil) -> tuple[torch.Tensor, torch.Tensor]:
@@ -352,6 +413,6 @@ def wheel_loads(patches: Patches, centre, lin, quat, ang, height, soil: Soil) ->
 def press(height, cells, centre, axis) -> torch.Tensor:
     """The grid (E, ny, nx) with the soil under each wheel's tyre pressed down
     to it. centre and axis (E, W, 3): the wheels' axis points and drum_axis()."""
-    under, lowest = beneath(cells, centre, axis, WHEEL_RADIUS, WHEEL_HALF_W)
+    under, lowest, _, _ = beneath(cells, centre, axis, WHEEL_RADIUS, WHEEL_HALF_W)
     tyre = torch.where(under, lowest, torch.full_like(lowest, math.inf)).amin(1)
     return torch.minimum(height, tyre)

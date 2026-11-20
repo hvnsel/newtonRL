@@ -59,7 +59,7 @@ def main() -> None:
     axis = rft.drum_axis(shroud_quat)
     still = torch.zeros(1, 1, 3)
     angle = 0.0
-    loose, left = torch.zeros_like(height), torch.zeros(1, 1)
+    loose = torch.zeros_like(height)
 
     print(f"soil: density {soil.density:.0f} kg/m3, friction {soil.friction:.2f}, "
           f"gravity {soil.gravity:.2f} m/s2 -> stress scale {soil.zeta:.0f} N/m3")
@@ -76,9 +76,9 @@ def main() -> None:
         angle += spin * DT
 
         shroud_force, _, rotor_force, rotor_torque = rft.drum_loads(
-            patches, centre, lin, shroud_quat, still, about_y(angle), spin * axis, height, fill, capacity, left, soil
+            patches, centre, lin, shroud_quat, still, about_y(angle), spin * axis, height - loose, fill, capacity, soil
         )
-        height, loose, fill, left = rft.excavate(height, loose, fill, cells, centre, axis, capacity, DT, soil)
+        height, loose, fill = rft.excavate(height, loose, fill, cells, centre, axis, capacity, DT, soil)
 
         if i % round(0.5 / DT) == 0:
             force = (shroud_force + rotor_force)[0, 0]

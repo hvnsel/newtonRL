@@ -80,6 +80,9 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         # Loose soil on the grid, and the share of what each drum reached that it left.
         self._loose = torch.zeros_like(self._bed_grid)
         self._left = torch.zeros(self.num_envs, 2, device=dev)
+        # Time between _apply_action calls, which dig: Isaac Lab calls it every
+        # physics step unless Newton runs the whole decimation in one.
+        self._dig_dt = self.physics_dt * (c.decimation if self._physics_handles_decimation else 1)
         # Front rotor, rear rotor, front shroud, rear shroud.
         self._tool_ids = self._drum_body_ids + self._shroud_body_ids
         # Wheels on the soil: left front, left rear, right front, right rear.
@@ -127,13 +130,14 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
             body_ids=ids,
             is_global=True,
         )
-        # Once per env step: Newton runs the decimation inside one physics step.
+        drum_axis = rft.drum_axis(quat[:, 2:4])
         self._bed_grid, self._loose, self._fill_kg, self._left = rft.excavate(
-            self._bed_grid, self._loose, self._fill_kg, self._cells, centre[:, 2:4], rft.drum_axis(quat[:, 2:4]),
-            self._capacity, self.step_dt, self._rft,
+            self._bed_grid, self._loose, self._fill_kg, self._cells, centre[:, 2:4], drum_axis,
+            self._capacity, self._dig_dt, self._rft,
         )
         if self._rft.repose:
-            self._bed_grid, self._loose = rft.slump(self._bed_grid, self._loose, self._rft)
+            body = rft.drum_body(self._cells, centre[:, 2:4], drum_axis, self._bed_grid)
+            self._bed_grid, self._loose = rft.slump(self._bed_grid, self._loose, body, self._rft)
         if self.cfg.wheel_soil:
             pressed = rft.press(self._bed_grid, self._cells, centre[:, 4:], rft.drum_axis(quat[:, 4:]))
             self._loose = (self._loose - (self._bed_grid - pressed)).clamp(min=0.0)

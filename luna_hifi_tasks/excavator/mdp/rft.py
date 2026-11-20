@@ -30,7 +30,8 @@
 # carrying it round loads the rotor. With soil.repose the soil it does not take
 # is shoved out of the circle, ahead of the shroud or behind it, as loose soil:
 # loose soil runs downhill wherever it stands steeper than its angle of repose,
-# while the undisturbed bed, cohesive, keeps its shape.
+# but not into a drum standing in the soil, while the undisturbed bed, cohesive,
+# keeps its shape.
 #
 # A wheel is the tyre and its grousers, loaded the same way where they face
 # their own motion. Its depth is measured from the higher of the bed surfaces
@@ -46,7 +47,7 @@
 #   each step   loads = drum_loads(patches, <drum state>, height, fill, capacity, left, soil)
 #               height, loose, fill, left = excavate(height, loose, fill, cells, centre,
 #                                                    drum_axis(shroud_quat), capacity, dt, soil)
-#               height, loose = slump(height, loose, soil)        # with soil.repose
+#               height, loose = slump(height, loose, drum_body(cells, centre, axis, height), soil)
 #   wheels      wheels = wheel_patches()
 #               force, torque = wheel_loads(wheels, <wheel state>, height, soil)
 #               height = press(height, cells, centre, drum_axis(wheel_quat))
@@ -363,11 +364,19 @@ def shove(soil_left, along, across, centre, axis, soil: Soil) -> torch.Tensor:
 NEIGHBOURS = ((0, 1), (1, 0), (1, 1), (1, -1))
 
 
-def slump(height, loose, soil: Soil, sweeps: int = 4) -> tuple[torch.Tensor, torch.Tensor]:
+def drum_body(cells, centre, axis, height) -> torch.Tensor:
+    """The grid cells (E, ny, nx) where a drum stands in the soil: under its
+    shroud, which reaches below their surface."""
+    under, lowest, _, _ = beneath(cells, centre, axis, SHROUD_OUT_R, ROTOR_HALF_LEN)
+    return (under & (lowest < height[:, None])).any(1)
+
+
+def slump(height, loose, body, soil: Soil, sweeps: int = 4) -> tuple[torch.Tensor, torch.Tensor]:
     """Let the loose soil (E, ny, nx), part of height, run downhill wherever two
-    neighbouring cells differ by more than soil.repose allows. Each pair moves a
-    quarter of its excess per sweep, and a cell gives each of its two neighbours
-    in a direction at most half its loose soil."""
+    neighbouring cells differ by more than soil.repose allows, but not into or
+    out of a body cell (E, ny, nx), where a drum stands: it leans on the drum.
+    Each pair moves a quarter of its excess per sweep, and a cell gives each of
+    its two neighbours in a direction at most half its loose soil."""
     height, loose = height.clone(), loose.clone()
     ny, nx = height.shape[-2:]
     for _ in range(sweeps):
@@ -377,6 +386,7 @@ def slump(height, loose, soil: Soil, sweeps: int = 4) -> tuple[torch.Tensor, tor
             step = height[here] - height[there]
             over = 0.25 * (step.abs() - soil.repose * soil.cell * math.hypot(dy, dx)).clamp(min=0.0)
             flow = torch.where(step > 0.0, torch.minimum(over, 0.5 * loose[here]), -torch.minimum(over, 0.5 * loose[there]))
+            flow = torch.where(body[here] | body[there], 0.0, flow)
             height[here] -= flow
             height[there] += flow
             loose[here] -= flow

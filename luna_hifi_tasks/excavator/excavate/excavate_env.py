@@ -178,7 +178,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         lo, hi = cfg.cut_depth_range
         print(
             f"[excavate] cut command: depth {lo:.3f} to {hi:.3f} m, slope up to {cfg.cut_gradient_max:.2f} "
-            f"in {cfg.cut_ramp_fraction:.0%} of episodes. actions: drive +-"
+            f"in {cfg.cut_ramp_fraction:.0%} of {cfg.episode_length_s:g} s episodes. actions: drive +-"
             f"{cfg.dig_forward * MAX_WHEEL_SPEED * WHEEL_RADIUS:.2f} m/s, yaw +-{cfg.dig_yaw_rate:.2f} rad/s, "
             f"front arm +-{cfg.dig_arm_rate:.2f} rad/s"
         )

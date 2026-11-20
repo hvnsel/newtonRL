@@ -93,7 +93,7 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
             f"-> stress scale {c.rft_scale:.2f} Kp rho g = {self._rft.zeta:.0f} N/m3, cohesion {c.soil_cohesion:.0f} Pa "
             f"-> +{self._rft.cohesion_depth:.3f} m depth; height grid {c.bed_grid_nx} x {c.bed_grid_ny} "
             f"@ {c.voxel_size:.3f} m; drums hold {c.drum_capacity_kg:.1f} kg, target load {c.target_load_kg:.1f} kg, "
-            f"cut ref {c.cut_volume_ref:.4f} m3"
+            f"cut ref {c.cut_volume_ref:.4f} m3; drum intake {c.drum_intake:g} kg/s, loose soil repose {c.soil_repose:g} deg"
         )
         if c.wheel_soil:
             print(f"[excavate] wheels on the soil: {self._wheel_patches.area.numel()} patches per wheel, ruts pressed into the grid")

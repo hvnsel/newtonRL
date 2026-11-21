@@ -356,13 +356,14 @@ def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tup
                 row["to_pass"] = drive([u.pass_start(ix)], 0.0)
             row.update(dig_pass(ix, h - 1))
             site.trim((iy, ix), height=round(row["floor_cm"] / 100 / voxel))
-            row["to_dump"] = drive(u.dump_route(), 0.5 * math.pi)
-            row["dumped_kg"] = dump()
-            first = False
             rows.append(row)
             print(f"[site] trim {row['trim']:2d}, patch {ix}: to {row['target_cm']:+.0f} cm, cut {row['depth_cm']:.1f} cm "
                   f"in {row['pass_s']:.0f} s -> floor {row['floor_cm']:+.1f} cm; {row['removed_kg']:.0f} kg removed, "
-                  f"{row['held_kg']:.0f} held, {row['dumped_kg']:.0f} dumped; t = {now():.0f} s", flush=True)
+                  f"{row['held_kg']:.0f} held; t = {now():.0f} s", flush=True)
+            row["to_dump"] = drive(u.dump_route(), 0.5 * math.pi)
+            row["dumped_kg"] = dump()
+            first = False
+            print(f"[site]          dumped {row['dumped_kg']:.0f} kg; t = {now():.0f} s", flush=True)
     except RuntimeError as err:
         return rows, f"stopped: {err}"
     return rows, "done" if site.done() else f"stopped after {site.trims} trims with {len(site.pending())} patches short"

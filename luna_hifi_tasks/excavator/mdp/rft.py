@@ -38,6 +38,9 @@
 # their own motion. Its depth is measured from the higher of the bed surfaces
 # just ahead of and just behind it, so a wheel stands on the soil beside its
 # own rut. The soil under a tyre is pressed down to it: compacted, not moved.
+# Sliding along its axle a tyre meets friction: the soil friction times the
+# soil's load on it, in the sideways share of its contact's slip, so a wheel
+# spinning in a skid-steer turn grips less sideways than one drifting.
 #
 # Positions are env-local metres. Forces and torques are world-frame, torques
 # about the drum's or wheel's axis point. Tensors lead with (E, D): envs, drums
@@ -79,6 +82,7 @@ from ..excavator import (
 )
 
 V_STILL = 0.005     # m/s; below this a patch's force fades to zero
+V_SLIDE = 0.05      # m/s; a tyre sliding sideways this fast has half its grip, smooth for 0.01 s steps
 SPIN_STILL = 0.3    # rad/s; below this the carrying torque fades to zero
 
 
@@ -440,7 +444,16 @@ def wheel_loads(patches: Patches, centre, lin, quat, ang, height, soil: Soil) ->
     depth = torch.where(depth > 0.0, depth + soil.cohesion_depth, depth)
     force = patch_force(normal, vel, patches.area * depth, u[..., None, :], soil.zeta)
     force = force * ((normal * vel).sum(-1) > 0.0)[..., None]
-    return force.sum(-2), torch.linalg.cross(arm, force).sum(-2)
+    torque = torch.linalg.cross(arm, force).sum(-2)
+    force = force.sum(-2)
+    # Grip along the axle at the contact, below the axis point: friction on the
+    # soil's load, in the sideways share of the contact's horizontal slip.
+    below = -WHEEL_RADIUS * up.expand_as(lin)
+    slip = lin + torch.linalg.cross(ang, below)
+    speed = torch.linalg.norm(slip[..., :2], dim=-1, keepdim=True)
+    side = (slip * axis).sum(-1, keepdim=True)
+    grip = -soil.friction * force[..., 2:3].clamp(min=0.0) * side / (speed + V_SLIDE) * axis
+    return force + grip, torque + torch.linalg.cross(below, grip)
 
 
 def press(height, cells, centre, axis) -> torch.Tensor:

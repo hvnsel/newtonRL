@@ -102,7 +102,7 @@ The excavate task on the analytical soil of `mdp/rft.py`. What differs:
 | soil | `soil_friction`, `soil_cohesion`, `rft_scale` | tan 40°, 500 Pa, stress factor 12.3 |
 | intake | `drum_intake` | `3.4` kg/s, only soil its opening faces; the rest is shoved |
 | loose soil | `soil_repose` | `40`°: shoved soil slumps to it and carries no load |
-| wheels | `wheel_soil` | `True`: on the soil, pressing ruts; the rigid ground drops to the bed floor |
+| wheels | `wheel_soil` | `True`: on the soil, pressing ruts and gripping sideways with the soil friction (`rft.V_SLIDE` 0.05 m/s for half grip); the rigid ground drops to the bed floor |
 | bed | `bed_y`, `bed_depth` | 2.8 m wide, 0.40 m of soil |
 | carried-over beds, lanes | `soil_reset_every`, `spawn_y_jitter` | a bed kept 3 episodes, each starting up to 0.5 m to either side |
 | soil pushed out of the work area | `w_unheld` | `3.0` per kg, so 1.75 net with `w_removal` |

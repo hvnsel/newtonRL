@@ -106,6 +106,7 @@ The excavate task on the analytical soil of `mdp/rft.py`. What differs:
 | bed | `bed_y`, `bed_depth` | 2.8 m wide, 0.40 m of soil |
 | carried-over beds, lanes | `soil_reset_every`, `spawn_y_jitter` | a bed kept 3 episodes, each starting up to 0.5 m to either side |
 | soil pushed out of the work area | `w_unheld` | `3.0` per kg, so 1.75 net with `w_removal` |
+| following the command | `w_track` | `2.0` per m the front vane tips sit off the plane, every step after the ramp, capped at 10 cm |
 | envs | `scene.num_envs` | `256` |
 
 ## Navigate planner (navigate_env_cfg.py)

@@ -170,7 +170,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._spill_alpha = step_dt / (cfg.spill_filter_tau + step_dt)
 
         self._log = R.TermLogger(
-            ["removal", "unheld", "success", "fail", "overcut", "spill",
+            ["removal", "unheld", "success", "fail", "overcut", "track", "spill",
              "stall", "drift", "upright", "energy", "action_rate", "time"],
             E, dev,
         )
@@ -189,7 +189,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             f"in {cfg.cut_ramp_fraction:.0%} of {cfg.episode_length_s:g} s episodes. actions: drive +-"
             f"{cfg.dig_forward * MAX_WHEEL_SPEED * WHEEL_RADIUS:.2f} m/s, steer +-{cfg.dig_steer_rate:.2f} rad/s, "
             f"front arm +-{cfg.dig_arm_rate:.2f} rad/s, front shroud +-{cfg.dig_shroud_rate:.2f} rad/s; "
-            f"the hold keeps the drum on the pass line"
+            f"the hold keeps the drum on the pass line; tracking the plane costs {cfg.w_track:g} per m off it, per step"
         )
 
     def _setup_scene(self):
@@ -598,6 +598,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._success_paid |= self._shape_done
         overcut_delta = R.progress_delta(self._below_prev, below, self._cut_fresh)
 
+        # How far the front drum's vane tips sit off the plane once the ramp is
+        # done: the command's depth and slope, paid every step, capped at 10 cm.
+        driving = (self._since_settle >= self._ramp_steps).float()
+        tips_off = (cut["target_level"].squeeze(-1) - ROTOR_TIP_R).abs().clamp(max=0.10)
+
         wheel_cmd_rad = self._forward_cmd / WHEEL_RADIUS
 
         def finite(t: torch.Tensor) -> torch.Tensor:
@@ -615,6 +620,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             "success": c.w_success * self._shape_newly_done.float(),
             "fail": -c.w_fail * self._failed_now.float(),
             "overcut": c.w_overcut * overcut_delta * c.soil_density,
+            "track": -c.w_track * tips_off * driving,
             "spill": -c.w_spill * R.spill_penalty(spill_delta),
             "stall": -c.w_stall * R.stall_penalty(wheel_cmd_rad, base_lin_vel[:, 0], WHEEL_RADIUS),
             "drift": -c.w_drift * R.drift_penalty(base_lin_vel, self._forward_cmd),

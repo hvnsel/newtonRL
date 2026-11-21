@@ -415,6 +415,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # Distance from the env origin at which a particle counts as escaped [m].
     particle_escape_m: float = 15.0
     w_overcut = 4.386                    # taken from below the plane
+    w_track = 2.0                        # per m the front vane tips sit off the plane, each step after the ramp
     w_spill = 0.25                       # lost, by the slow fill reading
     w_success = 40.0                     # once, when the shape is first achieved
     w_fail = 20.0                        # on the step _failed() fires

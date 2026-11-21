@@ -2,11 +2,13 @@
 #
 # Cut a strip of an MPM regolith bed down to a commanded plane and carry the
 # spoil in the drums. The env sets the tool: after the settle, over
-# dig_ramp_seconds with the wheels held, the front arm lowers to the dig angle,
-# its shroud turns to hold the inlet at dig_inlet_tilt off straight down, and
-# its drum spins up (the rear tool too with dig_rear_drum). Then the policy
-# takes over: actions are [drive, yaw, front arm rate] in [-1, 1]. The episode
-# ends when the front drum passes the end of the work area.
+# dig_ramp_seconds with the wheels held, the front arm lowers until the vane
+# tips are dig_cut into the ground under the drum, its shroud turns to hold the
+# inlet at dig_inlet_tilt off straight down, and its drum spins up (the rear
+# tool too with dig_rear_drum). Then the policy takes over: actions are
+# [drive, steer, front arm rate, front shroud rate] in [-1, 1], and a hold keeps
+# the front drum on the pass line. The episode ends when the front drum passes
+# the end of the work area.
 
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ import warp as wp
 
 from isaaclab_newton.assets import MPMObject
 
-from ..excavator import ARM_LEN, PIVOT_X, ROTOR_VANES, WHEEL_RADIUS
+from ..excavator import ARM_LEN, PIVOT_X, ROTOR_TIP_R, ROTOR_VANES, SHROUD_RANGE, WHEEL_RADIUS
 from ..excavator_cfg import MAX_WHEEL_SPEED, MAX_YAW_SPEED, usd_status
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rewards as R
@@ -95,6 +97,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
         self._shape_done = torch.zeros(E, dtype=torch.bool, device=dev)
         self._shape_newly_done = torch.zeros(E, dtype=torch.bool, device=dev)
+        # Whether this episode has been paid w_success: once per episode.
+        self._success_paid = torch.zeros(E, dtype=torch.bool, device=dev)
         self._drum_full = torch.zeros(E, dtype=torch.bool, device=dev)
         self._failed_now = torch.zeros(E, dtype=torch.bool, device=dev)
         self._nonfinite_now = torch.zeros(E, dtype=torch.bool, device=dev)
@@ -140,14 +144,18 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # Tool: steps since the settle ended (the ramp runs over the first
         # _ramp_steps of them), the arm angle each env spawned with, the dig
         # arm and shroud angles, the handover heading, and whether the front
-        # drum has passed the end of the work area.
+        # drum has passed the end of the work area. The dig arm angle starts at
+        # dig_cut below the fresh bed and is set from the ground during the settle.
         self._ramp_steps = max(1, round(cfg.dig_ramp_seconds / step_dt))
         self._since_settle = torch.zeros(E, dtype=torch.long, device=dev)
         self._arm_start = torch.zeros(E, device=dev)
-        _, self._dig_arm = cfg.boom_command_for_cut(cfg.dig_cut)
-        self._dig_shroud = -self._dig_arm + cfg.dig_inlet_tilt
-        # The policy's offset on the front arm's dig angle, rad.
+        _, dig_arm = cfg.boom_command_for_cut(cfg.dig_cut)
+        self._dig_arm = torch.full((E,), dig_arm, device=dev)
+        self._dig_shroud = cfg.dig_inlet_tilt - self._dig_arm
+        self._arm_pivot_id = self.robot.find_bodies(["arm_front_body"])[0][0]
+        # The policy's offsets on the front arm's and front shroud's dig angles, rad.
         self._arm_offset = torch.zeros(E, device=dev)
+        self._shroud_offset = torch.zeros(E, device=dev)
         self._drum_digs = torch.tensor([1.0, float(cfg.dig_rear_drum)], device=dev)
         self._work_yaw = torch.zeros(E, device=dev)
         self._pass_done = torch.zeros(E, dtype=torch.bool, device=dev)
@@ -171,8 +179,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         print(DIG_CRITIC.describe())
         self._init_soil()
         print(
-            f"[excavate] tool: arm {self._dig_arm:+.3f} rad, shroud {self._dig_shroud:+.3f} rad, "
-            f"drums {cfg.dig_drum_speed:+.2f} rad/s"
+            f"[excavate] tool: arm {dig_arm:+.3f} rad on a fresh bed, set from the ground under the drum in "
+            f"the settle; inlet {cfg.dig_inlet_tilt:+.3f} rad off straight down; drums {cfg.dig_drum_speed:+.2f} rad/s"
             + ("" if cfg.dig_tool else " (dig_tool False: arms held at the start angle)")
         )
         lo, hi = cfg.cut_depth_range
@@ -180,7 +188,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             f"[excavate] cut command: depth {lo:.3f} to {hi:.3f} m, slope up to {cfg.cut_gradient_max:.2f} "
             f"in {cfg.cut_ramp_fraction:.0%} of {cfg.episode_length_s:g} s episodes. actions: drive +-"
             f"{cfg.dig_forward * MAX_WHEEL_SPEED * WHEEL_RADIUS:.2f} m/s, steer +-{cfg.dig_steer_rate:.2f} rad/s, "
-            f"front arm +-{cfg.dig_arm_rate:.2f} rad/s; the hold keeps the drum on the pass line"
+            f"front arm +-{cfg.dig_arm_rate:.2f} rad/s, front shroud +-{cfg.dig_shroud_rate:.2f} rad/s; "
+            f"the hold keeps the drum on the pass line"
         )
 
     def _setup_scene(self):
@@ -240,6 +249,12 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         lo, hi = c.arm_range
         step = c.dig_arm_rate * self.step_dt * self._actions[:, 2] * driving
         self._arm_offset = (self._arm_offset + step).clamp(lo - self._dig_arm, hi - self._dig_arm)
+        # a3 turns the front shroud the same way, on top of the turn that follows
+        # the arm, keeping the shroud inside its range.
+        lo, hi = SHROUD_RANGE
+        held = self._dig_shroud - self._arm_offset
+        step = c.dig_shroud_rate * self.step_dt * self._actions[:, 3] * driving
+        self._shroud_offset = (self._shroud_offset + step).clamp(lo - held, hi - held)
 
     def _apply_action(self):
         c = self.cfg
@@ -260,12 +275,12 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # else it stays at its start pose, still.
         ramp = ramp.unsqueeze(-1) * self._drum_digs
         start = self._arm_start.unsqueeze(-1)
-        arm = start + ramp * (self._dig_arm - start)
-        shroud = ramp * self._dig_shroud
+        arm = start + ramp * (self._dig_arm.unsqueeze(-1) - start)
+        shroud = ramp * self._dig_shroud.unsqueeze(-1)
         # The policy's offset on the front arm. Its shroud turns back by the
-        # same angle, so the inlet stays dig_inlet_tilt off straight down.
+        # same angle, so the inlet keeps its tilt, plus the policy's own offset.
         arm[:, 0] += self._arm_offset
-        shroud[:, 0] -= self._arm_offset
+        shroud[:, 0] += self._shroud_offset - self._arm_offset
         self._apply_arms(arm)
         self._apply_drums(ramp * c.dig_drum_speed)
         self._apply_shrouds(shroud)
@@ -514,6 +529,24 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             self._target_z0,
         ))
 
+        # During the settle the dig arm angle is set so the ramp puts the vane
+        # tips dig_cut into the ground under the front drum, or at the plane if
+        # that lies higher: the arm's change in world angle from where it is now.
+        drum = self._drum_poses()[0][:, 0]
+        pivot = d.body_link_pos_w.torch[:, self._arm_pivot_id, 2]
+        ground = self.scene.env_origins[:, 2] + sample_height_grid(
+            self._bed_grid, drum[:, None, :2], self.scene.env_origins, c.bed_grid_lower, c.voxel_size, c.bed_top,
+        )[:, 0]
+        centre = torch.maximum(ground - c.dig_cut, self._plane_z(drum[:, :2])) + ROTOR_TIP_R
+
+        def below_level(z: torch.Tensor) -> torch.Tensor:
+            return torch.asin(((pivot - z) / ARM_LEN).clamp(-1.0, 1.0))
+
+        lo, hi = c.arm_range
+        dig = d.joint_pos.torch[:, self._arm_ids[0]] + below_level(centre) - below_level(drum[:, 2])
+        self._dig_arm = torch.where(self._cut_fresh, dig.clamp(lo, hi), self._dig_arm)
+        self._dig_shroud = c.dig_inlet_tilt - self._dig_arm
+
         actor_scan, _ = self._scans(self._bed_grid)
         self._fill_filt.mul_(1.0 - self._fill_alpha).add_(self._fill_kg, alpha=self._fill_alpha)
         self._spill_filt.mul_(1.0 - self._spill_alpha).add_(self._fill_kg, alpha=self._spill_alpha)
@@ -556,13 +589,13 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # Shape achieved: the residual within a fraction of the episode's layer
         # and enough of the cut held.
         residual = above + below
-        was_done = self._shape_done
         self._shape_done = (
             (residual <= c.shape_success_fraction * self._above_init)
             & (payload >= c.capture_min_fraction * cut_total)
             & ~self._cut_fresh
         )
-        self._shape_newly_done = self._shape_done & ~was_done
+        self._shape_newly_done = self._shape_done & ~self._success_paid
+        self._success_paid |= self._shape_done
         overcut_delta = R.progress_delta(self._below_prev, below, self._cut_fresh)
 
         wheel_cmd_rad = self._forward_cmd / WHEEL_RADIUS
@@ -786,6 +819,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         spawn_xy = self._reset_robot(env_ids, yaw, arm, xy_off, drum)
         self._arm_start[env_ids] = arm
         self._arm_offset[env_ids] = 0.0
+        self._shroud_offset[env_ids] = 0.0
         self._work_yaw[env_ids] = yaw
         self._since_settle[env_ids] = 0
         self._pass_done[env_ids] = False
@@ -838,6 +872,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._settle_left[env_ids] = self._settle_steps
         self._shape_done[env_ids] = False
         self._shape_newly_done[env_ids] = False
+        self._success_paid[env_ids] = False
         self._drum_full[env_ids] = False
         self._failed_now[env_ids] = False
         self._off_bed[env_ids] = False

@@ -24,10 +24,11 @@
 # in the vertical plane across the drum's axis is resisted; sliding along the
 # axis is not.
 #
-# Soil inside the vane-tip circle comes off the grid into the drum, at most
-# soil.intake kg/s and until the drum is full. Its weight loads the shroud;
-# carrying it round loads the rotor. With soil.repose the soil it does not take
-# is shoved out of the circle, ahead of the shroud or behind it, as loose soil:
+# Soil inside the vane-tip circle that the opening faces comes off the grid
+# into the drum, at most soil.intake kg/s and until the drum is full. Its weight
+# loads the shroud; carrying it round loads the rotor. With soil.repose the soil
+# it does not take, behind the wall or beyond the intake, is shoved out of the
+# circle, ahead of the shroud or behind it, as loose soil:
 # loose soil runs downhill wherever it stands steeper than its angle of repose,
 # but not into a drum standing in the soil, while the undisturbed bed, cohesive,
 # keeps its shape. Loose soil carries no load: the drums and wheels are given
@@ -45,8 +46,8 @@
 #   once        patches = drum_patches()
 #               cells = cell_centres(soil, nx, ny)
 #   each step   loads = drum_loads(patches, <drum state>, height - loose, fill, capacity, soil)
-#               height, loose, fill = excavate(height, loose, fill, cells, centre,
-#                                              drum_axis(shroud_quat), capacity, dt, soil)
+#               height, loose, fill = excavate(height, loose, fill, cells, centre, drum_axis(shroud_quat),
+#                                              drum_inlet(shroud_quat), capacity, dt, soil)
 #               height, loose = slump(height, loose, drum_body(cells, centre, axis, height), soil)
 #   wheels      wheels = wheel_patches()
 #               force, torque = wheel_loads(wheels, <wheel state>, height, soil)
@@ -160,6 +161,11 @@ def rotate(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
 def drum_axis(quat: torch.Tensor) -> torch.Tensor:
     """(..., 3) world direction of a drum's or wheel's axis, its bodies' +y."""
     return rotate(quat, torch.tensor([0.0, 1.0, 0.0], device=quat.device))
+
+
+def drum_inlet(quat: torch.Tensor) -> torch.Tensor:
+    """(..., 3) world direction a shroud's opening faces, its body's -z."""
+    return rotate(quat, torch.tensor([0.0, 0.0, -1.0], device=quat.device))
 
 
 def strips_of(xz, normal_xz, length, strips: int, half_len: float, device) -> Patches:
@@ -289,7 +295,7 @@ def drum_loads(
     shroud_torque = torch.linalg.cross(arm, force).sum(-2)
 
     arm, normal, vel, force = loads(vanes, rotor_quat, rotor_ang)
-    inlet = rotate(shroud_quat, -up)
+    inlet = drum_inlet(shroud_quat)
     radial = arm - (arm * axis[..., None, :]).sum(-1, keepdim=True) * axis[..., None, :]
     radial = torch.nn.functional.normalize(radial, dim=-1)
     shows = (radial * inlet[..., None, :]).sum(-1) > math.cos(0.5 * SHROUD_INLET)
@@ -306,22 +312,30 @@ def drum_loads(
     return shroud_force, shroud_torque, force.sum(-2), rotor_torque
 
 
-def excavate(height, loose, fill, cells, centre, axis, capacity, dt: float, soil: Soil):
-    """Move the soil inside each drum's vane-tip circle off the grid into the
-    drum, at most soil.intake * dt and as far as it has room. With soil.repose
-    the soil it leaves is shoved out of the circle as loose soil; without, it
-    stays where it is.
+def excavate(height, loose, fill, cells, centre, axis, inlet, capacity, dt: float, soil: Soil):
+    """Move the soil inside each drum's vane-tip circle that its opening faces
+    off the grid into the drum, at most soil.intake * dt and as far as it has
+    room. With soil.repose the rest of the soil in the circle is shoved out of
+    it as loose soil; without, it stays where it is.
 
     height, loose (E, ny, nx): the grid and the loose soil on it. fill (E, D),
-    cells from cell_centres(), centre and axis (E, D, 3) the drum's axis point and
-    drum_axis(). Returns height, loose and fill.
+    cells from cell_centres(), centre, axis and inlet (E, D, 3) the drum's axis
+    point, drum_axis() and drum_inlet(). Returns height, loose and fill.
     """
     under, lowest, along, across = beneath(cells, centre, axis, ROTOR_TIP_R, ROTOR_HALF_LEN)
     excess = (height[:, None] - lowest).clamp(min=0.0) * under          # m of soil above the tip circle
-    offered = excess.sum((-2, -1)) * soil.cell ** 2 * soil.density      # (E, D) kg
+    # A cell's soil faces the opening if the middle of its column in the circle,
+    # seen from the axis across it, lies within the opening's angle.
+    z = centre[..., None, None, 2]
+    mid = 0.5 * (lowest + torch.minimum(height[:, None], 2.0 * z - lowest)) - z
+    side = torch.stack([axis[..., 1], -axis[..., 0]], -1)              # unit +across, as in shove()
+    face = torch.stack([(inlet[..., :2] * side).sum(-1), inlet[..., 2]], -1)[..., None, None, :]
+    cos = (across * face[..., 0] + mid * face[..., 1]) / (torch.hypot(across, mid) * face.norm(dim=-1)).clamp(min=1e-9)
+    facing = excess * (cos > math.cos(0.5 * SHROUD_INLET))
+    offered = facing.sum((-2, -1)) * soil.cell ** 2 * soil.density      # (E, D) kg
     taken = torch.minimum(torch.minimum(offered, capacity - fill), torch.full_like(offered, soil.intake * dt))
     share = taken / offered.clamp(min=1e-9)
-    gone = share[..., None, None] * excess
+    gone = share[..., None, None] * facing
     if soil.repose:
         shoved = shove(excess - gone, along, across, centre, axis, soil)
         gone = excess

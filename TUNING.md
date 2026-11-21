@@ -72,7 +72,7 @@ in the training log is each term's episode total. Excavate's `w_removal`,
 ## Excavate tool and drive (excavate_env_cfg.py)
 
 The env sets the tool over the ramp; then the policy's actions are
-`[drive, yaw, front arm rate]`.
+`[drive, steer, front arm rate, front shroud rate]`.
 
 | what | field | value |
 |---|---|---|
@@ -81,8 +81,9 @@ The env sets the tool over the ramp; then the policy's actions are
 | drum speed | `dig_drum_speed` | `−2.9` rad/s, the loading direction |
 | lowering and spin-up after the settle | `dig_ramp_seconds` | `2` s, wheels held |
 | drive | `dig_forward` | `0.30 × a0` of top speed: ±0.45 m/s, wheels held at a0 = 0 |
-| heading hold, yaw action | `heading_hold_gain`, `dig_yaw_rate` | 1.0 /s capped at ±0.3 rad/s, plus 0.3 × a1 rad/s |
+| line hold, steer action | `line_hold_gain`, `dig_yaw_rate`, `dig_steer_rate` | 2.0 rad/s of turn per metre the front drum is off the pass line, capped at ±0.3 rad/s, plus 0 × a1: the policy does not steer |
 | front arm | `dig_arm_rate` | `0.25 × a2` rad/s from the angle the ramp left it at, inside `arm_range`; + lowers the drum, and the shroud turns back by the same angle |
+| front shroud | `dig_shroud_rate` | `0.5 × a3` rad/s on top of that turn, inside ±1.10 rad; + turns the inlet back |
 | end of the pass | `work_area_length` | the episode ends when the front drum is 0.6 m past the anchor |
 | rear drum | `dig_rear_drum` | `False`: raised at the start pose, still; the scan stays at the front drum in reverse |
 | tool off (parked machine) | `dig_tool` | `True` |
@@ -95,10 +96,16 @@ The excavate task on the analytical soil of `mdp/rft.py`. What differs:
 |---|---|---|
 | commanded depth at the anchor | `cut_depth_range` | `(0.03, 0.08)` m, drawn per episode |
 | slope | `cut_gradient_max`, `cut_ramp_fraction` | half the episodes: up to ±0.10 along the pass, ±0.03 across it |
-| ramp depth | `dig_cut` | `0.03` m, the shallowest command; the policy lowers the arm from there |
+| ramp depth | `dig_cut` | `0.03` m into the ground under the drum, set per env in the settle, or at the plane if higher; the policy lowers the arm from there |
 | payload counted up to | `target_load_bore_fraction` | `1.0`: the drum's capacity, 149.6 kg |
-| episode | `episode_length_s` | `20` s |
+| episode | `episode_length_s` | `30` s |
 | soil | `soil_friction`, `soil_cohesion`, `rft_scale` | tan 40°, 500 Pa, stress factor 12.3 |
+| intake | `drum_intake` | `3.4` kg/s, only soil its opening faces; the rest is shoved |
+| loose soil | `soil_repose` | `40`°: shoved soil slumps to it and carries no load |
+| wheels | `wheel_soil` | `True`: on the soil, pressing ruts; the rigid ground drops to the bed floor |
+| bed | `bed_y`, `bed_depth` | 2.8 m wide, 0.40 m of soil |
+| carried-over beds, lanes | `soil_reset_every`, `spawn_y_jitter` | a bed kept 3 episodes, each starting up to 0.5 m to either side |
+| soil pushed out of the work area | `w_unheld` | `3.0` per kg, so 1.75 net with `w_removal` |
 | envs | `scene.num_envs` | `256` |
 
 ## Navigate planner (navigate_env_cfg.py)

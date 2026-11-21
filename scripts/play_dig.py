@@ -117,9 +117,6 @@ def _parse(argv):
                         "+ rises (the cut gets shallower), - falls (deeper); the RFT task trains on +-0.10")
     p.add_argument("--depth", type=float, default=None,
                    help="this run's cut depth where the front drum meets soil [m]; the RFT task trains on 0.03 to 0.08")
-    p.add_argument("--wheel_soil", action="store_true",
-                   help="RFT task: the wheels stand on the RFT soil and press ruts, instead of on rigid ground "
-                        "at the bed surface (training uses the rigid ground)")
     p.add_argument("--dig_speed", type=float, default=0.15,
                    help="forward command during --dig, a fraction of MAX_WHEEL_SPEED; negative backs up")
     p.add_argument("--arm_action", type=float, default=0.0,
@@ -601,9 +598,6 @@ def main(argv=None) -> int:
         env_cfg.soil_young_modulus = args.young
         print(f"[play] soil_young_modulus set to {args.young:g} Pa")
 
-    if args.wheel_soil:
-        env_cfg.wheel_soil = True
-        print("[play] wheel_soil: the wheels stand on the RFT soil")
 
     if args.cohesion is not None:
         env_cfg.soil_cohesion = args.cohesion
@@ -719,14 +713,15 @@ def main(argv=None) -> int:
         env = gym.make(args.task, cfg=env_cfg)
         u = env.unwrapped
         if args.park or args.dig:
-            # [drive, yaw, front arm rate]: the drive is dig_forward * a0, and zeros
-            # hold the wheels and leave the arm where the ramp put it.
+            # [drive, steer, front arm rate, front shroud rate]: the drive is
+            # dig_forward * a0, and zeros hold the wheels and leave the arm and
+            # shroud where the ramp put them.
             fixed = torch.zeros(u.num_envs, u.cfg.action_space, device=u.device)
             if not args.park:
                 fixed[:, 0] = args.dig_speed / u.cfg.dig_forward
                 fixed[:, 2] = args.arm_action
             if args.dig:
-                angle = u._dig_arm
+                angle = float(u._dig_arm[0])
                 drum = u.cfg.dig_drum_speed
                 if drum * DIG_DRUM_SIGN < 0:
                     print(f"[play] *** drums at {drum:+.2f} rad/s is the DUMP "
@@ -735,7 +730,7 @@ def main(argv=None) -> int:
                 chassis0 = float(u.cfg.bed_top) + CHASSIS_Z + 0.02
                 tip = chassis0 + MAST_TOP_Z - ARM_LEN * math.sin(angle) - ROTOR_TIP_R
                 print(f"[play] DIG: arm {angle:+.4f} rad ({math.degrees(angle):+.1f} deg), "
-                      f"shroud {u._dig_shroud:+.4f} rad, drums {drum:+.2f} rad/s; rotor tip "
+                      f"shroud {float(u._dig_shroud[0]):+.4f} rad, drums {drum:+.2f} rad/s; rotor tip "
                       f"{1000 * (tip - float(u.cfg.bed_top)):+.0f} mm from the bed surface; "
                       f"forward {args.dig_speed * MAX_WHEEL_SPEED * WHEEL_RADIUS:.2f} m/s "
                       f"and arm {args.arm_action * u.cfg.dig_arm_rate:+.3f} rad/s "

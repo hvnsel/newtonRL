@@ -112,7 +112,7 @@ workstation/train.sh -p scripts/dig_demo.py --task Luna-Excavator-Excavate-Micro
 workstation/train.sh -p scripts/play_dig.py --no_window --trace dig.csv     # newest checkpoint
 workstation/train.sh -p scripts/play_dig.py --dig --no_window               # scripted pass, no policy
 workstation/train.sh -p scripts/play_dig.py --task Luna-Excavator-Excavate-RFT --dig --no_window --video dig_rft_video   # mp4, soil drawn from the grid
-workstation/train.sh -p scripts/play_dig.py --task Luna-Excavator-Excavate-RFT --no_window --slope -0.1 --depth 0.05 --wheel_soil   # policy on a set slope, wheels on the soil
+workstation/train.sh -p scripts/play_dig.py --task Luna-Excavator-Excavate-RFT --no_window --slope -0.1 --depth 0.05   # policy on a set slope
 workstation/train.sh -p scripts/rft_pass.py --cut 0.05 --drive 0.1          # analytical soil, no simulator
 
 # tricycle

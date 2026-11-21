@@ -4,7 +4,7 @@
 # The bed is the height grid _bed_grid and the drums' load is _fill_kg. Each
 # time the actions are applied: the soil's loads on both drums go onto the
 # rotor and shroud bodies as world-frame wrenches, then the soil inside the
-# vane-tip circles moves from the grid into the drums. Observations, rewards
+# vane-tip circles that the openings face moves from the grid into the drums. Observations, rewards
 # and resets are the excavate env's. With soil_marker the grid is drawn in the
 # viewer, one box per cell. With wheel_soil the wheels stand on the same soil:
 # their colliders are off, rft.py carries them, and their tyres press ruts.
@@ -30,7 +30,8 @@ from .excavate_env import ExcavatorExcavateEnv
 from .excavate_env_cfg import BED_FLOOR_Z
 
 # The arms and everything on them. Their colliders are off: the drums and
-# shrouds meet the soil through rft.py, and only the wheels touch the ground.
+# shrouds meet the soil through rft.py, and only the wheels touch the ground
+# (with wheel_soil, only the chassis, should it reach the bed floor).
 ARM_COLLIDERS = EXCAVATOR_PRIM_REGEX + r"/Geometry/chassis/arm_(front|rear)_body/.*"
 # The tyres and grousers, off with wheel_soil.
 WHEEL_COLLIDERS = EXCAVATOR_PRIM_REGEX + r"/Geometry/chassis/wheel_(fl|fr|rl|rr)_body/.*"
@@ -133,7 +134,7 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         drum_axis = rft.drum_axis(quat[:, 2:4])
         self._bed_grid, self._loose, self._fill_kg = rft.excavate(
             self._bed_grid, self._loose, self._fill_kg, self._cells, centre[:, 2:4], drum_axis,
-            self._capacity, self._dig_dt, self._rft,
+            rft.drum_inlet(quat[:, 2:4]), self._capacity, self._dig_dt, self._rft,
         )
         if self._rft.repose:
             body = rft.drum_body(self._cells, centre[:, 2:4], drum_axis, self._bed_grid)

@@ -207,7 +207,7 @@ def main(argv=None) -> int:
             print(f"  * this is the DUMP direction. Loading is {DIG_DRUM_SIGN:+.0f}")
 
         cut = u.cfg.dig_cut
-        angle = u._dig_arm
+        angle = float(u._dig_arm[0])
 
         drum_x = PIVOT_X + ARM_LEN * math.cos(angle)
         lead = drum_x + SHROUD_OUT_R
@@ -223,7 +223,7 @@ def main(argv=None) -> int:
             print(f"  {ahead:.2f} m of bed ahead of it; crawling {speed:.3f} m/s "
                   f"clears it in {ahead / max(speed, 1e-6):.1f} s")
         wall = SHROUD_OUT_R - ROTOR_TIP_R
-        print(f"  to cut {cut:.3f} m -> arm {angle:+.3f} rad, shroud {u._dig_shroud:+.3f} rad")
+        print(f"  to cut {cut:.3f} m -> arm {angle:+.3f} rad, shroud {float(u._dig_shroud[0]):+.3f} rad")
         print(f"  vane tips {cut:.3f} m below grade, shroud bottom {cut + wall:.3f} m")
         for line in cut_diagnosis(u.cfg, cut):
             print(f"  * {line}")

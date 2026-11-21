@@ -311,9 +311,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # which may not exceed it.
     max_num_envs = 4
 
-    # actions: [drive, yaw, front arm rate] in [-1, 1]
-    action_space = 3
-    observation_space = DIG_OBS.dim      # 167
+    # actions: [drive, steer, front arm rate, front shroud rate] in [-1, 1]
+    action_space = 4
+    observation_space = DIG_OBS.dim      # 168
     state_space = DIG_CRITIC.dim         # 231
 
     # --- start state ---
@@ -355,6 +355,9 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # and inside arm_range; + lowers the drum. The shroud turns back by the
     # same angle, so the inlet stays dig_inlet_tilt off straight down.
     dig_arm_rate: float = 0.25
+    # Front shroud: dig_shroud_rate * a3 [rad/s], on top of the turn that keeps
+    # the inlet tilt as the arm moves, inside SHROUD_RANGE; + turns the inlet back.
+    dig_shroud_rate: float = 0.5
     action_smoothing = 0.3
     # With dig_rear_drum, the leading drum, which the actor's scan is taken at,
     # switches when the commanded drive passes this speed [m/s]. Without it the
@@ -797,8 +800,9 @@ class ExcavatorExcavateMicroEnvCfg(ExcavatorExcavateSmallEnvCfg):
 
 @configclass
 class ExcavateRftSceneCfg(InteractiveSceneCfg):
-    """The machine on a rigid ground plane at the bed surface. The soil is the
-    env's height grid, and only the wheels touch the plane."""
+    """The machine on a rigid ground plane, at the bed surface or with wheel_soil
+    at the bed floor. The soil is the env's height grid, and only the wheels and
+    the chassis touch the plane."""
 
     ground = AssetBaseCfg(
         prim_path="/World/GroundPlane",
@@ -815,14 +819,22 @@ class ExcavateRftSceneCfg(InteractiveSceneCfg):
 @configclass
 class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     """The excavate task with the soil of mdp/rft.py: the same observations,
-    actions and rewards, rigid physics only. Each episode commands its own
-    depth and, half the time, a slope."""
+    actions and rewards, rigid physics only. The wheels stand on the soil. A bed
+    is kept for soil_reset_every episodes, each starting on what the last left,
+    in a lane up to spawn_y_jitter to either side, and commanding its own depth
+    below that ground and, half the time, a slope."""
 
     scene: ExcavateRftSceneCfg = ExcavateRftSceneCfg(num_envs=256, env_spacing=5.12, replicate_physics=True)
     # No sparse grid to size.
     max_num_envs = 4096
-    # Room to back up and take a second pass.
-    episode_length_s = 20.0
+    # Time to take a layer in at the drum's intake, or to back up and take a second pass.
+    episode_length_s = 30.0
+
+    # --- bed: 2.8 m wide for the lanes, 0.40 m of soil, kept for three episodes ---
+    bed_y: tuple[float, float] = (-1.40, 1.40)
+    bed_depth: float = 0.40
+    soil_reset_every: int = 3
+    spawn_y_jitter = 0.5                 # m
 
     # --- cut command ---
     cut_depth_range: tuple[float, float] = (0.03, 0.08)     # m, at the anchor
@@ -842,25 +854,27 @@ class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     # grid the scripted dig met about twice rft.py's force at the same depth,
     # counting MPM's 2 cm contact band.
     rft_scale: float = 12.3
-    # How fast a drum swallows soil [kg/s]: inf takes all its vane-tip circle reaches.
-    drum_intake: float = math.inf
+    # How fast a drum swallows soil [kg/s]: inf takes all its opening faces.
+    drum_intake: float = 3.4
     # Angle of repose of loose soil [deg]. Above 0, soil a drum reaches but does not
     # take is shoved out of its circle and slumps; 0 leaves it where it is.
-    soil_repose: float = 0.0
+    soil_repose: float = 40.0
     # Draw the soil grid in the viewer, and hide the ground's grid that would
     # cover the cut. play_dig turns it on for a window or a video.
     soil_marker: bool = False
     # The wheels on the same soil instead of the rigid ground: their colliders
-    # off, rft.py carries them and their tyres press ruts. The chassis still
-    # meets the ground at the bed surface if they sink 16 cm. Off in training;
-    # play_dig --wheel_soil turns it on.
-    wheel_soil: bool = False
+    # off, rft.py carries them and their tyres press ruts, and the ground drops
+    # to the bed floor, so the machine can drive down into its own cuts.
+    wheel_soil: bool = True
+
+    # Soil pushed out of the work area costs w_unheld - w_removal = 1.75 per kg.
+    w_unheld = 3.0
 
     def __post_init__(self) -> None:
         self.derive_bed()
         self.drum_capacity_kg = BORE_VOLUME * self.soil_density
         self.target_load_kg = self.target_load_bore_fraction * self.drum_capacity_kg
-        self.scene.ground.init_state.pos = (0.0, 0.0, self.bed_top)
+        self.scene.ground.init_state.pos = (0.0, 0.0, BED_FLOOR_Z if self.wheel_soil else self.bed_top)
         self.sim.physics = NewtonCfg(
             solver_cfg=MJWarpSolverCfg(
                 njmax=2048,

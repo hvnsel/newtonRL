@@ -56,7 +56,7 @@ def main() -> None:
     speed = a.drive * MAX_WHEEL_SPEED * WHEEL_RADIUS
     full_spin = DIG_DRUM_SIGN * a.drum * MAX_DRUM_SPEED
     shroud_quat = about_y(a.tilt)
-    axis = rft.drum_axis(shroud_quat)
+    axis, inlet = rft.drum_axis(shroud_quat), rft.drum_inlet(shroud_quat)
     still = torch.zeros(1, 1, 3)
     angle = 0.0
     loose = torch.zeros_like(height)
@@ -78,7 +78,7 @@ def main() -> None:
         shroud_force, _, rotor_force, rotor_torque = rft.drum_loads(
             patches, centre, lin, shroud_quat, still, about_y(angle), spin * axis, height - loose, fill, capacity, soil
         )
-        height, loose, fill = rft.excavate(height, loose, fill, cells, centre, axis, capacity, DT, soil)
+        height, loose, fill = rft.excavate(height, loose, fill, cells, centre, axis, inlet, capacity, DT, soil)
 
         if i % round(0.5 / DT) == 0:
             force = (shroud_force + rotor_force)[0, 0]

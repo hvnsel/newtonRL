@@ -9,8 +9,9 @@
 #   bash workstation/train.sh -p scripts/site_run.py --video site_video
 #   python3 scripts/render_dig.py site.npz --stride 4
 #
-# The dig and navigate checkpoints default to the newest intact one of
-# Luna-Excavator-Excavate-RFT and Luna-Excavator-Navigate.
+# The dig checkpoint defaults to the newest intact one of Luna-Excavator-Excavate-RFT,
+# the navigate one to Luna-Excavator-Navigate-RFT's (fine-tuned on the soil), else
+# Luna-Excavator-Navigate's.
 
 from __future__ import annotations
 
@@ -47,7 +48,8 @@ def _parse():
     p.add_argument("--length", type=float, default=2.4, help="trench length [m]")
     p.add_argument("--depth", type=float, default=0.15, help="trench depth [m]")
     p.add_argument("--dig_checkpoint", default=None, help="excavate model file; default the newest intact RFT one")
-    p.add_argument("--nav_checkpoint", default=None, help="navigate model file; default the newest intact one")
+    p.add_argument("--nav_checkpoint", default=None,
+                   help="navigate model file; default the newest intact one fine-tuned on the soil, else navigate's")
     p.add_argument("--minutes", type=float, default=30.0, help="simulated time limit")
     p.add_argument("--video", default=None, help="record an mp4 into this directory, from the Newton viewer")
     p.add_argument("--eye", type=float, nargs=3, default=None, help="video camera position; default over the site")
@@ -64,11 +66,19 @@ def _parse():
     return args
 
 
+def _newest_navigate() -> Path:
+    """The newest intact navigate checkpoint: fine-tuned on the soil if there is one."""
+    try:
+        return _resolve_checkpoint("Luna-Excavator-Navigate-RFT", None, None)
+    except FileNotFoundError:
+        return _resolve_checkpoint("Luna-Excavator-Navigate", None, None)
+
+
 def main() -> int:
     args = _parse()
     torch.manual_seed(0)
     dig_ckpt = Path(args.dig_checkpoint) if args.dig_checkpoint else _resolve_checkpoint("Luna-Excavator-Excavate-RFT", None, None)
-    nav_ckpt = Path(args.nav_checkpoint) if args.nav_checkpoint else _resolve_checkpoint("Luna-Excavator-Navigate", None, None)
+    nav_ckpt = Path(args.nav_checkpoint) if args.nav_checkpoint else _newest_navigate()
     print(f"[site] dig policy {dig_ckpt}\n[site] navigate policy {nav_ckpt}")
 
     env_cfg, _ = resolve_task_config(TASK, "")

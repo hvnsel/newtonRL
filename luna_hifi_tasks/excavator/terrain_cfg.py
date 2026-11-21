@@ -205,6 +205,28 @@ EXCAVATION_TERRAINS_CFG = TerrainGeneratorCfg(
 )
 
 
+# Flat 32 m cells for navigate on the RFT soil (Luna-Excavator-Navigate-RFT):
+# the wheels stand on each env's soil grid, so the mesh only gives the spawn
+# and goal spots, the paths and the critic's scans.
+SOIL_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=(32.0, 32.0),
+    border_width=4.0,
+    num_rows=2,
+    num_cols=2,
+    curriculum=True,
+    horizontal_scale=0.1,
+    vertical_scale=0.005,
+    slope_threshold=0.75,
+    use_cache=True,
+    sub_terrains={
+        "flat": HfExcavationTerrainCfg(
+            proportion=1.0, num_pits=0, num_piles=0, slope=0.0, noise=0.0,
+            flat_patch_sampling=_patches(GOAL_PATCH_ANY_DIFF),
+        ),
+    },
+)
+
+
 @height_field_to_mesh
 def course_terrain(difficulty: float, cfg: "HfCourseTerrainCfg") -> tuple[np.ndarray, np.ndarray]:
     """Level ground with one COURSE_LAYOUTS entry (mdp/course.py). The origin

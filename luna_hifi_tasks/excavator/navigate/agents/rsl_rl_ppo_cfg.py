@@ -52,3 +52,11 @@ class ExcavatorNavigatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         max_grad_norm=1.0,
         symmetry_cfg=RslRlSymmetryCfg(use_data_augmentation=True, data_augmentation_func=turn_around),
     )
+
+
+@configclass
+class ExcavatorNavigateRftPPORunnerCfg(ExcavatorNavigatePPORunnerCfg):
+    """Navigate on the RFT soil, fine-tuned from a navigate checkpoint (--checkpoint)."""
+
+    max_iterations = 600
+    experiment_name = "excavator_navigate_rft"

@@ -28,7 +28,7 @@ from ..mdp.observations import (
     critic_state_spec,
     navigate_obs_spec,
 )
-from ..terrain_cfg import COURSE_TERRAIN_CFG, EXCAVATION_TERRAINS_CFG
+from ..terrain_cfg import COURSE_TERRAIN_CFG, EXCAVATION_TERRAINS_CFG, SOIL_TERRAINS_CFG
 
 # Height above the chassis the scan rays start from, casting straight down.
 SCANNER_HEIGHT = 20.0
@@ -260,4 +260,20 @@ class ExcavatorNavigateCourseEnvCfg(ExcavatorNavigateEnvCfg):
     def __post_init__(self) -> None:
         super().__post_init__()
         self.scene.terrain.terrain_generator = copy.deepcopy(COURSE_TERRAIN_CFG)
+        self.scene.terrain.max_init_terrain_level = 0
+
+
+@configclass
+class ExcavatorNavigateRftEnvCfg(ExcavatorNavigateEnvCfg):
+    """Navigate with the wheels on the analytical soil of mdp/rft.py, as on the
+    excavation site: flat cells, the tyres' colliders off, each env's wheels
+    carried by its own soil grid, which they press ruts into. The soil is the
+    excavate RFT task's."""
+
+    soil_cell: float = 0.04              # m, as the excavate task's grid
+    soil_half: float = 16.5              # m, the grid's reach either side of the env origin
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.scene.terrain.terrain_generator = copy.deepcopy(SOIL_TERRAINS_CFG)
         self.scene.terrain.max_init_terrain_level = 0

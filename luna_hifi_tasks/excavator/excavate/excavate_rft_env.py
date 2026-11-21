@@ -145,7 +145,7 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
             body = rft.drum_body(self._cells, centre[:, 2:4], drum_axis, self._bed_grid)
             self._bed_grid, self._loose = rft.slump(self._bed_grid, self._loose, body, self._rft)
         if self.cfg.wheel_soil:
-            pressed = rft.press(self._bed_grid, self._cells, centre[:, 4:], rft.drum_axis(quat[:, 4:]))
+            pressed = rft.press(self._bed_grid, self._cells, centre[:, 4:], rft.drum_axis(quat[:, 4:]), self._rft)
             self._loose = (self._loose - (self._bed_grid - pressed)).clamp(min=0.0)
             self._bed_grid = pressed
         if self._soil_marker is not None:

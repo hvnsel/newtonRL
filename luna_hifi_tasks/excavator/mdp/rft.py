@@ -54,7 +54,7 @@
 #               height, loose = slump(height, loose, drum_body(cells, centre, axis, height), soil)
 #   wheels      wheels = wheel_patches()
 #               force, torque = wheel_loads(wheels, <wheel state>, height, soil)
-#               height = press(height, cells, centre, drum_axis(wheel_quat))
+#               height = press(height, cells, centre, drum_axis(wheel_quat), soil)
 #   dumping     height, loose = deposit(height, loose, cells, centre, drum_axis(shroud_quat), kg, soil)
 
 from __future__ import annotations
@@ -456,9 +456,16 @@ def wheel_loads(patches: Patches, centre, lin, quat, ang, height, soil: Soil) ->
     return force + grip, torque + torch.linalg.cross(below, grip)
 
 
-def press(height, cells, centre, axis) -> torch.Tensor:
+def press(height, cells, centre, axis, soil: Soil) -> torch.Tensor:
     """The grid (E, ny, nx) with the soil under each wheel's tyre pressed down
-    to it. centre and axis (E, W, 3): the wheels' axis points and drum_axis()."""
-    under, lowest, _, _ = beneath(cells, centre, axis, WHEEL_RADIUS, WHEEL_HALF_W)
-    tyre = torch.where(under, lowest, torch.full_like(lowest, math.inf)).amin(1)
-    return torch.minimum(height, tyre)
+    to it. centre and axis (E, W, 3): the wheels' axis points and drum_axis().
+    Only the square of cells round each tyre is looked at."""
+    E, ny, nx = height.shape
+    k = int(math.ceil(2.0 * math.hypot(WHEEL_RADIUS, WHEEL_HALF_W) / soil.cell)) + 4
+    off = torch.arange(k, device=height.device) - k // 2
+    ix = torch.floor((centre[..., 0] - soil.lower[0]) / soil.cell).long()[..., None, None]
+    iy = torch.floor((centre[..., 1] - soil.lower[1]) / soil.cell).long()[..., None, None]
+    gx, gy = torch.broadcast_tensors((ix + off).clamp(0, nx - 1), (iy + off[:, None]).clamp(0, ny - 1))
+    under, lowest, _, _ = beneath(cells[gy, gx], centre, axis, WHEEL_RADIUS, WHEEL_HALF_W)
+    tyre = torch.where(under, lowest, torch.full_like(lowest, math.inf))
+    return height.reshape(E, -1).scatter_reduce(1, (gy * nx + gx).reshape(E, -1), tyre.reshape(E, -1), "amin").reshape(E, ny, nx)

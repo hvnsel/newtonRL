@@ -8,6 +8,7 @@ end.
 |---|---|
 | `Luna-Excavator-Navigate` | drive to a goal pose over generated terrain with craters and boulders, along a path planned around them; the actor sees the path ahead, not the terrain (MJWarp, rigid terrain mesh) |
 | `Luna-Excavator-Navigate-Course` | the navigate policy on one fixed obstacle layout (mdp/course.py), for playback |
+| `Luna-Excavator-Navigate-RFT` | navigate with the wheels on the RFT soil of the excavate task, on flat ground: for fine-tuning a navigate checkpoint to drive the excavation site |
 | `Luna-Excavator-Excavate` | cutting a strip of an implicit-MPM soil bed down to a commanded plane and into the drums; the env lowers and spins the tool, then the policy drives either way, steers and moves the front arm |
 | `Luna-Excavator-Excavate-Small`, `-Micro` | one env, a small soil pile in front of the machine |
 | `Luna-Excavator-Excavate-RFT` | the excavate task with the analytical soil of `mdp/rft.py` in place of MPM; rigid physics only, so hundreds of envs. Each episode commands a depth of 3 to 8 cm and, half the time, a slope |
@@ -37,7 +38,7 @@ luna_hifi_tasks/
       symmetry.py                 180-degree symmetry for PPO augmentation
       sensors.py                  MPM soil readouts for excavate
       rft.py                      analytical soil for the drums (and, for playback, the wheels): RFT forces on a height grid, no MPM
-    navigate/                     navigate env, cfg, PPO cfg
+    navigate/                     navigate env, cfg, PPO cfg; navigate_rft_env.py is the RFT-soil version
     excavate/                     excavate env, cfg, PPO cfg; excavate_rft_env.py is the RFT-soil version
     site/site_env.py              the site env (dig, drive and dump modes) and run_site(), the trench loop
   tricycle/                       tricycle env, cfg, MJCF, PPO cfg
@@ -104,6 +105,9 @@ workstation/train.sh train --rl_library rsl_rl --task Luna-Excavator-Navigate \
   --num_envs 256 --checkpoint logs/rsl_rl/excavator_navigate/<run>/model_<N>.pt \
   --max_iterations <remaining> "env.goal_dist_range=[1.5,<goal_dist_hi>]" \
   env.scene.terrain.max_init_terrain_level=<row> > train.log 2>&1 &
+# navigate fine-tuned on the RFT soil, for the site
+workstation/train.sh train --rl_library rsl_rl --task Luna-Excavator-Navigate-RFT \
+  --num_envs 256 --checkpoint logs/rsl_rl/excavator_navigate/<run>/model_<N>.pt --run_name soil > nav_rft_train.log 2>&1 &
 python scripts/peek.py --tags goal_dist_hi reached mean_std learning_rate
 bash workstation/nav_videos.sh          # clips, traces and figures in ~/nav_media
 bash workstation/nav_course.sh          # the obstacle course in ~/nav_course

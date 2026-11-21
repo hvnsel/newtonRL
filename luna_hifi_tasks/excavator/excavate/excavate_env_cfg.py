@@ -344,10 +344,13 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # --- actions, once the ramp is done ---
     # Drive: dig_forward * a0 of top speed, +-0.45 m/s; zero holds the wheels.
     dig_forward: float = 0.30
-    # Yaw rate [rad/s]: heading_hold_gain * (handover heading - heading),
-    # clamped to dig_yaw_rate, plus dig_yaw_rate * a1.
-    heading_hold_gain: float = 1.0
+    # Yaw rate [rad/s]: a hold that turns the rover to keep the front drum on the
+    # pass line (through the anchor, along the handover heading), line_hold_gain
+    # per m off it, clamped to dig_yaw_rate; the heading follows as it drives.
+    # Plus dig_steer_rate * a1; 0 leaves the steering to the hold.
+    line_hold_gain: float = 2.0
     dig_yaw_rate: float = 0.3
+    dig_steer_rate: float = 0.0
     # Front arm: dig_arm_rate * a2 [rad/s], from the angle the ramp left it at
     # and inside arm_range; + lowers the drum. The shroud turns back by the
     # same angle, so the inlet stays dig_inlet_tilt off straight down.

@@ -179,8 +179,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         print(
             f"[excavate] cut command: depth {lo:.3f} to {hi:.3f} m, slope up to {cfg.cut_gradient_max:.2f} "
             f"in {cfg.cut_ramp_fraction:.0%} of {cfg.episode_length_s:g} s episodes. actions: drive +-"
-            f"{cfg.dig_forward * MAX_WHEEL_SPEED * WHEEL_RADIUS:.2f} m/s, yaw +-{cfg.dig_yaw_rate:.2f} rad/s, "
-            f"front arm +-{cfg.dig_arm_rate:.2f} rad/s"
+            f"{cfg.dig_forward * MAX_WHEEL_SPEED * WHEEL_RADIUS:.2f} m/s, steer +-{cfg.dig_steer_rate:.2f} rad/s, "
+            f"front arm +-{cfg.dig_arm_rate:.2f} rad/s; the hold keeps the drum on the pass line"
         )
 
     def _setup_scene(self):
@@ -246,14 +246,14 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         a = self._actions
         driving = self._since_settle >= self._ramp_steps
         ramp = (self._since_settle.float() / self._ramp_steps).clamp(0.0, 1.0) * float(c.dig_tool)
-        # Drive: dig_forward * a0 of top speed, either way. Yaw rate: a heading
-        # hold on the handover heading plus dig_yaw_rate * a1. Wheels held until
-        # the ramp is done.
-        err = self._work_yaw - self._base_yaw()
-        err = torch.atan2(torch.sin(err), torch.cos(err))
-        hold = (c.heading_hold_gain * err).clamp(-c.dig_yaw_rate, c.dig_yaw_rate)
-        forward = torch.where(driving, c.dig_forward * a[:, 0], torch.zeros_like(err))
-        yaw_rate = torch.where(driving, hold + c.dig_yaw_rate * a[:, 1], torch.zeros_like(err))
+        # Drive: dig_forward * a0 of top speed, either way. Yaw rate: a hold that
+        # keeps the front drum on the pass line through the anchor, plus
+        # dig_steer_rate * a1. Wheels held until the ramp is done.
+        rel = self._drum_poses()[0][:, 0, :2] - self._target_xy
+        off = rel[:, 1] * torch.cos(self._work_yaw) - rel[:, 0] * torch.sin(self._work_yaw)   # m left of the line
+        hold = (-c.line_hold_gain * off).clamp(-c.dig_yaw_rate, c.dig_yaw_rate)
+        forward = torch.where(driving, c.dig_forward * a[:, 0], torch.zeros_like(off))
+        yaw_rate = torch.where(driving, hold + c.dig_steer_rate * a[:, 1], torch.zeros_like(off))
         self._apply_drive(forward, yaw_rate / MAX_YAW_SPEED)
         self._update_lead()
         # Front drum to the dig pose; the rear one too only with dig_rear_drum,

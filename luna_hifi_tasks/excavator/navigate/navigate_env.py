@@ -16,7 +16,7 @@ from ..excavator_cfg import MAX_WHEEL_SPEED
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import paths as P
 from ..mdp import rewards as R
-from ..mdp.observations import NAV_NEAR_CELL, NAV_NEAR_IMAGE, navigate_obs_spec
+from ..mdp.observations import NAV_NEAR_CELL, NAV_NEAR_IMAGE, navigate_actor_obs, navigate_obs_spec
 from ..mdp.terrain import nav_near_pattern, scan_from_raycaster
 from ..terrain_cfg import GOAL_PATCHES, SPAWN_PATCHES
 from .navigate_env_cfg import NAV_CRITIC, ExcavatorNavigateEnvCfg
@@ -213,22 +213,12 @@ class ExcavatorNavigateEnv(ExcavatorEnvBase):
             self._show_goal_marker()
         p = self._proprio()
         c = self.cfg
-        vec_b, dist, heading, _ = self._goal_in_body()
         far, near = self._terrain_scan()
-        ahead = self._path_points(c.path_lookahead) - self.robot.data.root_pos_w.torch[:, None, :2]
-        k = ahead.shape[1]
-        ahead_b = R.world_to_body_xy(ahead.reshape(-1, 2), self._base_yaw().repeat_interleave(k))
-        policy = self._obs_spec.assemble({
-            "base_lin_vel": p["base_lin_vel"],
-            "base_ang_vel": p["base_ang_vel"],
-            "projected_gravity": p["projected_gravity"],
-            "path_points": ahead_b.reshape(self.num_envs, 2 * k),
-            "goal_vec_b": vec_b / c.goal_dist_max,
-            "goal_vec_near": vec_b / dist.clamp_min(c.goal_near_range).unsqueeze(-1),
-            "goal_heading": heading,
-            "wheel_vel": p["wheel_vel"],
-            "last_action": self._actions,
-        })
+        policy = navigate_actor_obs(
+            self._obs_spec, p, self.robot.data.root_pos_w.torch[:, :2], self._base_yaw(),
+            self._goal_pos_w, self._goal_yaw, self._path_points(c.path_lookahead), self._actions,
+            c.goal_dist_max, c.goal_near_range,
+        )
         wheel_vel = self.robot.data.joint_vel.torch
         v_fwd = p["base_lin_vel"][:, 0]
         critic = NAV_CRITIC.assemble({

@@ -101,6 +101,11 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
 
     def _apply_action(self):
         super()._apply_action()
+        self._step_soil()
+
+    def _step_soil(self) -> None:
+        """The soil's loads onto the drums (and wheels), then the soil the drums
+        take in or shove, its slump, and the ruts."""
         d = self.robot.data
         # Front and rear rotor, front and rear shroud, then any wheels: (E, B, ...),
         # positions on the drum and wheel axes.

@@ -823,12 +823,6 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # Rotor phase, uniform over one pocket.
         drum = torch.rand(n, device=dev) * (2.0 * math.pi / ROTOR_VANES)
         spawn_xy = self._reset_robot(env_ids, yaw, arm, xy_off, drum)
-        self._arm_start[env_ids] = arm
-        self._arm_offset[env_ids] = 0.0
-        self._shroud_offset[env_ids] = 0.0
-        self._work_yaw[env_ids] = yaw
-        self._since_settle[env_ids] = 0
-        self._pass_done[env_ids] = False
 
         # Soil is re-laid every soil_reset_every episodes, whenever a particle
         # escaped or the articulation went non-finite, and in every env after
@@ -843,29 +837,59 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             self._soil_age[stale] = 0
 
         self._fill_kg[env_ids] = 0.0
-        self._fill_filt[env_ids] = 0.0
-        self._spill_filt[env_ids] = 0.0
-        self._spill_filt_prev[env_ids] = 0.0
         self._fill_bias[env_ids] = (torch.rand(n, 2, device=dev) * 2.0 - 1.0) * c.fill_sensor_bias
 
+        # The cut command: a depth, and in cut_ramp_fraction of episodes a
+        # gradient, sampled in the body frame (x forward).
         lo, hi = c.cut_depth_range
         depth = lo + (hi - lo) * torch.rand(n, device=dev)
-        anchor_xy, surface = self._drum_spawn_ground(env_ids, spawn_xy, yaw, arm)
-        floor = self.scene.env_origins[env_ids, 2] + BED_FLOOR_Z
-        self._target_xy[env_ids] = anchor_xy
-        # Provisional; _get_rewards re-places it during the settle.
-        self._target_z0[env_ids] = (surface - depth).clamp_min(floor)
-        self._target_depth[env_ids] = depth
-
-        # Gradient sampled in the body frame (x forward) and rotated to world.
         grad = torch.stack([
             jitter(c.cut_gradient_max),
             jitter(c.cut_gradient_max * c.cut_lateral_fraction),
         ], dim=-1)
         ramp = (torch.rand(n, device=dev) < c.cut_ramp_fraction).unsqueeze(-1)
-        self._target_grad[env_ids] = R.body_to_world_xy(
-            torch.where(ramp, grad, torch.zeros_like(grad)), yaw
-        )
+        anchor_xy, surface = self._drum_spawn_ground(env_ids, spawn_xy, yaw, arm)
+        self._begin_pass(env_ids, anchor_xy, surface, yaw, arm, depth, torch.where(ramp, grad, torch.zeros_like(grad)))
+
+        self._failed_now[env_ids] = False
+        self._off_bed[env_ids] = False
+        self._escaped[env_ids] = False
+        self._particle_max_m[env_ids] = 0.0
+
+        self.extras["log"] = self._log.flush(env_ids)
+        self.extras["log"].update(exits)
+
+    def _begin_pass(
+        self,
+        env_ids: torch.Tensor,
+        anchor_xy: torch.Tensor,
+        surface: torch.Tensor,
+        yaw: torch.Tensor,
+        arm: torch.Tensor,
+        depth: torch.Tensor,
+        grad_b: torch.Tensor,
+    ) -> None:
+        """Start a pass in these envs: the work area at anchor_xy (world) facing
+        yaw, the plane depth under the ground surface (world z) there and
+        sloping grad_b (body frame); _get_rewards re-places it under the work
+        area's mean surface during the settle. The ramp lowers the front arm from
+        arm. The machine, the soil and the drums' load stay as they are."""
+        floor = self.scene.env_origins[env_ids, 2] + BED_FLOOR_Z
+        self._arm_start[env_ids] = arm
+        self._arm_offset[env_ids] = 0.0
+        self._shroud_offset[env_ids] = 0.0
+        self._work_yaw[env_ids] = yaw
+        self._since_settle[env_ids] = 0
+        self._pass_done[env_ids] = False
+        fill = self._fill_kg[env_ids]
+        self._fill_filt[env_ids] = fill
+        self._spill_filt[env_ids] = fill
+        self._spill_filt_prev[env_ids] = fill
+
+        self._target_xy[env_ids] = anchor_xy
+        self._target_z0[env_ids] = (surface - depth).clamp_min(floor)
+        self._target_depth[env_ids] = depth
+        self._target_grad[env_ids] = R.body_to_world_xy(grad_b, yaw)
         self._set_work_area(env_ids, anchor_xy, yaw)
 
         self._above_init[env_ids] = 0.0
@@ -880,12 +904,5 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._shape_newly_done[env_ids] = False
         self._success_paid[env_ids] = False
         self._drum_full[env_ids] = False
-        self._failed_now[env_ids] = False
-        self._off_bed[env_ids] = False
-        self._escaped[env_ids] = False
-        self._particle_max_m[env_ids] = 0.0
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
-
-        self.extras["log"] = self._log.flush(env_ids)
-        self.extras["log"].update(exits)

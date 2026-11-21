@@ -52,6 +52,7 @@
 #   wheels      wheels = wheel_patches()
 #               force, torque = wheel_loads(wheels, <wheel state>, height, soil)
 #               height = press(height, cells, centre, drum_axis(wheel_quat))
+#   dumping     height, loose = deposit(height, loose, cells, centre, drum_axis(shroud_quat), kg, soil)
 
 from __future__ import annotations
 
@@ -344,6 +345,16 @@ def excavate(height, loose, fill, cells, centre, axis, inlet, capacity, dt: floa
     if soil.repose:
         height, loose = height + shoved, loose + shoved
     return height, loose, fill + taken
+
+
+def deposit(height, loose, cells, centre, axis, kg, soil: Soil) -> tuple[torch.Tensor, torch.Tensor]:
+    """Lay kg (E,) of soil out of a drum onto the grid under its shroud as
+    loose soil, evenly over the cells there; slump() lets it run to its repose.
+    centre and axis (E, 3): the drum's axis point and drum_axis()."""
+    under = beneath(cells, centre[:, None], axis[:, None], SHROUD_OUT_R, ROTOR_HALF_LEN)[0][:, 0]
+    depth = kg / (under.flatten(1).sum(-1).clamp(min=1) * soil.cell ** 2 * soil.density)
+    laid = depth[:, None, None] * under
+    return height + laid, loose + laid
 
 
 def beneath(cells, centre, axis, radius: float, half_len: float):

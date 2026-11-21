@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 import torch
 
+from .rewards import axis_heading_sin_cos, world_to_body_xy
+
 # Navigate scans: square grids centred on the chassis, yaw-aligned.
 # far: 27 x 27 at 0.45 m, 5.85 m out in every direction.
 # near: 25 x 25 at 0.20 m, 2.4 m out.
@@ -102,6 +104,38 @@ def navigate_obs_spec(num_path_points: int = 2, num_wheels: int = 4) -> ObsSpec:
         ObsTerm("wheel_vel", num_wheels, "joint velocities, scaled"),
         ObsTerm("last_action", 2, "[forward, yaw]"),
     ])
+
+
+def navigate_actor_obs(
+    spec: ObsSpec,
+    proprio: dict[str, torch.Tensor],
+    root_xy: torch.Tensor,
+    yaw: torch.Tensor,
+    goal_xy: torch.Tensor,
+    goal_yaw: torch.Tensor,
+    path_xy: torch.Tensor,
+    last_action: torch.Tensor,
+    goal_dist_max: float,
+    goal_near_range: float,
+) -> torch.Tensor:
+    """Navigate's actor observation: the chassis' world xy (E, 2) and yaw (E,),
+    the goal pose, the world xy of the path points ahead (E, K, 2) and the
+    proprioception of ExcavatorEnvBase._proprio()."""
+    E, K = path_xy.shape[:2]
+    vec_b = world_to_body_xy(goal_xy - root_xy, yaw)
+    dist = torch.linalg.norm(vec_b, dim=-1)
+    ahead_b = world_to_body_xy((path_xy - root_xy[:, None]).reshape(-1, 2), yaw.repeat_interleave(K))
+    return spec.assemble({
+        "base_lin_vel": proprio["base_lin_vel"],
+        "base_ang_vel": proprio["base_ang_vel"],
+        "projected_gravity": proprio["projected_gravity"],
+        "path_points": ahead_b.reshape(E, 2 * K),
+        "goal_vec_b": vec_b / goal_dist_max,
+        "goal_vec_near": vec_b / dist.clamp_min(goal_near_range).unsqueeze(-1),
+        "goal_heading": axis_heading_sin_cos(goal_yaw, yaw),
+        "wheel_vel": proprio["wheel_vel"],
+        "last_action": last_action,
+    })
 
 
 def excavate_obs_spec(terrain_cells: int = DIG_SCAN_CELLS, num_arms: int = 2, num_wheels: int = 4) -> ObsSpec:

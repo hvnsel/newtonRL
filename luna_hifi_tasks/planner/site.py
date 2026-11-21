@@ -1,12 +1,14 @@
 """Heightfield site model for the excavation planner.
 
-The site is a grid of patches, each the size of the dig policy's footprint and
-carrying an integer height in voxels. One trim clears one voxel of depth from
-one patch (`height -= 1`), then hauls the spoil to the dump. Pure Python; no
-simulation.
+The site is a grid of patches, each the size of the dig policy's work area and
+carrying an integer height in voxels. One trim is one dig pass: it clears one
+voxel of depth from one patch (`height -= 1`), then the spoil goes to the dump.
+Pure Python; no simulation. site_env.py runs the trims on the RFT soil and
+reads each patch's height back from the bed.
 
-The baselines choose the order of trims. The machine only drives between
-neighbouring patches whose height difference is within `climb_voxels`.
+The baselines choose the order of trims. The machine drives between
+neighbouring patches whose height difference is within `climb_voxels`, and
+digs a patch it straddles from the ground beside it down to `reach_voxels`.
 
 Run it for a demo on a pit:
 
@@ -27,41 +29,46 @@ Grid = list[list[int]]       # heights in voxels
 @dataclass
 class SiteCfg:
     # --- geometry -----------------------------------------------------
-    voxel: float = 0.04
+    voxel: float = 0.05
     """Metres per voxel; the depth of one trim."""
 
-    patch_x: float = 0.90
-    patch_y: float = 1.20
-    """Trim footprint, metres: 0.60 m ahead of the anchor plus 0.30 behind, by
-    the 1.2 m drum swath."""
+    patch_x: float = 0.80
+    patch_y: float = 0.95
+    """Trim footprint, metres: the dig's work area, 0.60 m ahead of the anchor
+    plus 0.20 behind, by the 0.95 m drum swath."""
 
     # --- what a trim does ---------------------------------------------
     soil_density: float = 1500.0
     """kg/m3."""
 
-    capture_fraction: float = 0.733
-    """Share of the soil a trim disturbs that reaches the drum bore."""
+    capture_fraction: float = 0.80
+    """Share of the soil a trim cuts that ends up in the drum (the dig
+    policy's Episode/payload_kg over Episode/removed_kg)."""
 
-    drum_pair_capacity: float = 52.0
-    """kg the two drums hold."""
+    drum_capacity: float = 150.0
+    """kg the front drum holds."""
 
-    trim_seconds: float = 13.0
+    trim_seconds: float = 20.0
     """Cutting time for one trim, seconds."""
 
-    trim_success: float = 0.5
+    trim_success: float = 0.66
     """Probability a trim meets its shape tolerance (the dig policy's
     Episode/shape_done)."""
 
     # --- travel -------------------------------------------------------
-    drive_speed: float = 1.0
+    drive_speed: float = 0.5
     """m/s while hauling. Estimate."""
 
-    dump_seconds: float = 3.0
+    dump_seconds: float = 6.0
     """Time to discharge, seconds."""
 
     # --- reachability -------------------------------------------------
-    climb_degrees: float = 10.0
-    """Steepest slope the laden machine drives, degrees. Estimate."""
+    climb_degrees: float = 5.7
+    """Steepest slope the laden machine drives, degrees: the dig's 0.10."""
+
+    reach: float = 0.18
+    """How far below its wheels the drum digs, metres: at the arm's limit
+    the vane tips are 0.186 m below the wheel plane."""
 
     def __post_init__(self) -> None:
         self.patch_area = self.patch_x * self.patch_y
@@ -72,6 +79,7 @@ class SiteCfg:
         self.climb_voxels = max(
             1, int(self.patch_x * math.tan(math.radians(self.climb_degrees)) / self.voxel)
         )
+        self.reach_voxels = int(self.reach / self.voxel + 1e-9)
 
 
 @dataclass
@@ -122,8 +130,12 @@ class Site:
         return seen
 
     def actionable(self) -> list[Patch]:
-        """Patches that need work and can be driven to."""
-        return sorted(self.pending() & self.reachable())
+        """Patches that need work and can be driven to, or dug from the ground
+        beside them: the machine straddles a one-lane trench, its wheels on
+        the original surface, and reaches reach_voxels below them."""
+        near = self.reachable()
+        lowest = -self.cfg.reach_voxels
+        return sorted(p for p in self.pending() if p in near or self.height[p[0]][p[1]] > lowest)
 
     def travel_seconds(self, a, b) -> float:
         c = self.cfg
@@ -142,16 +154,19 @@ class Site:
 
     # -- transition ----------------------------------------------------
 
-    def trim(self, patch, succeeded: bool = True) -> float:
-        """Apply one trim cycle and return its seconds. A failed trim costs
-        the same time and moves no soil. The machine ends at the dump."""
+    def trim(self, patch, height: int | None = None) -> float:
+        """Apply one trim cycle and return its seconds. height is the patch's
+        height after it, as measured; by default one voxel lower. A trim that
+        lowered nothing costs the same time and moved no soil. The machine
+        ends at the dump."""
         cost = self.cycle_seconds(patch)
         self.clock += cost
         self.trims += 1
-        if succeeded:
-            self.height[patch[0]][patch[1]] -= 1
+        y, x = patch
+        before = self.height[y][x]
+        self.height[y][x] = before - 1 if height is None else height
         self.at = self.dump
-        self.log.append((patch, succeeded, self.clock))
+        self.log.append((patch, self.height[y][x] < before, self.clock))
         return cost
 
     def done(self) -> bool:
@@ -188,7 +203,7 @@ def greedy_plan(site: Site) -> Site:
     """Repeatedly trim the actionable patch with the cheapest cycle. Stops when
     no pending patch is reachable."""
     while options := site.actionable():
-        site.trim(min(options, key=site.cycle_seconds), succeeded=True)
+        site.trim(min(options, key=site.cycle_seconds))
     return site
 
 
@@ -209,13 +224,22 @@ def beam_plan(site: Site, width: int = 8, horizon: int = 6) -> Site:
                 opts.sort(key=st.cycle_seconds)
                 for p in opts[:width]:
                     s2 = copy.deepcopy(st)
-                    c = s2.trim(p, succeeded=True)
+                    c = s2.trim(p)
                     nxt.append((cost + c, s2, first or p))
             # cheapest seconds per patch cleared
             nxt.sort(key=lambda t: t[0] / max(1, len(before - t[1].pending())))
             beams = nxt[: width * 2]
-        site.trim(beams[0][2], succeeded=True)
+        site.trim(beams[0][2])
     return site
+
+
+def trench(cfg: SiteCfg, length: float, depth: float) -> Site:
+    """A one-lane trench `length` long and `depth` deep: one row of patches,
+    each patch_x along the trench, dug from the ground beside it, the dump
+    past its far end."""
+    n = max(1, round(length / cfg.patch_x))
+    d = max(1, round(depth / cfg.voxel))
+    return Site(cfg=cfg, height=[[0] * n], target=[[-d] * n], entry=(0, 0), dump=(0, n + 1))
 
 
 # ---------------------------------------------------------------------
@@ -233,8 +257,8 @@ def _demo() -> None:
 
     print(f"patch {cfg.patch_x} x {cfg.patch_y} m, one trim = {cfg.trim_mass:.1f} kg cut, "
           f"{cfg.trim_capture:.1f} kg captured")
-    print(f"drums hold {cfg.drum_pair_capacity:.0f} kg -> "
-          f"{cfg.trim_capture/cfg.drum_pair_capacity:.2f} loads per trim")
+    print(f"the drum holds {cfg.drum_capacity:.0f} kg -> "
+          f"{cfg.trim_capture/cfg.drum_capacity:.2f} loads per trim")
     print(f"climb {cfg.climb_degrees:.0f} deg over a {cfg.patch_x} m patch = "
           f"{cfg.climb_voxels} voxels of step")
     npatch = sum(1 for y in range(ny) for x in range(nx) if height[y][x] > target[y][x])

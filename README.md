@@ -11,6 +11,7 @@ end.
 | `Luna-Excavator-Excavate` | cutting a strip of an implicit-MPM soil bed down to a commanded plane and into the drums; the env lowers and spins the tool, then the policy drives either way, steers and moves the front arm |
 | `Luna-Excavator-Excavate-Small`, `-Micro` | one env, a small soil pile in front of the machine |
 | `Luna-Excavator-Excavate-RFT` | the excavate task with the analytical soil of `mdp/rft.py` in place of MPM; rigid physics only, so hundreds of envs. Each episode commands a depth of 3 to 8 cm and, half the time, a slope |
+| `Luna-Excavator-Site` | one machine on a large RFT bed digging a trench with the trained excavate and navigate policies, the passes planned by `planner/site.py`; run by `scripts/site_run.py`, not trained |
 | `Luna-Tricycle-Direct` | a tricycle on an MPM strip: the minimal rigid ↔ MPM coupling example |
 
 `docs/tricycle_manual/main.pdf` explains the tricycle task line by line.
@@ -38,8 +39,9 @@ luna_hifi_tasks/
       rft.py                      analytical soil for the drums (and, for playback, the wheels): RFT forces on a height grid, no MPM
     navigate/                     navigate env, cfg, PPO cfg
     excavate/                     excavate env, cfg, PPO cfg; excavate_rft_env.py is the RFT-soil version
+    site/site_env.py              the site env (dig, drive and dump modes) and run_site(), the trench loop
   tricycle/                       tricycle env, cfg, MJCF, PPO cfg
-  planner/site.py                 heightfield site model with greedy and beam dig planners
+  planner/site.py                 heightfield site model with greedy and beam dig planners, and trench()
 assets/                           converted USDs (excavator USD is built per machine, see below)
 patches/
   newton_1.7.0/                   four soil-solver files from Newton 1.7.0, installed by patch_newton_mpm.py
@@ -50,6 +52,7 @@ scripts/
   dig_demo.py                     scripted dig on the excavate task, no policy
   play_dig.py                     excavate playback with a CSV trace and heightmap dump
   render_dig.py, render_attitude.py   GIFs from play_dig dumps
+  site_run.py                     the trench: plan, drive, dig and dump with the trained policies
   rft_pass.py                     scripted drum pass through the analytical soil (mdp/rft.py), no simulator
   patch_newton_mpm.py             gives the installed Newton the soil solver excavate runs on (setup step)
 workstation/                      single-box setup and run scripts (Setup.md)
@@ -113,6 +116,7 @@ workstation/train.sh -p scripts/play_dig.py --no_window --trace dig.csv     # ne
 workstation/train.sh -p scripts/play_dig.py --dig --no_window               # scripted pass, no policy
 workstation/train.sh -p scripts/play_dig.py --task Luna-Excavator-Excavate-RFT --dig --no_window --video dig_rft_video   # mp4, soil drawn from the grid
 workstation/train.sh -p scripts/play_dig.py --task Luna-Excavator-Excavate-RFT --no_window --slope -0.1 --depth 0.05   # policy on a set slope
+workstation/train.sh -p scripts/site_run.py --video site_video     # the trench, newest dig and navigate checkpoints; site.npz, site_log.csv
 workstation/train.sh -p scripts/rft_pass.py --cut 0.05 --drive 0.1          # analytical soil, no simulator
 
 # tricycle

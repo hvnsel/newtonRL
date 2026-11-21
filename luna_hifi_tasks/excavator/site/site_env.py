@@ -18,7 +18,8 @@
 # straddles it, its wheels on the ground either side. It spawns at the origin
 # facing +x, at the start of the first patch's pass. Past the far end it turns
 # left to dump on one of PILES piles beside the way back, which runs LANE to
-# the left of the trench and turns back into its line BACK before its start.
+# the left of the trench, turns back into its line and stops on it, lined up,
+# before it drives in to the next pass.
 #
 # run_site() digs a planner's site (luna_hifi_tasks/planner/site.py), reading
 # each patch's height back from the bed after its pass.
@@ -43,7 +44,8 @@ from ..navigate.navigate_env_cfg import ExcavatorNavigateEnvCfg
 REACH = PIVOT_X + ARM_LEN * math.cos(ARM_STOW_ANGLE)   # m the front drum sits ahead of the chassis, stowed
 LANE = 1.5                  # m left of the trench: the way back
 EXIT = 2.0                  # m past the trench end: where the machine turns to dump, its rear wheels clear
-BACK = 3.0                  # m before the trench start: where it turns back into its line
+STAGE = 0.6                 # m short of the trench the front drum stops, lined up, before driving in
+TURN = 1.5                  # m behind that stop the way back turns into the trench line
 PILES, PILE_STEP = 3, 0.6   # the dumps go round three piles, this far apart along x
 WAYPOINT_RADIUS = 0.5       # m: a route waypoint counts as passed this close
 DRIVE_SECONDS, PASS_SECONDS, DUMP_SECONDS = 90.0, 40.0, 15.0
@@ -68,7 +70,7 @@ class ExcavatorSiteEnvCfg(ExcavatorExcavateRftEnvCfg):
 
     def __post_init__(self) -> None:
         x0 = REACH - self.work_area_behind
-        self.bed_x = (x0 - BACK - 1.8, x0 + self.trench_length + EXIT + PILE_STEP * (PILES - 1) + 1.8)
+        self.bed_x = (x0 - STAGE - REACH - TURN - 1.8, x0 + self.trench_length + EXIT + PILE_STEP * (PILES - 1) + 1.8)
         self.bed_y = (-1.8, LANE + REACH + 1.0)
         super().__post_init__()
 
@@ -158,10 +160,14 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         x = self.trench_x + self.cfg.trench_length + EXIT + PILE_STEP * (self._dumps % PILES)
         return [(x, 0.0), (x, LANE)]
 
-    def return_route(self, ix: int) -> list[tuple[float, float]]:
-        """Back along the lane, round behind the trench and up to patch ix's pass start."""
-        x = self.trench_x - BACK
-        return [(x, LANE), (x, 0.0), self.pass_start(ix)]
+    def staging(self) -> tuple[float, float]:
+        """Where the chassis stops on the trench line before driving in, the front drum STAGE short of the trench."""
+        return (self.trench_x - STAGE - REACH, 0.0)
+
+    def return_route(self) -> list[tuple[float, float]]:
+        """Back along the lane, round behind the trench and up its line to the staging stop."""
+        x = self.staging()[0] - TURN
+        return [(x, LANE), (x, 0.0), self.staging()]
 
     def trench_mask(self) -> torch.Tensor:
         """(ny, nx) the trench's grid cells."""
@@ -263,8 +269,9 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
 
 
 def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tuple[list[dict], str]:
-    """Dig a planner's site: for each trim it picks, drive to the patch's pass
-    start, dig the pass, drive past the trench to a pile and empty the drum;
+    """Dig a planner's site: for each trim it picks, drive round to the
+    staging stop and along the trench line to the patch's pass start, dig the
+    pass, drive past the trench to a pile and empty the drum;
     each patch's height is read back from the bed. dig and nav map their
     observations to actions; record(env) is called after every step. Returns
     a row per trim and how the run ended."""
@@ -336,8 +343,10 @@ def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tup
             iy, ix = min(options, key=site.cycle_seconds)
             h = site.height[iy][ix]
             row = {"trim": site.trims + 1, "patch": ix, "target_cm": round(100 * (h - 1) * voxel, 1)}
+            if not first:
+                row["to_line"] = drive(u.return_route(), 0.0)
             if not (first and ix == 0):
-                row["to_pass"] = drive([u.pass_start(ix)] if first else u.return_route(ix), 0.0)
+                row["to_pass"] = drive([u.pass_start(ix)], 0.0)
             row.update(dig_pass(ix, h - 1))
             site.trim((iy, ix), height=round(row["floor_cm"] / 100 / voxel))
             row["to_dump"] = drive(u.dump_route(), 0.5 * math.pi)

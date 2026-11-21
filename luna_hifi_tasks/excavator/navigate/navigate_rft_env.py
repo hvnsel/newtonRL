@@ -29,7 +29,8 @@ class ExcavatorNavigateRftEnv(ExcavatorNavigateEnv):
 
     def __init__(self, cfg: ExcavatorNavigateRftEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
-        s, h, dev = ExcavatorExcavateRftEnvCfg, cfg.soil_half, self.device
+        # The excavate RFT task's soil, from an instance: configclass fields live on instances only.
+        s, h, dev = ExcavatorExcavateRftEnvCfg(), cfg.soil_half, self.device
         self._rft = rft.Soil(
             density=s.soil_density, friction=s.soil_friction, gravity=LUNAR_G, cell=cfg.soil_cell,
             lower=(-h, -h), cohesion=s.soil_cohesion, scale=s.rft_scale,

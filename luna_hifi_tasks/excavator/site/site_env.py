@@ -109,6 +109,13 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         self._goal_yaw = torch.zeros(1, device=dev)
         self._held = 0
         self._dumps = 0
+        self._soil_drawn = 0
+
+    def _show_soil(self) -> None:
+        """The soil boxes once an env step, for its one rendered frame, not every physics step."""
+        self._soil_drawn += 1
+        if self._soil_drawn % (1 if self._physics_handles_decimation else self.cfg.decimation) == 0:
+            super()._show_soil()
 
     # --- the runner's commands ---
 

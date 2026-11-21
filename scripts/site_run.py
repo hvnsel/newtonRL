@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 from pathlib import Path
 
 import gymnasium as gym
@@ -25,6 +26,7 @@ import torch
 from isaaclab.app import add_launcher_args, launch_simulation
 
 import isaaclab_tasks  # noqa: F401
+from isaaclab_tasks.utils import setup_preset_cli
 from isaaclab_tasks.utils.hydra import resolve_task_config
 
 import luna_hifi_tasks  # noqa: F401  (registers Luna-* tasks)
@@ -34,6 +36,9 @@ from luna_hifi_tasks.planner.site import SiteCfg, trench
 from play_dig import _load_policy, _resolve_checkpoint
 
 TASK = "Luna-Excavator-Site"
+# The recorder holds a clip's frames in memory: a clip a minute, every third step,
+# played back at the step rate, so three times real time; joined at the end.
+CLIP_STEPS, FRAME_STRIDE = 1500, 3
 
 
 def _parse():
@@ -50,7 +55,11 @@ def _parse():
     p.add_argument("--dump_every", type=int, default=10, help="steps between saved frames")
     p.add_argument("--log", default="site_log.csv", help="one row per trim")
     add_launcher_args(p)
-    return p.parse_args()
+    p.set_defaults(device=None, visualizer=["newton_gl"])
+    # As play_dig: this script's flags off the command line, the rest left for Hydra.
+    args, hydra_args = setup_preset_cli(p)
+    sys.argv = [sys.argv[0]] + hydra_args
+    return args
 
 
 def main() -> int:
@@ -74,9 +83,10 @@ def main() -> int:
         )]
         env_cfg.soil_marker = True
         env_cfg.video_recorders = [VideoRecorderCfg(
-            source="visualizer:newton", output_dir=args.video, video_interval=0,
-            video_length=int(args.minutes * 60.0 / (env_cfg.sim.dt * env_cfg.decimation)),
+            source="visualizer:newton", output_dir=args.video, video_length=CLIP_STEPS, video_interval=CLIP_STEPS,
+            frame_stride=FRAME_STRIDE, fps=round(1.0 / (env_cfg.sim.dt * env_cfg.decimation)),
         )]
+    earlier = set(Path(args.video).glob("clip_*.mp4")) if args.video else set()
     args.device = env_cfg.sim.device
     env_cfg.validate()
 
@@ -113,6 +123,16 @@ def main() -> int:
         print(f"[site] patch heights, cm: {[100 * h * site.cfg.voxel for h in site.height[0]]}")
         names = np.asarray(u.robot.body_names, dtype="U64")
         env.close()
+
+    if args.video:
+        from moviepy.editor import VideoFileClip, concatenate_videoclips
+
+        clips = sorted(set(Path(args.video).glob("clip_*.mp4")) - earlier)
+        if clips:
+            out = f"{args.video.rstrip('/')}.mp4"
+            concatenate_videoclips([VideoFileClip(str(c)) for c in clips]).write_videofile(
+                out, codec="libx264", audio=False, logger=None)
+            print(f"[site] video {out}: {len(clips)} clips, {FRAME_STRIDE}x real time")
 
     if beds:
         np.savez_compressed(

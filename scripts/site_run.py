@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import sys
 from pathlib import Path
 
@@ -54,6 +55,7 @@ def _parse():
     p.add_argument("--dump", default="site.npz", help="heightmap frames for render_dig.py")
     p.add_argument("--dump_every", type=int, default=10, help="steps between saved frames")
     p.add_argument("--log", default="site_log.csv", help="one row per trim")
+    p.add_argument("--trace", default="site_trace.csv", help="one row per step: the drive command and what the machine did")
     add_launcher_args(p)
     p.set_defaults(device=None, visualizer=["newton_gl"])
     # As play_dig: this script's flags off the command line, the rest left for Hydra.
@@ -102,14 +104,28 @@ def main() -> int:
         trench_cells = u.trench_mask()
         fresh = u._fresh_bed
         kg_per_m = u.cfg.voxel_size ** 2 * u.cfg.soil_density
-        beds, poses, bodies, steps = [], [], [], [0]
+        beds, poses, bodies, trace, steps = [], [], [], [], [0]
 
         def record(u) -> None:
             steps[0] += 1
+            d = u.robot.data
+            o = u.scene.env_origins[0]
+            root = d.root_pos_w.torch[0] - o
+            wheels = d.joint_vel.torch[0] * WHEEL_RADIUS
+            trace.append({
+                "t": round(steps[0] * u.step_dt, 2), "mode": u.mode,
+                "x": round(float(root[0]), 3), "y": round(float(root[1]), 3),
+                "yaw_deg": round(math.degrees(float(u._base_yaw()[0])), 1),
+                "goal_m": round(u.goal_error()[0], 3) if u.mode == "drive" else "",
+                "cmd_mps": round(float(u._forward_cmd[0]), 3), "cmd_yaw_rate": round(float(u._yaw_cmd[0]), 3),
+                "speed_mps": round(float(d.root_lin_vel_b.torch[0, 0]), 3),
+                "side_mps": round(float(d.root_lin_vel_b.torch[0, 1]), 3),
+                "yaw_rate": round(float(d.root_ang_vel_b.torch[0, 2]), 3),
+                "rim_left_mps": round(float(wheels[u._left_ids].mean()), 3),
+                "rim_right_mps": round(float(wheels[u._right_ids].mean()), 3),
+            })
             if steps[0] % args.dump_every:
                 return
-            o = u.scene.env_origins[0]
-            root = u.robot.data.root_pos_w.torch[0] - o
             bed = u._bed_grid[0]
             removed = float(((fresh - bed).clamp(min=0.0) * trench_cells).sum()) * kg_per_m
             beds.append(bed.cpu().numpy().copy())
@@ -150,6 +166,12 @@ def main() -> int:
             drum_capacity_kg=float(u.cfg.drum_capacity_kg),
         )
         print(f"[site] wrote {len(beds)} heightmap frames to {args.dump}")
+    if trace:
+        with open(args.trace, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(trace[0]))
+            w.writeheader()
+            w.writerows(trace)
+        print(f"[site] wrote {len(trace)} steps to {args.trace}")
     if rows:
         flat = [{f"{k}_{kk}" if isinstance(v, dict) else k: vv
                  for k, v in r.items() for kk, vv in (v.items() if isinstance(v, dict) else [(None, v)])} for r in rows]

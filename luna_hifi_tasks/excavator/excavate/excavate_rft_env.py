@@ -37,7 +37,23 @@ ARM_COLLIDERS = EXCAVATOR_PRIM_REGEX + r"/Geometry/chassis/arm_(front|rear)_body
 WHEEL_COLLIDERS = EXCAVATOR_PRIM_REGEX + r"/Geometry/chassis/wheel_(fl|fr|rl|rr)_body/.*"
 
 SOIL_RGB = (0.62, 0.55, 0.45)    # as play_dig colours MPM particles
-CUT_RGB = (0.36, 0.30, 0.24)     # cells the drums have cut into
+PILE_RGB = (0.80, 0.73, 0.58)    # soil laid above where the ground started
+# Ground below where it started takes a shade per LAYER of depth, ochre at one
+# layer darkening to near black at DEPTH_SHADES, so the steps of a cut read at
+# a glance: each shade is about 11-17 CIELAB units from the next, and darker.
+LAYER = 0.05                     # m, one dig pass
+DEPTH_SHADES = 8
+DEPTH_RAMP = ((0.82, 0.56, 0.26), (0.70, 0.32, 0.13), (0.46, 0.14, 0.13), (0.17, 0.05, 0.13))
+
+
+def depth_shades() -> list[tuple[float, ...]]:
+    """DEPTH_SHADES colours along DEPTH_RAMP, one layer down to the deepest."""
+    out = []
+    for i in range(DEPTH_SHADES):
+        t = i / (DEPTH_SHADES - 1) * (len(DEPTH_RAMP) - 1)
+        k = min(int(t), len(DEPTH_RAMP) - 2)
+        out.append(tuple(a + (t - k) * (b - a) for a, b in zip(DEPTH_RAMP[k], DEPTH_RAMP[k + 1])))
+    return out
 
 
 class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
@@ -161,23 +177,25 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
     # --- soil in the viewer ---
 
     def _make_soil_marker(self) -> VisualizationMarkers:
-        look = sim_utils.PreviewSurfaceCfg
-        return VisualizationMarkers(VisualizationMarkersCfg(
-            prim_path="/Visuals/soil",
-            markers={
-                "soil": sim_utils.CuboidCfg(size=(1.0, 1.0, 1.0), visual_material=look(diffuse_color=SOIL_RGB)),
-                "cut": sim_utils.CuboidCfg(size=(1.0, 1.0, 1.0), visual_material=look(diffuse_color=CUT_RGB)),
-            },
-        ))
+        def box(rgb):
+            return sim_utils.CuboidCfg(size=(1.0, 1.0, 1.0), visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=rgb))
+
+        markers = {"soil": box(SOIL_RGB), "pile": box(PILE_RGB)}
+        markers.update({f"depth_{k + 1}": box(rgb) for k, rgb in enumerate(depth_shades())})
+        return VisualizationMarkers(VisualizationMarkersCfg(prim_path="/Visuals/soil", markers=markers))
 
     def _show_soil(self) -> None:
-        """Every grid cell as a box from the floor to its height, darker where cut."""
+        """Every grid cell as a box from the floor to its height: the soil's
+        colour as it started (ruts under half a layer included), a pile's half
+        a layer or more above, and k layers down the k-th depth shade."""
         top = self._bed_grid                                              # (E, ny, nx)
         o = self.scene.env_origins[:, None, None]                         # (E, 1, 1, 3)
         centre = torch.cat([self._cells + o[..., :2], (o[..., 2] + 0.5 * (top + BED_FLOOR_Z)).unsqueeze(-1)], -1)
         side = torch.full_like(top, self.cfg.voxel_size)
+        layers = torch.round((self._fresh_bed - top) / LAYER)
+        index = torch.where(layers >= 1, 1 + layers.clamp(max=DEPTH_SHADES), (layers <= -1).float())
         self._soil_marker.visualize(
             translations=centre.reshape(-1, 3),
             scales=torch.stack([side, side, top - BED_FLOOR_Z], -1).reshape(-1, 3),
-            marker_indices=(top < self._fresh_bed - 1e-3).reshape(-1).int(),
+            marker_indices=index.reshape(-1).int(),
         )

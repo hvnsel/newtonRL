@@ -15,6 +15,7 @@ import math
 import re
 
 import torch
+import torch.nn.functional as F
 from newton import ShapeFlags
 
 import isaaclab.sim as sim_utils
@@ -38,24 +39,23 @@ WHEEL_COLLIDERS = EXCAVATOR_PRIM_REGEX + r"/Geometry/chassis/wheel_(fl|fr|rl|rr)
 
 SOIL_RGB = (0.62, 0.55, 0.45)    # as play_dig colours MPM particles
 PILE_RGB = (0.80, 0.73, 0.58)    # soil laid above where the ground started
-# Ground below where it started takes a shade per SHADE_STEP of depth, ochre
-# just under the surface darkening to near black DEPTH_SHADES steps down, so a
-# cut reads as a gradient of its depth; soil PILE_RISE or more above where the
-# ground started is a pile's colour.
+# Ground below where it started darkens from the soil's colour a step per
+# SHADE_STEP of depth, to DEPTH_DARK DEPTH_SHADES steps down: gently, so the
+# centimetre or two a cut's floor varies hardly shows while 3 cm against 13 cm
+# does. The depth it is shaded by is averaged over SHADE_BLUR, so pass seams and
+# single cells do not stand out; the boxes' heights are the soil's own. Soil
+# PILE_RISE or more above where the ground started is a pile's colour.
 SHADE_STEP = 0.01                # m
 DEPTH_SHADES = 20
+DEPTH_DARK = tuple(0.5 * c for c in SOIL_RGB)
+SHADE_BLUR = 0.2                 # m
 PILE_RISE = 0.025                # m
-DEPTH_RAMP = ((0.82, 0.56, 0.26), (0.70, 0.32, 0.13), (0.46, 0.14, 0.13), (0.17, 0.05, 0.13))
 
 
 def depth_shades() -> list[tuple[float, ...]]:
-    """DEPTH_SHADES colours along DEPTH_RAMP, one step down to the deepest."""
-    out = []
-    for i in range(DEPTH_SHADES):
-        t = i / (DEPTH_SHADES - 1) * (len(DEPTH_RAMP) - 1)
-        k = min(int(t), len(DEPTH_RAMP) - 2)
-        out.append(tuple(a + (t - k) * (b - a) for a, b in zip(DEPTH_RAMP[k], DEPTH_RAMP[k + 1])))
-    return out
+    """DEPTH_SHADES colours from the soil's toward DEPTH_DARK, one per SHADE_STEP down."""
+    return [tuple(s + k / DEPTH_SHADES * (d - s) for s, d in zip(SOIL_RGB, DEPTH_DARK))
+            for k in range(1, DEPTH_SHADES + 1)]
 
 
 class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
@@ -191,14 +191,16 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
     def _show_soil(self) -> None:
         """Every grid cell as a box from the floor to its height: the soil's
         colour as it started, a pile's PILE_RISE or more above, and k steps
-        down the k-th depth shade, in shade_area if one is set (elsewhere, ruts
-        and all, the soil's colour)."""
+        down (averaged over SHADE_BLUR) the k-th depth shade, in shade_area if
+        one is set (elsewhere, ruts and all, the soil's colour)."""
         top = self._bed_grid                                              # (E, ny, nx)
         o = self.scene.env_origins[:, None, None]                         # (E, 1, 1, 3)
         centre = torch.cat([self._cells + o[..., :2], (o[..., 2] + 0.5 * (top + BED_FLOOR_Z)).unsqueeze(-1)], -1)
         side = torch.full_like(top, self.cfg.voxel_size)
         depth = self._fresh_bed - top
-        steps = torch.round(depth / SHADE_STEP).clamp(0, DEPTH_SHADES)
+        k = max(1, round(SHADE_BLUR / self.cfg.voxel_size)) | 1
+        soft = F.avg_pool2d(depth.unsqueeze(1), k, stride=1, padding=k // 2, count_include_pad=False).squeeze(1)
+        steps = torch.round(soft / SHADE_STEP).clamp(0, DEPTH_SHADES)
         if self.shade_area is not None:
             steps = steps * self.shade_area
         index = torch.where(steps >= 1, 1 + steps, (depth <= -PILE_RISE).float())

@@ -292,3 +292,21 @@ def l_rects(corner: tuple[float, float], size: float, thickness: float) -> list[
     """The L's two arms as (x0, x1, y0, y1)."""
     x0, y0 = corner
     return [(x0, x0 + size, y0, y0 + thickness), (x0, x0 + thickness, y0, y0 + size)]
+
+
+def hole_strokes(cfg: StrokeCfg, corner: tuple[float, float], size: float) -> list[Stroke]:
+    """A square hole `size` on a side, its corner at `corner` (its least x and
+    y): strokes side by side along x across it, and the same along y, the
+    planner picking which way each layer goes; they overlap where the side is
+    not a whole number of drum widths."""
+    x0, y0 = corner
+    n = math.ceil((size - cfg.width) / cfg.width - 1e-9) + 1
+    centres = [0.5 * cfg.width + k * (size - cfg.width) / (n - 1) for k in range(n)] if n > 1 else [0.5 * size]
+    return ([Stroke(0, y0 + c, (x0, x0 + size), f"along x, {k + 1} of {n}") for k, c in enumerate(centres)]
+            + [Stroke(1, x0 + c, (y0, y0 + size), f"along y, {k + 1} of {n}") for k, c in enumerate(centres)])
+
+
+def hole_rects(corner: tuple[float, float], size: float) -> list[tuple[float, float, float, float]]:
+    """The hole as (x0, x1, y0, y1)."""
+    x0, y0 = corner
+    return [(x0, x0 + size, y0, y0 + size)]

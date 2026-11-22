@@ -35,11 +35,12 @@
 # run_site() digs a planner's site (luna_hifi_tasks/planner/site.py), reading
 # each patch's height back from the bed after its pass.
 #
-# Or an L (l_size > 0), cut in strokes along x and along y by run_strokes()
-# (luna_hifi_tasks/planner/strokes.py): the machine goes round the L on a ring
-# road RING out from it, turns in from it along a stroke, digs the stroke's
-# passes one after another until the drum is about full, backs out, and pours
-# outside the ring on its +x and +y sides. It spawns on the ring west of the L.
+# Or a site cut in strokes along x and along y, an L or a hole, in a square
+# box_size on a side (box_size > 0), by run_strokes() (luna_hifi_tasks/planner/
+# strokes.py): the machine goes round it on a ring road RING out from the box,
+# turns in from it along a stroke, digs the stroke's passes one after another
+# until the drum is about full, backs out, and pours outside the ring on its +x
+# and +y sides. It spawns on the ring west of the box.
 
 from __future__ import annotations
 
@@ -72,10 +73,10 @@ RING = STAGE + REACH        # m from a stroke site's edge out to the ring road: 
 FULL_KG = 90.0              # a stroke goes on until the drum holds this: what the dig's training counts as full
 
 
-def l_corner(cfg) -> tuple[float, float]:
-    """The L's outer corner (its least x and y), env-local: the machine spawns
-    on the ring road west of it, facing it."""
-    return RING, -0.5 * cfg.l_size
+def box_corner(cfg) -> tuple[float, float]:
+    """A stroke site's box, its least x and y corner, env-local: the machine
+    spawns on the ring road west of it, facing it."""
+    return RING, -0.5 * cfg.box_size
 
 
 def site_layout(cfg) -> tuple[float, float, float]:
@@ -106,18 +107,17 @@ class ExcavatorSiteEnvCfg(ExcavatorExcavateRftEnvCfg):
     # Dumping: the front inlet dump_tilt off straight down, its load laid out at dump_rate.
     dump_tilt: float = 0.0                     # rad
     dump_rate: float = 30.0                    # kg/s
-    # Or an L, cut in strokes (l_size > 0): its side and its arms' thickness, m.
-    l_size: float = 0.0
-    l_thickness: float = 1.425
+    # Or a site cut in strokes (an L or a hole) in a square box this side, m; 0: a pit or trench.
+    box_size: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.l_size > 0.0:
-            # The L, the ring road RING round it, the machine's far drum turning
-            # there, and on the +x and +y sides the piles outside the ring.
-            x0, y0 = l_corner(self)
+        if self.box_size > 0.0:
+            # The site, the ring road RING round it, the machine's far drum
+            # turning there, and on the +x and +y sides the piles outside the ring.
+            x0, y0 = box_corner(self)
             out = RING + REACH + 1.2
-            self.bed_x = (x0 - RING - REACH - 1.0, x0 + self.l_size + out)
-            self.bed_y = (y0 - RING - REACH - 1.0, y0 + self.l_size + out)
+            self.bed_x = (x0 - RING - REACH - 1.0, x0 + self.box_size + out)
+            self.bed_y = (y0 - RING - REACH - 1.0, y0 + self.box_size + out)
         else:
             x0, half, way = site_layout(self)
             # West: the yard, the machine turning there; east: a pass from beyond
@@ -599,17 +599,18 @@ class Ring:
             return (self.x0 if way > 0 else self.x1, stroke.across)
         return (stroke.across, self.y0 if way > 0 else self.y1)
 
-    def stops(self, strokes, clear: float = 1.0, corner: float = 2.0) -> list[tuple[tuple[float, float], float]]:
-        """Dump stops on the +y and +x sides, PILE_STEP apart, `corner` from the
-        ring's corners and `clear` of where a stroke is entered, each with the
-        heading out of the ring the drum pours toward."""
+    def stops(self, corner: float = 1.85) -> list[tuple[tuple[float, float], float]]:
+        """Dump stops on the +y and +x sides, PILE_STEP apart, each with the
+        heading out of the ring the drum pours toward. A pile lies REACH out,
+        past the wheels of a machine lined up on the ring, its raised drums
+        over it, so one behind where a stroke is entered is no obstacle; the
+        stops keep `corner` from the ring's corners, where the drums sweep as
+        the machine turns."""
         out = []
-        for axis, side, lo, hi, yaw in ((1, self.y1, self.x0, self.x1, 0.5 * math.pi), (0, self.x1, self.y0, self.y1, 0.0)):
-            taken = [s.across for s in strokes if s.axis == axis]
+        for along_x, side, lo, hi, yaw in ((True, self.y1, self.x0, self.x1, 0.5 * math.pi), (False, self.x1, self.y0, self.y1, 0.0)):
             t = lo + corner
             while t <= hi - corner + 1e-9:
-                if all(abs(t - e) >= clear for e in taken):
-                    out.append(((t, side) if axis == 1 else (side, t), yaw))
+                out.append(((t, side) if along_x else (side, t), yaw))
                 t += PILE_STEP
         return out
 
@@ -627,7 +628,7 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0) ->
     m = Machine(env, dig, nav, record, max_minutes)
     lanes = [s.rect(*s.span, 0.5 * c.width) for s in site.strokes]
     ring = Ring((min(r[0] for r in lanes), max(r[1] for r in lanes), min(r[2] for r in lanes), max(r[3] for r in lanes)))
-    stops = ring.stops(site.strokes)
+    stops = ring.stops()
     dumps = 0
 
     def look() -> None:

@@ -860,6 +860,9 @@ class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     # Angle of repose of loose soil [deg]. Above 0, soil a drum reaches but does not
     # take is shoved out of its circle and slumps; 0 leaves it where it is.
     soil_repose: float = 40.0
+    # How far below where it started the tyres press the soil at most, m: there
+    # it is compacted and stops sinking. inf: each pass sinks a rut deeper.
+    soil_compaction: float = math.inf
     # Draw the soil grid in the viewer, and hide the ground's grid that would
     # cover the cut. play_dig turns it on for a window or a video.
     soil_marker: bool = False

@@ -97,6 +97,7 @@ class Soil:
     scale: float = 6.15                         # stress per Kp rho g; see zeta
     intake: float = math.inf                    # kg/s a drum takes at most; inf: all it reaches
     repose: float = 0.0                         # tan(angle of repose) of loose soil; 0: none is shoved
+    compaction: float = math.inf                # m the tyres press soil below where it started, at most; inf: no limit
 
     @property
     def kp(self) -> float:
@@ -456,10 +457,12 @@ def wheel_loads(patches: Patches, centre, lin, quat, ang, height, soil: Soil) ->
     return force + grip, torque + torch.linalg.cross(below, grip)
 
 
-def press(height, cells, centre, axis, soil: Soil) -> torch.Tensor:
+def press(height, cells, centre, axis, soil: Soil, start=None) -> torch.Tensor:
     """The grid (E, ny, nx) with the soil under each wheel's tyre pressed down
     to it. centre and axis (E, W, 3): the wheels' axis points and drum_axis().
-    Only the square of cells round each tyre is looked at."""
+    Only the square of cells round each tyre is looked at. Compacted soil stops
+    sinking: given start (ny, nx), the level each cell started at, no cell is
+    pressed more than soil.compaction below it."""
     E, ny, nx = height.shape
     k = int(math.ceil(2.0 * math.hypot(WHEEL_RADIUS, WHEEL_HALF_W) / soil.cell)) + 4
     off = torch.arange(k, device=height.device) - k // 2
@@ -468,4 +471,6 @@ def press(height, cells, centre, axis, soil: Soil) -> torch.Tensor:
     gx, gy = torch.broadcast_tensors((ix + off).clamp(0, nx - 1), (iy + off[:, None]).clamp(0, ny - 1))
     under, lowest, _, _ = beneath(cells[gy, gx], centre, axis, WHEEL_RADIUS, WHEEL_HALF_W)
     tyre = torch.where(under, lowest, torch.full_like(lowest, math.inf))
+    if start is not None and math.isfinite(soil.compaction):
+        tyre = torch.maximum(tyre, start[gy, gx] - soil.compaction)
     return height.reshape(E, -1).scatter_reduce(1, (gy * nx + gx).reshape(E, -1), tyre.reshape(E, -1), "amin").reshape(E, ny, nx)

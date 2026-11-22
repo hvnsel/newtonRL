@@ -68,7 +68,7 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         self._rft = rft.Soil(
             density=c.soil_density, friction=c.soil_friction, gravity=LUNAR_G,
             cell=c.voxel_size, lower=c.bed_grid_lower, cohesion=c.soil_cohesion, scale=c.rft_scale,
-            intake=c.drum_intake, repose=math.tan(math.radians(c.soil_repose)),
+            intake=c.drum_intake, repose=math.tan(math.radians(c.soil_repose)), compaction=c.soil_compaction,
         )
         self._patches = rft.drum_patches(device=dev)
         self._cells = rft.cell_centres(self._rft, c.bed_grid_nx, c.bed_grid_ny, device=dev)
@@ -145,7 +145,7 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
             body = rft.drum_body(self._cells, centre[:, 2:4], drum_axis, self._bed_grid)
             self._bed_grid, self._loose = rft.slump(self._bed_grid, self._loose, body, self._rft)
         if self.cfg.wheel_soil:
-            pressed = rft.press(self._bed_grid, self._cells, centre[:, 4:], rft.drum_axis(quat[:, 4:]), self._rft)
+            pressed = rft.press(self._bed_grid, self._cells, centre[:, 4:], rft.drum_axis(quat[:, 4:]), self._rft, self._fresh_bed)
             self._loose = (self._loose - (self._bed_grid - pressed)).clamp(min=0.0)
             self._bed_grid = pressed
         if self._soil_marker is not None:

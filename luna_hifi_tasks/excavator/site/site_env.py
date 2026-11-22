@@ -69,6 +69,8 @@ class ExcavatorSiteEnvCfg(ExcavatorExcavateRftEnvCfg):
     bed_margin_x: float = 0.5
     bed_margin_y: float = 0.5
     max_env_excursion = 12.0
+    # Ruts and the spots it turns on stop sinking 3 cm down: hours of traffic, not one episode.
+    soil_compaction: float = 0.03
     # Dumping: the front inlet dump_tilt off straight down, its load laid out at dump_rate.
     dump_tilt: float = 0.0                     # rad
     dump_rate: float = 30.0                    # kg/s

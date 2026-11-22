@@ -6,9 +6,9 @@
 #   dig    a pass of the excavate policy. begin_pass() puts the work area and
 #          the plane where the planner says; the settle, ramp, line hold and
 #          actions are the excavate env's, as in training.
-#   drive  the navigate policy, along a route to a goal pose. nav_obs() is its
-#          observation; its [forward, yaw] drive the wheels as in navigate, the
-#          arms stowed, the drums still, the inlets up.
+#   drive  the navigate policy, waypoint by waypoint along a route to a goal
+#          pose. nav_obs() is its observation; its [forward, yaw] drive the
+#          wheels as in navigate, the arms stowed, the drums still, the inlets up.
 #   dump   scripted: wheels held, the front inlet turned down and its drum
 #          reversed, its load laid on the bed under it.
 #
@@ -48,6 +48,7 @@ STAGE = 0.6                 # m short of the trench the front drum stops, lined 
 TURN = 1.5                  # m behind that stop the way back turns into the trench line
 PILES, PILE_STEP = 3, 0.6   # the dumps go round three piles, this far apart along x
 WAYPOINT_RADIUS = 0.5       # m: a route waypoint counts as passed this close
+LEAVE = (1.0, 0.5)          # m back along x and further out from a dump stop: the way home starts ahead-left
 DRIVE_SECONDS, PASS_SECONDS, DUMP_SECONDS = 90.0, 40.0, 15.0
 
 
@@ -104,7 +105,9 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         self._nav_spec = navigate_obs_spec()
         self._nav_actions = torch.zeros(1, 2, device=dev)
         self._route = torch.zeros(1, 2, device=dev)
+        self._route_yaw = torch.zeros(1, device=dev)
         self._route_next = 0
+        self._dump_x = 0.0
         self._goal_xy = torch.zeros(1, 2, device=dev)
         self._goal_yaw = torch.zeros(1, device=dev)
         self._held = 0
@@ -139,9 +142,14 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
 
     def begin_drive(self, route: list[tuple[float, float]], goal_yaw: float) -> None:
         """Drive along env-local waypoints to a goal pose at the last, facing
-        along goal_yaw (either way along it, as navigate trains)."""
-        self._route = torch.tensor(route, device=self.device)
-        self._route_next = 0
+        along goal_yaw (either way along it, as navigate trains). The policy's
+        goal is one waypoint at a time, facing along the leg into it."""
+        here = self.robot.data.root_pos_w.torch[0, :2] - self.scene.env_origins[0, :2]
+        self._route = torch.cat([here[None], torch.tensor(route, device=self.device)])
+        legs = self._route[1:] - self._route[:-1]
+        self._route_yaw = torch.atan2(legs[:, 1], legs[:, 0])
+        self._route_yaw[-1] = goal_yaw
+        self._route_next = 1
         self._goal_xy = self.scene.env_origins[:, :2] + self._route[-1]
         self._goal_yaw[:] = goal_yaw
         self._nav_actions.zero_()
@@ -165,6 +173,7 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
     def dump_route(self) -> list[tuple[float, float]]:
         """On past the trench end, then left to face the next pile."""
         x = self.trench_x + self.cfg.trench_length + EXIT + PILE_STEP * (self._dumps % PILES)
+        self._dump_x = x
         return [(x, 0.0), (x, LANE)]
 
     def staging(self) -> tuple[float, float]:
@@ -172,9 +181,11 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         return (self.trench_x - STAGE - REACH, 0.0)
 
     def return_route(self) -> list[tuple[float, float]]:
-        """Back along the lane, round behind the trench and up its line to the staging stop."""
+        """Off the last dump stop ahead-left, so it pulls away forward rather than
+        reversing, back along the lane, round behind the trench and up its line
+        to the staging stop."""
         x = self.staging()[0] - TURN
-        return [(x, LANE), (x, 0.0), self.staging()]
+        return [(self._dump_x - LEAVE[0], LANE + LEAVE[1]), (x, LANE), (x, 0.0), self.staging()]
 
     def trench_mask(self) -> torch.Tensor:
         """(ny, nx) the trench's grid cells."""
@@ -188,8 +199,9 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
     # --- navigate ---
 
     def nav_obs(self) -> torch.Tensor:
-        """The navigate policy's observation: the path the points path_lookahead
-        along the route from the chassis, and the goal pose."""
+        """The navigate policy's observation, its goal the route's next waypoint
+        and its path the straight line there, as on navigate's flat cells.
+        Within WAYPOINT_RADIUS of a waypoint, the goal moves on to the next."""
         n = self._nav
         o = self.scene.env_origins[:, :2]
         root = self.robot.data.root_pos_w.torch[:, :2]
@@ -197,10 +209,12 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         last = self._route.shape[0] - 1
         while self._route_next < last and float(torch.linalg.norm(self._route[self._route_next] - here)) < WAYPOINT_RADIUS:
             self._route_next += 1
-        ahead = along(torch.cat([here[None], self._route[self._route_next:]]), n.path_lookahead) + o
+        goal = self._route[self._route_next]
+        ahead = along(torch.stack([here, goal]), n.path_lookahead) + o
         return navigate_actor_obs(
-            self._nav_spec, self._proprio(), root, self._base_yaw(), self._goal_xy, self._goal_yaw,
-            ahead[None], self._nav_actions, n.goal_dist_max, n.goal_near_range,
+            self._nav_spec, self._proprio(), root, self._base_yaw(), goal[None] + o,
+            self._route_yaw[self._route_next - 1].reshape(1), ahead[None], self._nav_actions,
+            n.goal_dist_max, n.goal_near_range,
         )
 
     def _goal_terms(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

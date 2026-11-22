@@ -34,6 +34,12 @@
 #
 # run_site() digs a planner's site (luna_hifi_tasks/planner/site.py), reading
 # each patch's height back from the bed after its pass.
+#
+# Or an L (l_size > 0), cut in strokes along x and along y by run_strokes()
+# (luna_hifi_tasks/planner/strokes.py): the machine goes round the L on a ring
+# road RING out from it, turns in from it along a stroke, digs the stroke's
+# passes one after another until the drum is about full, backs out, and pours
+# outside the ring on its +x and +y sides. It spawns on the ring west of the L.
 
 from __future__ import annotations
 
@@ -51,6 +57,7 @@ from ..mdp import rewards as R
 from ..mdp import rft
 from ..mdp.observations import navigate_actor_obs, navigate_obs_spec
 from ..navigate.navigate_env_cfg import ExcavatorNavigateEnvCfg
+from ...planner.strokes import Heights
 
 REACH = PIVOT_X + ARM_LEN * math.cos(ARM_STOW_ANGLE)   # m the front drum sits ahead of the chassis, stowed
 STAGE = 0.6                 # m short of the pit the front drum stops, lined up on its lane, before driving in
@@ -61,6 +68,14 @@ LOOSE_M, LOOSE_DEG = 0.25, 10.0     # a stop short of this is a miss; the yard a
 DUMP_MIN_KG = 5.0           # less soil than this in the drum: no trip to the pile
 TURN_TRIES = 4              # turns on the spot to face the other way before the run gives up
 DRIVE_SECONDS, PASS_SECONDS, DUMP_SECONDS, READY_SECONDS = 90.0, 40.0, 15.0, 3.0
+RING = STAGE + REACH        # m from a stroke site's edge out to the ring road: the drum STAGE short, lined up there
+FULL_KG = 90.0              # a stroke goes on until the drum holds this: what the dig's training counts as full
+
+
+def l_corner(cfg) -> tuple[float, float]:
+    """The L's outer corner (its least x and y), env-local: the machine spawns
+    on the ring road west of it, facing it."""
+    return RING, -0.5 * cfg.l_size
 
 
 def site_layout(cfg) -> tuple[float, float, float]:
@@ -91,14 +106,25 @@ class ExcavatorSiteEnvCfg(ExcavatorExcavateRftEnvCfg):
     # Dumping: the front inlet dump_tilt off straight down, its load laid out at dump_rate.
     dump_tilt: float = 0.0                     # rad
     dump_rate: float = 30.0                    # kg/s
+    # Or an L, cut in strokes (l_size > 0): its side and its arms' thickness, m.
+    l_size: float = 0.0
+    l_thickness: float = 1.425
 
     def __post_init__(self) -> None:
-        x0, half, way = site_layout(self)
-        # West: the yard, the machine turning there; east: a pass from beyond
-        # the pit's end, and the piles; across: the side lanes' outer wheels
-        # and the piles outside the way round.
-        self.bed_x = (x0 - STAGE - 2.0 * REACH - 1.5, x0 + max(self.pit_length + 3.5, PILE_STEP * (PILES - 1) + 1.5))
-        self.bed_y = (-half - 1.8, way + REACH + 1.0)
+        if self.l_size > 0.0:
+            # The L, the ring road RING round it, the machine's far drum turning
+            # there, and on the +x and +y sides the piles outside the ring.
+            x0, y0 = l_corner(self)
+            out = RING + REACH + 1.2
+            self.bed_x = (x0 - RING - REACH - 1.0, x0 + self.l_size + out)
+            self.bed_y = (y0 - RING - REACH - 1.0, y0 + self.l_size + out)
+        else:
+            x0, half, way = site_layout(self)
+            # West: the yard, the machine turning there; east: a pass from beyond
+            # the pit's end, and the piles; across: the side lanes' outer wheels
+            # and the piles outside the way round.
+            self.bed_x = (x0 - STAGE - 2.0 * REACH - 1.5, x0 + max(self.pit_length + 3.5, PILE_STEP * (PILES - 1) + 1.5))
+            self.bed_y = (-half - 1.8, way + REACH + 1.0)
         super().__post_init__()
 
 
@@ -152,15 +178,15 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
 
     # --- the runner's commands ---
 
-    def begin_pass(self, anchor_x: float, anchor_y: float, plane_z: float, facing: int) -> float:
-        """A dig pass along +x (facing 1) or -x (facing -1), its work area
-        anchored at (anchor_x, anchor_y) and its plane at plane_z, env-local: the
-        depth below the work area's mean surface, kept inside the trained range.
+    def begin_pass(self, anchor_x: float, anchor_y: float, plane_z: float, heading: float) -> float:
+        """A dig pass heading the given yaw, its work area anchored at
+        (anchor_x, anchor_y) and its plane at plane_z, env-local: the depth
+        below the work area's mean surface, kept inside the trained range.
         Returns that depth."""
         ids = torch.zeros(1, dtype=torch.long, device=self.device)
         o = self.scene.env_origins
         anchor = o[:, :2] + torch.tensor([[anchor_x, anchor_y]], device=self.device)
-        yaw = torch.full((1,), 0.0 if facing > 0 else math.pi, device=self.device)
+        yaw = torch.full((1,), heading, device=self.device)
         self._set_work_area(ids, anchor, yaw)
         work = self._work_mask & (self._bed_grid > BED_FLOOR_Z + 0.5 * self.cfg.voxel_size)
         mean = (self._bed_grid * work).sum(dim=(1, 2)) / work.sum(dim=(1, 2)).clamp_min(1)
@@ -229,11 +255,6 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         x = self.pit_x + PILE_STEP * (self._dumps % PILES)
         return [(self.yard_x, y), (self.yard_x, self.way), (x, self.way)]
 
-    def pit_mask(self) -> torch.Tensor:
-        """(ny, nx) the pit's grid cells."""
-        x, y = self._grid_xy[..., 0], self._grid_xy[..., 1]
-        return (x >= self.pit_x) & (x <= self.pit_x + self.cfg.pit_length) & (y.abs() <= self.half_width)
-
     def patch_level(self) -> float:
         """The last pass's work area: its mean height relative to the fresh bed, m."""
         return float((self._bed_grid[0][self._work_mask[0]] - self.cfg.bed_top).mean())
@@ -282,6 +303,19 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         )
         self._held = self._held + 1 if bool(still[0]) else 0
         return self._held >= n.arrive_hold_steps
+
+    def heights(self):
+        """The bed's heights against the ground as it was, m: (z (ny, nx), the grid's lower corner, its cell)."""
+        z = (self._bed_grid[0] - self._fresh_bed).cpu().numpy()
+        return z, tuple(self.cfg.bed_grid_lower), self.cfg.voxel_size
+
+    def rects_mask(self, rects) -> torch.Tensor:
+        """(ny, nx) the grid cells inside any of the (x0, x1, y0, y1) rectangles, env-local."""
+        x, y = self._grid_xy[..., 0], self._grid_xy[..., 1]
+        mask = torch.zeros_like(x, dtype=torch.bool)
+        for x0, x1, y0, y1 in rects:
+            mask |= (x >= x0) & (x <= x1) & (y >= y0) & (y <= y1)
+        return mask
 
     def dumped(self) -> bool:
         return bool(self._fill_kg[0, 0] < 0.5)
@@ -337,6 +371,106 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         return none, none
 
 
+class Machine:
+    """The runner's hold on the site env: it steps the env with the policies,
+    keeps the clock, and drives, turns, digs and dumps. dig and nav map their
+    observations to actions; record(env) is called after every step."""
+
+    def __init__(self, env, dig, nav, record=None, max_minutes: float = 60.0):
+        self.env, self.u, self.dig, self.nav, self.record = env, env.unwrapped, dig, nav, record
+        self.max_minutes = max_minutes
+        self.zero = torch.zeros(1, self.u.cfg.action_space, device=self.u.device)
+        self.obs = env.reset()[0]
+        self.steps = 0
+
+    def now(self) -> float:
+        return self.steps * self.u.step_dt
+
+    def step(self, action: torch.Tensor) -> None:
+        u = self.u
+        self.obs = self.env.step(action)[0]
+        self.steps += 1
+        if self.record is not None:
+            self.record(u)
+        if bool(u._failed_now[0] | u._nonfinite_now[0]):
+            raise RuntimeError(f"the machine failed at t = {self.now():.1f} s: tipped, off the bed or non-finite")
+        if self.now() >= 60.0 * self.max_minutes:
+            raise RuntimeError(f"out of time after {self.max_minutes:g} min")
+
+    def here(self) -> tuple[float, float]:
+        xy = self.u.robot.data.root_pos_w.torch[0, :2] - self.u.scene.env_origins[0, :2]
+        return float(xy[0]), float(xy[1])
+
+    def facing(self, yaw: float) -> bool:
+        """Whether its front is toward yaw, not away from it."""
+        return math.cos(float(self.u._base_yaw()[0]) - yaw) > 0.0
+
+    def load(self) -> float:
+        """kg in the front drum."""
+        return float(self.u._fill_kg[0, 0])
+
+    def drive(self, route, yaw: float, loose: bool = False) -> dict:
+        """To the route's end, along yaw either way; a loose stop is done within LOOSE_M and LOOSE_DEG."""
+        u = self.u
+        u.begin_drive(route, yaw)
+        tol = (LOOSE_M, math.radians(LOOSE_DEG)) if loose else (None, None)
+        t0 = self.now()
+        for _ in range(int(DRIVE_SECONDS / u.step_dt)):
+            a = self.zero.clone()
+            a[:, :2] = self.nav(u.nav_obs()).clamp(-1.0, 1.0)
+            self.step(a)
+            if u.arrived(*tol):
+                break
+        dist, herr = u.goal_error()
+        goal = tuple(round(v, 2) for v in route[-1])
+        if dist > LOOSE_M or abs(herr) > math.radians(LOOSE_DEG):
+            raise RuntimeError(f"did not reach {goal} in {DRIVE_SECONDS:g} s: {dist:.2f} m, {math.degrees(herr):+.1f} deg off")
+        return {"s": round(self.now() - t0, 1), "miss_m": round(dist, 3), "miss_deg": round(math.degrees(herr), 1)}
+
+    def turn_round(self) -> None:
+        """Half a turn on the spot, in three sixths: navigate turns to the nearer
+        end of a goal heading, so each step, 60 deg on, turns the same way."""
+        spot = [self.here()]
+        yaw = float(self.u._base_yaw()[0])
+        for k in (1, 2, 3):
+            self.drive(spot, yaw + k * math.pi / 3, loose=True)
+
+    def face(self, yaw: float) -> None:
+        """Front toward yaw: half a turn if it is the other way."""
+        if not self.facing(yaw):
+            self.turn_round()
+
+    def dig_pass(self, anchor: tuple[float, float], plane_z: float, heading: float) -> dict:
+        """The dig's start pose, then a pass heading `heading` from anchor down to plane_z, env-local."""
+        u = self.u
+        u.begin_ready()
+        for _ in range(int(READY_SECONDS / u.step_dt)):
+            self.step(self.zero)
+            if u.ready():
+                break
+        depth = u.begin_pass(anchor[0], anchor[1], plane_z, heading)
+        t0 = self.now()
+        for _ in range(int(PASS_SECONDS / u.step_dt)):
+            self.step(self.dig(self.obs["policy"]).clamp(-1.0, 1.0))
+            if bool(u._pass_done[0]):
+                break
+        return {
+            "depth_cm": round(100 * depth, 1), "pass_s": round(self.now() - t0, 1),
+            "removed_kg": round(float(u._removed_kg[0]), 1), "held_kg": round(float(u._payload_kg[0]), 1),
+            "shape_done": bool(u._shape_done[0]), "floor_cm": round(100 * u.patch_level(), 1),
+        }
+
+    def dump(self) -> float:
+        """Empty the front drum where it is; kg poured."""
+        u, before = self.u, self.load()
+        u.begin_dump()
+        for _ in range(int(DUMP_SECONDS / u.step_dt)):
+            self.step(self.zero)
+            if u.dumped():
+                break
+        return round(before - self.load(), 1)
+
+
 def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tuple[list[dict], str]:
     """Dig a planner's site. Before each pass the machine is lined up along a
     lane; the planner picks a cut it can make facing the way it faces (it turns
@@ -353,91 +487,20 @@ def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tup
         raise ValueError(f"the planner's patch is {site.cfg.patch_x} m, the dig's work area {u.patch_length} m")
     if len(site.height) != u.lanes:
         raise ValueError(f"the planner's site has {len(site.height)} lanes, the bed {u.lanes}")
-    dt, voxel = u.step_dt, site.cfg.voxel
-    zero = torch.zeros(1, u.cfg.action_space, device=u.device)
-    state = {"obs": env.reset()[0], "steps": 0}
-    limit = int(max_minutes * 60.0 / dt)
-
-    def now() -> float:
-        return state["steps"] * dt
-
-    def step(action: torch.Tensor) -> None:
-        state["obs"] = env.step(action)[0]
-        state["steps"] += 1
-        if record is not None:
-            record(u)
-        if bool(u._failed_now[0] | u._nonfinite_now[0]):
-            raise RuntimeError(f"the machine failed at t = {now():.1f} s: tipped, off the bed or non-finite")
-        if state["steps"] >= limit:
-            raise RuntimeError(f"out of time after {max_minutes:g} min")
-
-    def here() -> tuple[float, float]:
-        xy = u.robot.data.root_pos_w.torch[0, :2] - u.scene.env_origins[0, :2]
-        return float(xy[0]), float(xy[1])
-
-    def drive(route, yaw: float, loose: bool = False) -> dict:
-        """To the route's end; a loose stop is done within LOOSE_M and LOOSE_DEG."""
-        u.begin_drive(route, yaw)
-        tol = (LOOSE_M, math.radians(LOOSE_DEG)) if loose else (None, None)
-        t0 = now()
-        for _ in range(int(DRIVE_SECONDS / dt)):
-            a = zero.clone()
-            a[:, :2] = nav(u.nav_obs()).clamp(-1.0, 1.0)
-            step(a)
-            if u.arrived(*tol):
-                break
-        dist, herr = u.goal_error()
-        goal = tuple(round(v, 2) for v in route[-1])
-        if dist > LOOSE_M or abs(herr) > math.radians(LOOSE_DEG):
-            raise RuntimeError(f"did not reach {goal} in {DRIVE_SECONDS:g} s: {dist:.2f} m, {math.degrees(herr):+.1f} deg off")
-        return {"s": round(now() - t0, 1), "miss_m": round(dist, 3), "miss_deg": round(math.degrees(herr), 1)}
+    voxel = site.cfg.voxel
+    m = Machine(env, dig, nav, record, max_minutes)
 
     def to_yard(y: float) -> dict:
         """Lined up along x on lane line y at the yard: from the way round down
         to it, or out of the pit along the lane it is on and across."""
-        x, at = here()
+        x, at = m.here()
         if at > u.way - 0.5:
             route = [(u.yard_x, u.way), (u.yard_x, y)]
         elif abs(at - y) > 0.3:
             route = [(u.yard_x, at), (u.yard_x, y)]
         else:
             route = [(u.yard_x, y)]
-        return drive(route, 0.0, loose=True)
-
-    def turn_round() -> None:
-        """Half a turn on the spot, in three sixths: navigate turns to the nearer
-        end of a goal heading, so each step, 60 deg on, turns the same way."""
-        spot = [here()]
-        yaw = float(u._base_yaw()[0])
-        for k in (1, 2, 3):
-            drive(spot, yaw + k * math.pi / 3, loose=True)
-
-    def dig_pass(iy: int, ix: int, level: float, facing: int) -> dict:
-        u.begin_ready()
-        for _ in range(int(READY_SECONDS / dt)):
-            step(zero)
-            if u.ready():
-                break
-        depth = u.begin_pass(u.anchor_x(ix, facing), u.lane_y(iy), u.cfg.bed_top + level * voxel, facing)
-        t0 = now()
-        for _ in range(int(PASS_SECONDS / dt)):
-            step(dig(state["obs"]["policy"]).clamp(-1.0, 1.0))
-            if bool(u._pass_done[0]):
-                break
-        return {
-            "toward": "+x" if facing > 0 else "-x", "depth_cm": round(100 * depth, 1), "pass_s": round(now() - t0, 1),
-            "removed_kg": round(float(u._removed_kg[0]), 1), "held_kg": round(float(u._payload_kg[0]), 1),
-            "shape_done": bool(u._shape_done[0]), "floor_cm": round(100 * u.patch_level(), 1),
-        }
-
-    def dump() -> float:
-        before = float(u._fill_kg[0, 0])
-        u.begin_dump()
-        for _ in range(int(DUMP_SECONDS / dt)):
-            step(zero)
-            if u.dumped():
-                break
-        return round(before - float(u._fill_kg[0, 0]), 1)
+        return m.drive(route, 0.0, loose=True)
 
     rows: list[dict] = []
     planned = sum(h - t for hr, tr in zip(site.height, site.target) for h, t in zip(hr, tr))
@@ -453,9 +516,9 @@ def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tup
             if pick is None:
                 if site.next_trim(-facing) is None or turns >= TURN_TRIES:
                     break
-                if here()[0] > u.yard_x + 0.5:
+                if m.here()[0] > u.yard_x + 0.5:
                     to_yard(u.lane_y(lane))
-                turn_round()
+                m.turn_round()
                 turns += 1
                 continue
             turns = 0
@@ -464,28 +527,30 @@ def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tup
                 to_yard(u.lane_y(iy))
                 lane = iy
                 if u.facing_x() != facing:          # came out of the crossing the other way round
-                    turn_round()
+                    m.turn_round()
             start = u.pass_start(iy, ix, facing)
             row = {"trim": site.trims + 1, "lane": iy, "patch": ix, "target_cm": round(100 * level * voxel, 1)}
-            if math.dist(here(), start) > 0.05:
-                row["to_pass"] = drive([start], 0.0)
+            if math.dist(m.here(), start) > 0.05:
+                row["to_pass"] = m.drive([start], 0.0)
             if u.facing_x() != facing:              # turned round on the way in: choose again
                 detours += 1
                 if detours > 2 * TURN_TRIES:
                     raise RuntimeError("kept turning round on the way into the pit")
                 continue
             detours = 0
-            row.update(dig_pass(iy, ix, level, facing))
+            row["toward"] = "+x" if facing > 0 else "-x"
+            heading = 0.0 if facing > 0 else math.pi
+            row.update(m.dig_pass((u.anchor_x(ix, facing), u.lane_y(iy)), u.cfg.bed_top + level * voxel, heading))
             site.trim((iy, ix), height=row["floor_cm"] / 100 / voxel)
             rows.append(row)
             print(f"[site] trim {row['trim']:3d}, lane {iy} patch {ix} toward {row['toward']}: to {row['target_cm']:+.1f} cm, "
                   f"cut {row['depth_cm']:.1f} cm in {row['pass_s']:.0f} s -> floor {row['floor_cm']:+.1f} cm; "
-                  f"{row['removed_kg']:.0f} kg removed, {row['held_kg']:.0f} held; t = {now():.0f} s", flush=True)
-            if float(u._fill_kg[0, 0]) >= DUMP_MIN_KG:
-                row["to_dump"] = drive(u.dump_route(u.lane_y(iy)), 0.5 * math.pi, loose=True)
-                row["dumped_kg"] = dump()
+                  f"{row['removed_kg']:.0f} kg removed, {row['held_kg']:.0f} held; t = {m.now():.0f} s", flush=True)
+            if m.load() >= DUMP_MIN_KG:
+                row["to_dump"] = m.drive(u.dump_route(u.lane_y(iy)), 0.5 * math.pi, loose=True)
+                row["dumped_kg"] = m.dump()
                 at_pile = True
-                print(f"[site]           dumped {row['dumped_kg']:.0f} kg; t = {now():.0f} s", flush=True)
+                print(f"[site]           dumped {row['dumped_kg']:.0f} kg; t = {m.now():.0f} s", flush=True)
     except RuntimeError as err:
         return rows, f"stopped: {err}"
     if site.done():
@@ -495,3 +560,153 @@ def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tup
            else f"; could not turn round in {TURN_TRIES} tries" if turns >= TURN_TRIES
            else "; nothing left it can cut either way round")
     return rows, f"stopped after {site.trims} trims with {len(site.pending())} patches short{why}"
+
+
+class Ring:
+    """The road round a stroke site: the rectangle `gap` out from its box
+    (x0, x1, y0, y1). The machine goes round on it, turns in from it along a
+    stroke, and pours outside it, on its +y and +x sides."""
+
+    def __init__(self, box: tuple[float, float, float, float], gap: float = RING):
+        x0, x1, y0, y1 = box
+        self.x0, self.x1, self.y0, self.y1 = x0 - gap, x1 + gap, y0 - gap, y1 + gap
+        w, h = self.x1 - self.x0, self.y1 - self.y0
+        # Its corners counter-clockwise from the south-west one, and how far round each is.
+        self.corners = [(self.x0, self.y0), (self.x1, self.y0), (self.x1, self.y1), (self.x0, self.y1)]
+        self.marks = [0.0, w, w + h, 2.0 * w + h]
+        self.length = 2.0 * (w + h)
+
+    def round_to(self, p) -> float:
+        """How far round from the south-west corner, counter-clockwise, the ring's point nearest p is."""
+        x, y = min(max(p[0], self.x0), self.x1), min(max(p[1], self.y0), self.y1)
+        w, h = self.x1 - self.x0, self.y1 - self.y0
+        sides = (abs(y - self.y0), abs(self.x1 - x), abs(self.y1 - y), abs(x - self.x0))
+        k = sides.index(min(sides))
+        return (x - self.x0, w + y - self.y0, w + h + self.x1 - x, 2.0 * w + h + self.y1 - y)[k]
+
+    def route(self, a, b) -> list[tuple[float, float]]:
+        """From a to b round the ring, the shorter way: the corners passed, then b."""
+        ta, tb = self.round_to(a), self.round_to(b)
+        ahead = (tb - ta) % self.length
+        way = 1 if ahead <= 0.5 * self.length else -1
+        span = ahead if way > 0 else self.length - ahead
+        passed = sorted((((t - ta) * way) % self.length, c) for c, t in zip(self.corners, self.marks))
+        return [c for d, c in passed if 1e-6 < d < span - 1e-6] + [tuple(b)]
+
+    def entry(self, stroke, way: int) -> tuple[float, float]:
+        """Where a stroke run `way` along it is entered from the ring."""
+        if stroke.axis == 0:
+            return (self.x0 if way > 0 else self.x1, stroke.across)
+        return (stroke.across, self.y0 if way > 0 else self.y1)
+
+    def stops(self, strokes, clear: float = 1.0, corner: float = 2.0) -> list[tuple[tuple[float, float], float]]:
+        """Dump stops on the +y and +x sides, PILE_STEP apart, `corner` from the
+        ring's corners and `clear` of where a stroke is entered, each with the
+        heading out of the ring the drum pours toward."""
+        out = []
+        for axis, side, lo, hi, yaw in ((1, self.y1, self.x0, self.x1, 0.5 * math.pi), (0, self.x1, self.y0, self.y1, 0.0)):
+            taken = [s.across for s in strokes if s.axis == axis]
+            t = lo + corner
+            while t <= hi - corner + 1e-9:
+                if all(abs(t - e) >= clear for e in taken):
+                    out.append(((t, side) if axis == 1 else (side, t), yaw))
+                t += PILE_STEP
+        return out
+
+
+def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0) -> tuple[list[dict], str]:
+    """Dig a stroke planner's site (luna_hifi_tasks/planner/strokes.py). Before
+    each move the planner gets the bed's heights and picks a stroke, the way
+    along it and the level. The machine goes round the ring road to where the
+    stroke is entered, faces along it, and drives in to each pass's start in
+    turn, digging from the dig's start pose, its drum empty at the first; once
+    the drum holds FULL_KG it backs out, goes round to a pile, empties it and
+    comes back to carry on. After the stroke it backs out to the ring and
+    empties what is left. Returns a row per move and how the run ended."""
+    u, c = env.unwrapped, site.cfg
+    m = Machine(env, dig, nav, record, max_minutes)
+    lanes = [s.rect(*s.span, 0.5 * c.width) for s in site.strokes]
+    ring = Ring((min(r[0] for r in lanes), max(r[1] for r in lanes), min(r[2] for r in lanes), max(r[3] for r in lanes)))
+    stops = ring.stops(site.strokes)
+    dumps = 0
+
+    def look() -> None:
+        site.heights = Heights(*u.heights())
+
+    def drive_in(start: tuple[float, float], gate: tuple[float, float], yaw: float) -> None:
+        """To a pass's start along its stroke, front toward yaw. Within 15 cm
+        past it, as after the pass before, it starts from where it is: the
+        passes overlap by more. On coming out the other way round, it backs out
+        to the gate, turns and goes in again, once."""
+        for _ in range(2):
+            x, y = m.here()
+            along = (x - start[0]) * math.cos(yaw) + (y - start[1]) * math.sin(yaw)
+            off = abs((y - start[1]) * math.cos(yaw) - (x - start[0]) * math.sin(yaw))
+            if off > 0.05 or not -0.05 <= along <= 0.15:
+                m.drive([start], yaw)
+            if m.facing(yaw):
+                return
+            m.drive([gate], yaw, loose=True)
+            m.face(yaw)
+        raise RuntimeError(f"turned round twice driving in to {tuple(round(v, 2) for v in start)}")
+
+    def empty(back_to=None, yaw: float = 0.0) -> None:
+        """Round the ring to the next pile and empty the drum facing out of the
+        ring; then, given back_to, round to it, facing yaw."""
+        nonlocal dumps
+        point, out = stops[dumps % len(stops)]
+        dumps += 1
+        m.drive(ring.route(m.here(), point), out, loose=True)
+        m.face(out)
+        m.dump()
+        if back_to is not None:
+            m.drive(ring.route(m.here(), back_to), yaw, loose=True)
+            m.face(yaw)
+
+    rows: list[dict] = []
+    try:
+        while True:
+            look()
+            move = site.next_move(m.here())
+            if move is None:
+                break
+            i, way, v = move
+            s = site.strokes[i]
+            yaw, gate, anchors = s.yaw(way), ring.entry(s, way), site.anchors(i, way)
+            before, t0, passes, skipped, trips = site.level(i), m.now(), 0, 0, 0
+            m.drive(ring.route(m.here(), gate), yaw, loose=True)
+            m.face(yaw)
+            for k, a in enumerate(anchors):
+                look()
+                if site.heights.mean(*site.work_rect(i, a, way)) <= v + c.done_tol:
+                    skipped += 1
+                    continue
+                drive_in(s.point(a - way * u.dig_reach), gate, yaw)
+                m.dig_pass(s.point(a), u.cfg.bed_top + v, yaw)
+                passes += 1
+                if m.load() >= FULL_KG and k < len(anchors) - 1:
+                    m.drive([gate], yaw, loose=True)
+                    empty(gate, yaw)
+                    trips += 1
+            m.drive([gate], yaw, loose=True)
+            if m.load() >= DUMP_MIN_KG:
+                empty()
+                trips += 1
+            look()
+            site.record(i, before, site.level(i))
+            row = {"move": len(rows) + 1, "stroke": s.name, "way": f"{'+' if way > 0 else '-'}{'xy'[s.axis]}",
+                   "to_cm": round(100 * v, 1), "passes": passes, "skipped": skipped, "trips": trips,
+                   "from_cm": round(100 * before, 1), "level_cm": round(100 * site.level(i), 1),
+                   "s": round(m.now() - t0, 1)}
+            rows.append(row)
+            print(f"[site] stroke {row['move']:2d}, {s.name} {row['way']}: to {row['to_cm']:+.1f} cm in {passes} passes "
+                  f"({skipped} skipped), {trips} to the piles: {row['from_cm']:+.1f} -> {row['level_cm']:+.1f} cm; "
+                  f"t = {m.now():.0f} s", flush=True)
+    except RuntimeError as err:
+        return rows, f"stopped: {err}"
+    if site.done():
+        return rows, "done"
+    short = sum(site.level(i) > site.target + c.done_tol for i in range(len(site.strokes)))
+    aside = [site.strokes[i].name for i in site.set_aside()]
+    why = f"{aside} set aside after {c.retries} failed moves in a row" if aside else "no stroke open to the rover"
+    return rows, f"stopped with {short} strokes short: {why}"

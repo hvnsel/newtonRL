@@ -1,0 +1,294 @@
+"""Stroke planner: an excavation cut as straight strokes of the drum.
+
+A stroke is a straight lane the drum's width, along x or along y. A move cuts
+one stroke a layer deeper, running along it either way, in passes of the dig
+policy that overlap, so the cut has no seams along it; strokes side by side
+overlap too. The planner keeps the site's heights (m, relative to the ground as
+it was; off its grid the ground) and before each move picks which stroke, which
+way along it and how deep, such that every stroke can still be finished: it
+searches the order ahead on the heights it expects, and the heights measured
+after each move replace them.
+
+A move is open to the rover only if, all along the stroke, its wheel tracks
+either side of the cut
+  - stand within level_tol of each other (one may run down in the cut beside:
+    the dig trained with its lane moved up to 0.5 m over three passes),
+  - meet no step over drive_step from outside the site in,
+  - leave the cut no more than rise above the higher of them (no ridges),
+and the drum reaches the level from them.
+
+Pure Python and numpy; site_env.run_strokes cuts the strokes on the RFT soil.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+
+import numpy as np
+
+
+@dataclass(frozen=True)
+class Stroke:
+    """A straight lane the drum's width, along x (axis 0) or y (axis 1), its
+    centre line at `across` (a y, or an x), from span[0] to span[1] along it."""
+
+    axis: int
+    across: float
+    span: tuple[float, float]
+    name: str = ""
+
+    def point(self, along, off=0.0):
+        """Env-local (x, y) `along` the axis, `off` the centre line toward +y (axis 0) or +x (axis 1)."""
+        return (along, self.across + off) if self.axis == 0 else (self.across + off, along)
+
+    def rect(self, a0: float, a1: float, half: float) -> tuple[float, float, float, float]:
+        """(x0, x1, y0, y1) from a0 to a1 along it, half either side of the centre line."""
+        lo, hi = min(a0, a1), max(a0, a1)
+        c0, c1 = self.across - half, self.across + half
+        return (lo, hi, c0, c1) if self.axis == 0 else (c0, c1, lo, hi)
+
+    def yaw(self, way: int) -> float:
+        """The heading running along it toward +x or +y (way 1), or back (-1)."""
+        return (0.0 if way > 0 else math.pi) if self.axis == 0 else math.copysign(0.5 * math.pi, way)
+
+
+Move = tuple[int, int, float]       # stroke index, way along it (1 or -1), level, m
+
+
+class Heights:
+    """Heights on a grid, m relative to the ground as it was: cell (j, i) is
+    centred at lower + (i + 0.5, j + 0.5) * cell. Off the grid, the ground."""
+
+    def __init__(self, z, lower: tuple[float, float], cell: float):
+        self.z, self.lower, self.cell = np.asarray(z, dtype=float), lower, cell
+
+    def copy(self) -> Heights:
+        return Heights(self.z.copy(), self.lower, self.cell)
+
+    def at(self, x, y) -> np.ndarray:
+        ny, nx = self.z.shape
+        i = np.floor((np.asarray(x) - self.lower[0]) / self.cell).astype(int)
+        j = np.floor((np.asarray(y) - self.lower[1]) / self.cell).astype(int)
+        inside = (i >= 0) & (i < nx) & (j >= 0) & (j < ny)
+        return np.where(inside, self.z[j.clip(0, ny - 1), i.clip(0, nx - 1)], 0.0)
+
+    def _box(self, x0: float, x1: float, y0: float, y1: float) -> tuple[slice, slice]:
+        """The cells centred inside the rectangle."""
+        (lx, ly), c = self.lower, self.cell
+        ny, nx = self.z.shape
+        i0, i1 = max(0, math.ceil((x0 - lx) / c - 0.5)), min(nx, math.floor((x1 - lx) / c - 0.5) + 1)
+        j0, j1 = max(0, math.ceil((y0 - ly) / c - 0.5)), min(ny, math.floor((y1 - ly) / c - 0.5) + 1)
+        return slice(j0, max(j0, j1)), slice(i0, max(i0, i1))
+
+    def mean(self, x0: float, x1: float, y0: float, y1: float) -> float:
+        cells = self.z[self._box(x0, x1, y0, y1)]
+        return float(cells.mean()) if cells.size else 0.0
+
+    def cut(self, x0: float, x1: float, y0: float, y1: float, level: float) -> None:
+        """Lower the rectangle to level where it stands above it."""
+        box = self._box(x0, x1, y0, y1)
+        self.z[box] = np.minimum(self.z[box], level)
+
+
+@dataclass
+class StrokeCfg:
+    # --- the cut ------------------------------------------------------
+    width: float = 0.95         # m the drum cuts across
+    layer: float = 0.05         # m a move takes off a stroke
+    done_tol: float = 0.015     # a stroke this close to its target is done
+    progress: float = 0.01      # a move that lowers its stroke less than this failed
+    retries: int = 3            # failed moves in a row before a stroke is set aside
+    # --- the dig's passes, set from the env -----------------------------
+    ahead: float = 0.6          # m the work area runs ahead of a pass's anchor
+    behind: float = 0.2         # and behind it
+    dig_reach: float = 1.665    # m from the chassis to the anchor as a pass starts
+    # --- the rover's footprint ----------------------------------------
+    track: float = 0.575        # m the tyres run off the stroke's centre line
+    wheelbase: float = 0.7      # m the wheels stand ahead and behind the chassis
+    reach: float = 0.15         # m below the wheel plane the drum digs
+    pitch_lever: float = 0.7    # the wheel plane carried on to the drum
+    level_tol: float = 0.18     # m the two tracks may stand apart: one in a 15 cm cut beside, and a pass's overcut
+    drive_step: float = 0.18    # m the highest step a wheel takes driving in ...
+    step_window: float = 0.3    # ... over this much of its track
+    rise: float = 0.05          # m a stroke may stand above its higher track: no ridges
+    sample: float = 0.05        # m between the points checked along a track
+    run_in: float = 2.9         # m outside a stroke's end its tracks are checked from: the rear wheels, lined up to go in
+    # --- the search ---------------------------------------------------
+    budget: int = 2000          # moves the order search tries
+    strain_bin: float = 0.03    # m: ways in this close in strain count as alike
+
+
+@dataclass
+class StrokeSite:
+    """Strokes to cut down to target (m, below the ground), on heights."""
+
+    cfg: StrokeCfg
+    strokes: list[Stroke]
+    target: float
+    heights: Heights
+    log: list = field(default_factory=list)     # (stroke, m it went down) per move
+
+    # -- queries -------------------------------------------------------
+
+    def level(self, i: int, h: Heights | None = None) -> float:
+        """Stroke i's mean height over its lane, m."""
+        s = self.strokes[i]
+        return (h or self.heights).mean(*s.rect(*s.span, 0.5 * self.cfg.width))
+
+    def failed_in_a_row(self, i: int) -> int:
+        n = 0
+        for j, down in reversed(self.log):
+            if j == i:
+                if down >= self.cfg.progress:
+                    break
+                n += 1
+        return n
+
+    def set_aside(self) -> list[int]:
+        """Strokes whose last retries moves each failed."""
+        return [i for i in range(len(self.strokes)) if self.failed_in_a_row(i) >= self.cfg.retries]
+
+    def pending(self, h: Heights | None = None) -> list[int]:
+        aside = self.set_aside()
+        return [i for i in range(len(self.strokes))
+                if i not in aside and self.level(i, h) > self.target + self.cfg.done_tol]
+
+    def done(self) -> bool:
+        return not any(self.level(i) > self.target + self.cfg.done_tol for i in range(len(self.strokes)))
+
+    def anchors(self, i: int, way: int) -> list[float]:
+        """Where along stroke i its passes start, in order running `way`: the first
+        work area at the stroke's near end, the last at its far end, passes no
+        more than a work area's reach ahead apart, so they overlap."""
+        c, (lo, hi) = self.cfg, self.strokes[i].span
+        first = lo + c.behind if way > 0 else hi - c.behind
+        last = hi - c.ahead if way > 0 else lo + c.ahead
+        if way * (last - first) <= 0:
+            return [first]
+        n = math.ceil(abs(last - first) / c.ahead - 1e-9) + 1
+        return [first + (last - first) * k / (n - 1) for k in range(n)]
+
+    def work_rect(self, i: int, anchor: float, way: int) -> tuple[float, float, float, float]:
+        c = self.cfg
+        return self.strokes[i].rect(anchor - way * c.behind, anchor + way * c.ahead, 0.5 * c.width)
+
+    def entry(self, i: int, way: int, out: float = 2.0) -> tuple[float, float]:
+        """A point on stroke i's centre line, out beyond the end it is entered from."""
+        s = self.strokes[i]
+        return s.point((s.span[0] if way > 0 else s.span[1]) - way * out)
+
+    def strain(self, i: int, way: int, v: float, h: Heights) -> float | None:
+        """How hard cutting stroke i running `way` along it down to v is on the
+        rover, on heights h: the most its wheel tracks stand apart or step, m.
+        None if it cannot: a track limit broken, the drum short of v, or the cut
+        a ridge above the tracks."""
+        c, s = self.cfg, self.strokes[i]
+        anchors = self.anchors(i, way)
+        chassis = [a - way * c.dig_reach for a in anchors]
+        # In along the stroke from well outside it to the last pass's front wheels.
+        near = s.span[0] if way > 0 else s.span[1]
+        path = np.arange(near - way * c.run_in, chassis[-1] + way * (c.wheelbase + c.sample), way * c.sample)
+        tracks = [h.at(*s.point(path, off)) for off in (-c.track, c.track)]
+        apart = float(np.abs(tracks[0] - tracks[1]).max())
+        k = max(1, round(c.step_window / c.sample))
+        step = max(float(np.abs(t[k:] - t[:-k]).max()) for t in tracks) if len(path) > k else 0.0
+        if apart > c.level_tol or step > c.drive_step:
+            return None
+        # At every pass the drum reaches v, and the cut stands no more than rise above the higher track.
+        for a, ch in zip(anchors, chassis):
+            front = [float(h.at(*s.point(ch + way * c.wheelbase, off))) for off in (-c.track, c.track)]
+            rear = [float(h.at(*s.point(ch - way * c.wheelbase, off))) for off in (-c.track, c.track)]
+            f, r = 0.5 * sum(front), 0.5 * sum(rear)
+            if v < f + c.pitch_lever * (f - r) - c.reach - 1e-9:
+                return None
+            if h.mean(*self.work_rect(i, a, way)) > max(front) + c.rise:
+                return None
+        return max(apart, step)
+
+    def moves(self, h: Heights) -> list[tuple[Move, float]]:
+        """The open moves on h, each with its strain: every stroke to come a
+        layer down, not past the target, either way along it."""
+        out = []
+        for i in self.pending(h):
+            v = max(self.target, self.level(i, h) - self.cfg.layer)
+            for way in (1, -1):
+                strain = self.strain(i, way, v, h)
+                if strain is not None:
+                    out.append(((i, way, v), strain))
+        return out
+
+    def apply(self, move: Move, h: Heights) -> None:
+        """The move on h as planned: the stroke's lane down to its level."""
+        i, _, v = move
+        s = self.strokes[i]
+        h.cut(*s.rect(*s.span, 0.5 * self.cfg.width), v)
+
+    # -- the plan ------------------------------------------------------
+
+    def plan(self, at: tuple[float, float] | None = None) -> list[Move] | None:
+        """An order of moves that finishes every stroke on the heights expected.
+        Depth first: the shallowest stroke first, so the site goes down a layer
+        at a time across it; then the way along it gentlest on the rover (its
+        strain to the nearest strain_bin); then, for the first move, the way in
+        nearest `at`. If none is found within budget, the best first move
+        alone; None if no move is open."""
+        order: list[Move] = []
+        tried = 0
+
+        def ranked(h: Heights, first: bool) -> list[Move]:
+            def key(ms: tuple[Move, float]):
+                (i, way, _), strain = ms
+                near = math.dist(at, self.entry(i, way)) if first and at else 0.0
+                return -self.level(i, h), round(strain / self.cfg.strain_bin), near
+            return [m for m, _ in sorted(self.moves(h), key=key)]
+
+        def search(h: Heights, first: bool) -> bool:
+            nonlocal tried
+            if not self.pending(h):
+                return True
+            for m in ranked(h, first):
+                tried += 1
+                if tried > self.cfg.budget:
+                    return False
+                nxt = h.copy()
+                self.apply(m, nxt)
+                order.append(m)
+                if search(nxt, False):
+                    return True
+                order.pop()
+            return False
+
+        top = ranked(self.heights, True)
+        if not top:
+            return None
+        return order if search(self.heights, True) else top[:1]
+
+    def next_move(self, at: tuple[float, float] | None = None) -> Move | None:
+        order = self.plan(at)
+        return order[0] if order else None
+
+    def record(self, i: int, before: float, after: float) -> None:
+        """Stroke i went from before to after (m) in a move."""
+        self.log.append((i, before - after))
+
+
+def l_strokes(cfg: StrokeCfg, corner: tuple[float, float], size: float, thickness: float) -> list[Stroke]:
+    """An L `size` on a side, its arms `thickness` across, its outer corner at
+    `corner` (its least x and y): one arm along +x, the other up +y from it.
+    Each arm is two strokes side by side, overlapping where it is under two
+    drum widths across; the arm along x takes the corner."""
+    x0, y0 = corner
+    near, far = 0.5 * cfg.width, thickness - 0.5 * cfg.width     # stroke centres in from the arm's outer edge
+    return [
+        Stroke(0, y0 + near, (x0, x0 + size), "along x, outer"),
+        Stroke(0, y0 + far, (x0, x0 + size), "along x, inner"),
+        Stroke(1, x0 + near, (y0 + thickness, y0 + size), "along y, outer"),
+        Stroke(1, x0 + far, (y0 + thickness, y0 + size), "along y, inner"),
+    ]
+
+
+def l_rects(corner: tuple[float, float], size: float, thickness: float) -> list[tuple[float, float, float, float]]:
+    """The L's two arms as (x0, x1, y0, y1)."""
+    x0, y0 = corner
+    return [(x0, x0 + size, y0, y0 + thickness), (x0, x0 + thickness, y0, y0 + size)]

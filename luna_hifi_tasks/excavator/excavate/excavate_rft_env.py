@@ -6,7 +6,8 @@
 # rotor and shroud bodies as world-frame wrenches, then the soil inside the
 # vane-tip circles that the openings face moves from the grid into the drums. Observations, rewards
 # and resets are the excavate env's. With soil_marker the grid is drawn in the
-# viewer, one box per cell. With wheel_soil the wheels stand on the same soil:
+# viewer: as one smooth mesh in Newton's GL viewer, else one box per cell. With
+# wheel_soil the wheels stand on the same soil:
 # their colliders are off, rft.py carries them, and their tyres press ruts.
 
 from __future__ import annotations
@@ -39,12 +40,13 @@ WHEEL_COLLIDERS = EXCAVATOR_PRIM_REGEX + r"/Geometry/chassis/wheel_(fl|fr|rl|rr)
 
 SOIL_RGB = (0.62, 0.55, 0.45)    # as play_dig colours MPM particles
 PILE_RGB = (0.80, 0.73, 0.58)    # soil laid above where the ground started
-# Ground below where it started darkens from the soil's colour a step per
-# SHADE_STEP of depth, to DEPTH_DARK DEPTH_SHADES steps down: gently, so the
-# centimetre or two a cut's floor varies hardly shows while 3 cm against 13 cm
-# does. The depth it is shaded by is averaged over SHADE_BLUR, so pass seams and
-# single cells do not stand out; the boxes' heights are the soil's own. Soil
-# PILE_RISE or more above where the ground started is a pile's colour.
+# Ground below where it started darkens from the soil's colour toward
+# DEPTH_DARK, reached DEPTH_SHADES * SHADE_STEP down (on the mesh smoothly, on
+# the boxes a step per SHADE_STEP): gently, so the centimetre or two a cut's
+# floor varies hardly shows while 3 cm against 13 cm does. The depth it is
+# shaded by is averaged over SHADE_BLUR, so pass seams and single cells do not
+# stand out; the surface's heights are the soil's own. Soil PILE_RISE or more
+# above where the ground started is a pile's colour.
 SHADE_STEP = 0.01                # m
 DEPTH_SHADES = 20
 DEPTH_DARK = tuple(0.5 * c for c in SOIL_RGB)
@@ -109,8 +111,8 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         self._wheel_patches = rft.wheel_patches(device=dev)
         self._wheel_body_ids = self.robot.find_bodies(BODY_WHEELS, preserve_order=True)[0] if c.wheel_soil else []
         self._soil_marker = self._make_soil_marker() if c.soil_marker else None
-        # The soil's colours by _soil_index, and the smooth mesh's fixed parts, made on its first draw.
-        self._soil_rgb = torch.tensor([SOIL_RGB, PILE_RGB, *depth_shades()], device=dev)
+        # The smooth mesh's colours, and its fixed parts, made on its first draw.
+        self._soil_rgb = torch.tensor([SOIL_RGB, PILE_RGB, DEPTH_DARK], device=dev)
         self._soil_mesh = None
         print(
             f"[excavate] soil: rft.py, density {c.soil_density:.0f} kg/m3, friction {c.soil_friction:.2f} "
@@ -193,31 +195,34 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         markers.update({f"depth_{k + 1}": box(rgb) for k, rgb in enumerate(depth_shades())})
         return VisualizationMarkers(VisualizationMarkersCfg(prim_path="/Visuals/soil", markers=markers))
 
-    def _soil_index(self) -> torch.Tensor:
-        """(E, ny, nx) each cell's colour, an index into _soil_rgb: the soil's
-        as it started (0), a pile's PILE_RISE or more above (1), and k steps
-        down (averaged over SHADE_BLUR) the k-th depth shade (1 + k), in
-        shade_area if one is set (elsewhere, ruts and all, the soil's colour)."""
+    def _soil_shade(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """(E, ny, nx) each cell's depth below where the ground started,
+        averaged over SHADE_BLUR, in SHADE_STEPs up to DEPTH_SHADES, in
+        shade_area if one is set (elsewhere, ruts and all, 0); and whether the
+        cell is a pile's, PILE_RISE or more above."""
         depth = self._fresh_bed - self._bed_grid
         k = max(1, round(SHADE_BLUR / self.cfg.voxel_size)) | 1
         soft = F.avg_pool2d(depth.unsqueeze(1), k, stride=1, padding=k // 2, count_include_pad=False).squeeze(1)
-        steps = torch.round(soft / SHADE_STEP).clamp(0, DEPTH_SHADES)
+        steps = (soft / SHADE_STEP).clamp(0, DEPTH_SHADES)
         if self.shade_area is not None:
             steps = steps * self.shade_area
-        return torch.where(steps >= 1, 1 + steps, (depth <= -PILE_RISE).float()).long()
+        return steps, depth <= -PILE_RISE
 
     def _show_soil(self) -> None:
         """The soil in the viewer: as one smooth mesh per env in Newton's GL
         viewer, else as a box per cell from the floor to its height."""
-        index = self._soil_index()
+        steps, pile = self._soil_shade()
         viewer = self._mesh_viewer()
         if viewer is not None:
             try:
-                self._show_soil_mesh(viewer, index)
+                self._show_soil_mesh(viewer, steps, pile)
                 return
             except Exception as err:            # the boxes for the rest of the run
                 print(f"[excavate] soil mesh failed, drawing boxes instead: {err!r}")
                 self._soil_mesh = False
+        # The marker's boxes: the soil's (0), a pile's (1), the k-th depth shade (1 + k).
+        steps = steps.round()
+        index = torch.where(steps >= 1, 1 + steps, pile.float()).long()
         top = self._bed_grid                                              # (E, ny, nx)
         o = self.scene.env_origins[:, None, None]                         # (E, 1, 1, 3)
         centre = torch.cat([self._cells + o[..., :2], (o[..., 2] + 0.5 * (top + BED_FLOOR_Z)).unsqueeze(-1)], -1)
@@ -239,9 +244,13 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         sim = sim_utils.SimulationContext.instance()
         return next((v for v in (getattr(sim, "visualizers", None) or []) if isinstance(v, NewtonGLVisualizer)), None)
 
-    def _show_soil_mesh(self, viewer, index: torch.Tensor) -> None:
+    def _show_soil_mesh(self, viewer, steps: torch.Tensor, pile: torch.Tensor) -> None:
         """Each env's soil as one mesh through its cells' centres at the soil's
-        height, lit as a smooth surface, its cells' colours a texture on it."""
+        height, lit as a smooth surface, its cells' colours a texture on it:
+        the soil's toward DEPTH_DARK with steps, without stepping, and a pile's
+        where not shaded. Newton's log_mesh leaves a mesh's texture off (the
+        last of its material's four values): it is turned on once the viewer
+        has made the mesh, and until then the mesh is the soil's colour."""
         import warp as wp
 
         E, ny, nx = self._bed_grid.shape
@@ -257,12 +266,20 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
             uv = torch.stack([(i + 0.5) / nx, 1.0 - (j + 0.5) / ny], -1).reshape(-1, 2).float().contiguous()
             self._soil_mesh = {"tris": wp.from_torch(tris), "uv": wp.from_torch(uv, dtype=wp.vec2), "points": [None] * E}
         mesh = self._soil_mesh
-        rgb = (255.0 * self._soil_rgb[index]).round().to(torch.uint8).cpu().numpy()       # (E, ny, nx, 3)
+        soil, pile_rgb, dark = self._soil_rgb
+        rgb = soil + (steps / DEPTH_SHADES).unsqueeze(-1) * (dark - soil)
+        rgb = torch.where((pile & (steps < 0.5)).unsqueeze(-1), pile_rgb, rgb)
+        rgb = (255.0 * rgb).round().to(torch.uint8).cpu().numpy()                      # (E, ny, nx, 3)
         o = self.scene.env_origins
+        made = getattr(getattr(viewer, "_viewer", None), "objects", {})      # the meshes Newton's viewer has made
         for e in range(E):
+            name = f"soil_{e}"
+            gl_mesh = made.get(name)
+            if gl_mesh is not None:
+                gl_mesh.material = (*gl_mesh.material[:3], 1.0)
             # Kept until the next draw: the viewer reads it when it renders the frame.
             mesh["points"][e] = torch.cat([self._cells + o[e, :2], (o[e, 2] + self._bed_grid[e]).unsqueeze(-1)], -1).reshape(-1, 3).contiguous()
             viewer.log_mesh(
-                f"soil_{e}", wp.from_torch(mesh["points"][e], dtype=wp.vec3), mesh["tris"], uvs=mesh["uv"],
-                texture=rgb[e], color=(1.0, 1.0, 1.0), roughness=0.95, metallic=0.0,
+                name, wp.from_torch(mesh["points"][e], dtype=wp.vec3), mesh["tris"], uvs=mesh["uv"], texture=rgb[e],
+                color=SOIL_RGB if gl_mesh is None else (1.0, 1.0, 1.0), roughness=0.95, metallic=0.0,
             )

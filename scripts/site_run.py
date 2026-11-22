@@ -21,10 +21,12 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
 import gymnasium as gym
+import numpy as np
 import torch
 
 from isaaclab.app import add_launcher_args, launch_simulation
@@ -43,6 +45,20 @@ TASK = "Luna-Excavator-Site"
 # The recorder holds a clip's frames in memory: a clip a minute, every
 # --frame_stride-th step, played back at the step rate; joined at the end.
 CLIP_STEPS = 1500
+# The video's light: the sun from the side (+x, a little toward the camera),
+# 35 degrees up, at plain exposure. Newton's default sun is high and behind the
+# camera, its exposure 1.6: flat and washed out, a cut's depth hardly shows.
+SUN_AZIMUTH, SUN_ELEVATION, EXPOSURE = -20.0, 35.0, 1.0
+
+
+def light(u) -> None:
+    """The video's light on Newton's GL viewer: SUN_* and EXPOSURE."""
+    a, e = math.radians(SUN_AZIMUTH), math.radians(SUN_ELEVATION)
+    for v in u.sim.visualizers:
+        renderer = getattr(getattr(v, "_viewer", None), "renderer", None)
+        if renderer is not None:
+            renderer.exposure = EXPOSURE
+            renderer._sun_direction = np.array([math.cos(e) * math.cos(a), math.cos(e) * math.sin(a), math.sin(e)])
 
 
 def _parse():
@@ -132,6 +148,8 @@ def main() -> int:
     with launch_simulation(env_cfg, args):
         env = gym.make(TASK, cfg=env_cfg)
         u = env.unwrapped
+        if args.video:
+            light(u)
         dig = _load_policy(str(u.device), dig_ckpt)
         nav = _load_policy(str(u.device), nav_ckpt)
         if args.strokes:

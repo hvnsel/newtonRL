@@ -3,9 +3,11 @@
 # One machine on a large bed of the RFT soil, never reset, digging a trench
 # with the trained policies. The runner puts the env in one of three modes:
 #
+#   ready  wheels held, the arms and shrouds to the pose a dig episode starts
+#          from in training (both arms at arm_start_angle, shrouds 0), drums still.
 #   dig    a pass of the excavate policy. begin_pass() puts the work area and
 #          the plane where the planner says; the settle, ramp, line hold and
-#          actions are the excavate env's, as in training.
+#          actions are the excavate env's, as in training, from that pose.
 #   drive  the navigate policy, waypoint by waypoint along a route to a goal
 #          pose. nav_obs() is its observation; its [forward, yaw] drive the
 #          wheels as in navigate, the arms stowed, the drums still, the inlets up.
@@ -24,7 +26,8 @@
 # The machine has a drum at each end, and navigate brings it to a goal with
 # either end forward along the goal heading. So a pass digs the way the
 # machine faces along the trench, from that end of the patch, and a dump pours
-# wherever the front drum is: outside the lane, or past the trench end.
+# wherever the front drum is: outside the lane or between it and the trench
+# line, the lane far enough out that either clears both.
 #
 # run_site() digs a planner's site (luna_hifi_tasks/planner/site.py), reading
 # each patch's height back from the bed after its pass.
@@ -47,13 +50,15 @@ from ..mdp.observations import navigate_actor_obs, navigate_obs_spec
 from ..navigate.navigate_env_cfg import ExcavatorNavigateEnvCfg
 
 REACH = PIVOT_X + ARM_LEN * math.cos(ARM_STOW_ANGLE)   # m the front drum sits ahead of the chassis, stowed
-LANE = 1.5                  # m left of the trench: the way back
+LANE = 2.5                  # m left of the trench: the way back; a pile poured facing either way along y clears it and the trench line
 EXIT = 2.0                  # m past the trench end: where the machine turns to dump, its rear wheels clear
 STAGE = 0.6                 # m short of the trench the front drum stops, lined up, before driving in
 TURN = 1.5                  # m behind that stop the way back turns into the trench line
 PILES, PILE_STEP = 3, 0.6   # the dumps go round three piles, this far apart along x
 WAYPOINT_RADIUS = 0.5       # m: a route waypoint counts as passed this close
-DRIVE_SECONDS, PASS_SECONDS, DUMP_SECONDS = 90.0, 40.0, 15.0
+LOOSE_M, LOOSE_DEG = 0.25, 10.0     # a stop short of this is a miss; the dump and staging stops need no closer
+DUMP_MIN_KG = 5.0           # less soil than this in the drum: no trip to the pile
+DRIVE_SECONDS, PASS_SECONDS, DUMP_SECONDS, READY_SECONDS = 90.0, 40.0, 15.0, 3.0
 
 
 @configclass
@@ -76,7 +81,7 @@ class ExcavatorSiteEnvCfg(ExcavatorExcavateRftEnvCfg):
     dump_rate: float = 30.0                    # kg/s
 
     def __post_init__(self) -> None:
-        x0 = REACH - self.work_area_behind
+        x0 = PIVOT_X + ARM_LEN * math.cos(self.arm_start_angle) - self.work_area_behind
         self.bed_x = (x0 - STAGE - REACH - TURN - 1.8, x0 + self.trench_length + EXIT + PILE_STEP * (PILES - 1) + 1.8)
         self.bed_y = (-1.8, LANE + REACH + 1.0)
         super().__post_init__()
@@ -105,7 +110,10 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         assert self.num_envs == 1, "the site env runs one machine"
         dev = self.device
         self.mode = "dig"
-        self.trench_x = REACH - cfg.work_area_behind
+        # The front drum's reach at the arm angle a pass starts from: the
+        # machine spawns there, with its drum over the first patch's anchor.
+        self.dig_reach = PIVOT_X + ARM_LEN * math.cos(cfg.arm_start_angle)
+        self.trench_x = self.dig_reach - cfg.work_area_behind
         self.patch_length = cfg.work_area_behind + cfg.work_area_length
         self._nav = ExcavatorNavigateEnvCfg()
         self._nav_spec = navigate_obs_spec()
@@ -141,7 +149,7 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         mean = (self._bed_grid * work).sum(dim=(1, 2)) / work.sum(dim=(1, 2)).clamp_min(1)
         lo, hi = self.cfg.cut_depth_range
         depth = (mean - plane_z).clamp(lo, hi)
-        arm = self.robot.data.joint_pos.torch[:, self._arm_ids[0]]
+        arm = torch.full((1,), self.cfg.arm_start_angle, device=self.device)     # ready() put the arms there
         self._begin_pass(ids, anchor, o[:, 2] + mean, yaw, arm, depth, torch.zeros(1, 2, device=self.device))
         self.mode = "dig"
         return float(depth[0])
@@ -166,6 +174,16 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         self._dumps += 1
         self.mode = "dump"
 
+    def begin_ready(self) -> None:
+        self._nav_actions.zero_()
+        self.mode = "ready"
+
+    def ready(self) -> bool:
+        """Arms and shrouds within 0.02 rad of the dig's start pose."""
+        q = self.robot.data.joint_pos.torch[0]
+        arms = (q[self._arm_ids] - self.cfg.arm_start_angle).abs()
+        return bool((arms < 0.02).all() & (q[self._shroud_ids].abs() < 0.02).all())
+
     # --- where things are, env-local ---
 
     def facing_x(self) -> int:
@@ -180,8 +198,9 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         return start + behind if facing > 0 else start + self.patch_length - behind
 
     def pass_start(self, ix: int, facing: int) -> tuple[float, float]:
-        """Where the chassis stands to start patch ix's pass toward facing, the front drum over its anchor."""
-        return (self.anchor_x(ix, facing) - facing * REACH, 0.0)
+        """Where the chassis stands to start patch ix's pass toward facing, the
+        front drum over its anchor at the arm angle the pass starts from."""
+        return (self.anchor_x(ix, facing) - facing * self.dig_reach, 0.0)
 
     def dump_route(self) -> list[tuple[float, float]]:
         """On past the trench end, then left to the next dump stop on the lane."""
@@ -237,14 +256,16 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         dist, herr = self._goal_terms()
         return float(dist[0]), float(herr[0])
 
-    def arrived(self) -> bool:
-        """Inside navigate's goal tolerances and stopped, arrive_hold_steps
-        steps in a row. Call once a step."""
+    def arrived(self, dist_tol: float | None = None, heading_tol: float | None = None) -> bool:
+        """Inside the goal tolerances, navigate's unless given, and stopped,
+        arrive_hold_steps steps in a row. Call once a step."""
         n, d = self._nav, self.robot.data
         dist, herr = self._goal_terms()
         still = R.goal_reached(
             dist, herr, torch.linalg.norm(d.root_lin_vel_b.torch[:, :2], dim=-1), d.root_ang_vel_b.torch[:, 2],
-            n.goal_dist_tol, n.goal_heading_tol_rad, n.goal_speed_tol, n.goal_yaw_rate_tol,
+            n.goal_dist_tol if dist_tol is None else dist_tol,
+            n.goal_heading_tol_rad if heading_tol is None else heading_tol,
+            n.goal_speed_tol, n.goal_yaw_rate_tol,
         )
         self._held = self._held + 1 if bool(still[0]) else 0
         return self._held >= n.arrive_hold_steps
@@ -266,6 +287,12 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
             return super()._apply_action()
         n, dev = self.num_envs, self.device
         self._apply_drive(self._nav_actions[:, 0], self._nav_actions[:, 1])
+        if self.mode == "ready":
+            self._apply_arms(torch.full((n,), self.cfg.arm_start_angle, device=dev))
+            self._apply_shrouds(torch.zeros(n, device=dev))
+            self._apply_drums(torch.zeros(n, device=dev))
+            self._step_soil()
+            return
         self._apply_arms(torch.full((n,), self._nav.arm_hold_angle, device=dev))
         if self.mode == "drive":
             self._apply_drums(torch.zeros(n, device=dev))
@@ -298,12 +325,14 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
 
 
 def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tuple[list[dict], str]:
-    """Dig a planner's site: for each trim it picks, drive round to the
-    staging stop and along the trench line to the patch's pass start, dig the
-    pass, drive past the trench to a pile and empty the drum;
-    each patch's height is read back from the bed. dig and nav map their
-    observations to actions; record(env) is called after every step. Returns
-    a row per trim and how the run ended."""
+    """Dig a planner's site. For each trim the planner picks (layer by layer, a
+    failed patch left for later): drive to the patch's pass start along the
+    trench line, set the tools to the dig's start pose, dig the pass the way
+    the machine faces, and with soil in the drum drive past the trench to a
+    pile, empty it and come back round to the staging stop. Each patch's height
+    is read back from the bed. dig and nav map their observations to actions;
+    record(env) is called after every step. Returns a row per trim and how the
+    run ended."""
     u = env.unwrapped
     if abs(site.cfg.patch_x - u.patch_length) > 1e-6:
         raise ValueError(f"the planner's patch is {site.cfg.patch_x} m, the dig's work area {u.patch_length} m")
@@ -325,23 +354,30 @@ def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tup
         if state["steps"] >= limit:
             raise RuntimeError(f"out of time after {max_minutes:g} min")
 
-    def drive(route, yaw: float) -> dict:
+    def drive(route, yaw: float, loose: bool = False) -> dict:
+        """To the route's end; a loose stop is done within LOOSE_M and LOOSE_DEG."""
         u.begin_drive(route, yaw)
+        tol = (LOOSE_M, math.radians(LOOSE_DEG)) if loose else (None, None)
         t0 = now()
         for _ in range(int(DRIVE_SECONDS / dt)):
             a = zero.clone()
             a[:, :2] = nav(u.nav_obs()).clamp(-1.0, 1.0)
             step(a)
-            if u.arrived():
+            if u.arrived(*tol):
                 break
         dist, herr = u.goal_error()
         goal = tuple(round(v, 2) for v in route[-1])
-        if dist > 0.25 or abs(herr) > math.radians(10.0):
+        if dist > LOOSE_M or abs(herr) > math.radians(LOOSE_DEG):
             raise RuntimeError(f"did not reach {goal} in {DRIVE_SECONDS:g} s: {dist:.2f} m, {math.degrees(herr):+.1f} deg off")
         return {"s": round(now() - t0, 1), "miss_m": round(dist, 3), "miss_deg": round(math.degrees(herr), 1)}
 
-    def dig_pass(ix: int, height: int, facing: int) -> dict:
-        depth = u.begin_pass(u.anchor_x(ix, facing), u.cfg.bed_top + height * voxel, facing)
+    def dig_pass(ix: int, level: float, facing: int) -> dict:
+        u.begin_ready()
+        for _ in range(int(READY_SECONDS / dt)):
+            step(zero)
+            if u.ready():
+                break
+        depth = u.begin_pass(u.anchor_x(ix, facing), u.cfg.bed_top + level * voxel, facing)
         t0 = now()
         for _ in range(int(PASS_SECONDS / dt)):
             step(dig(state["obs"]["policy"]).clamp(-1.0, 1.0))
@@ -362,34 +398,43 @@ def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tup
                 break
         return round(before - float(u._fill_kg[0, 0]), 1)
 
+    def here() -> tuple[float, float]:
+        xy = u.robot.data.root_pos_w.torch[0, :2] - u.scene.env_origins[0, :2]
+        return float(xy[0]), float(xy[1])
+
     rows: list[dict] = []
     planned = sum(h - t for hr, tr in zip(site.height, site.target) for h, t in zip(hr, tr))
-    first = True
+    at_pile = False
     try:
-        while (options := site.actionable()) and site.trims < 3 * planned:
-            iy, ix = min(options, key=site.cycle_seconds)
-            h = site.height[iy][ix]
-            row = {"trim": site.trims + 1, "patch": ix, "target_cm": round(100 * (h - 1) * voxel, 1)}
-            if not first:
-                row["to_line"] = drive(u.return_route(), 0.0)
+        while (patch := site.next_trim()) is not None and site.trims < 3 * planned:
+            ix = patch[1]
+            level = site.next_level(patch)
+            row = {"trim": site.trims + 1, "patch": ix, "target_cm": round(100 * level * voxel, 1)}
+            if at_pile:
+                row["to_line"] = drive(u.return_route(), 0.0, loose=True)
             # The pass digs the way the machine faces; the drive there runs along
             # the trench line, so keeps it. Should it turn round, start from the other end.
             facing = u.facing_x()
-            if not (first and ix == 0):
+            if math.dist(here(), u.pass_start(ix, facing)) > 0.05:
                 row["to_pass"] = drive([u.pass_start(ix, facing)], 0.0)
                 if u.facing_x() != facing:
                     facing = u.facing_x()
                     row["to_pass"] = drive([u.pass_start(ix, facing)], 0.0)
-            row.update(dig_pass(ix, h - 1, facing))
-            site.trim((iy, ix), height=round(row["floor_cm"] / 100 / voxel))
+            row.update(dig_pass(ix, level, facing))
+            site.trim(patch, height=row["floor_cm"] / 100 / voxel)
             rows.append(row)
-            print(f"[site] trim {row['trim']:2d}, patch {ix} toward {row['toward']}: to {row['target_cm']:+.0f} cm, cut {row['depth_cm']:.1f} cm "
+            print(f"[site] trim {row['trim']:2d}, patch {ix} toward {row['toward']}: to {row['target_cm']:+.1f} cm, cut {row['depth_cm']:.1f} cm "
                   f"in {row['pass_s']:.0f} s -> floor {row['floor_cm']:+.1f} cm; {row['removed_kg']:.0f} kg removed, "
                   f"{row['held_kg']:.0f} held; t = {now():.0f} s", flush=True)
-            row["to_dump"] = drive(u.dump_route(), 0.5 * math.pi)
-            row["dumped_kg"] = dump()
-            first = False
-            print(f"[site]          dumped {row['dumped_kg']:.0f} kg; t = {now():.0f} s", flush=True)
+            at_pile = float(u._fill_kg[0, 0]) >= DUMP_MIN_KG
+            if at_pile:
+                row["to_dump"] = drive(u.dump_route(), 0.5 * math.pi, loose=True)
+                row["dumped_kg"] = dump()
+                print(f"[site]          dumped {row['dumped_kg']:.0f} kg; t = {now():.0f} s", flush=True)
     except RuntimeError as err:
         return rows, f"stopped: {err}"
-    return rows, "done" if site.done() else f"stopped after {site.trims} trims with {len(site.pending())} patches short"
+    if site.done():
+        return rows, "done"
+    aside = [p[1] for p in site.set_aside()]
+    why = f"; patches {aside} set aside after {site.cfg.retries} failed trims in a row" if aside else ""
+    return rows, f"stopped after {site.trims} trims with {len(site.pending())} patches short{why}"

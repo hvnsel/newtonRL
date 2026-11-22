@@ -23,7 +23,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 Patch = tuple[int, int]      # (iy, ix)
-Grid = list[list[int]]       # heights in voxels
+Grid = list[list[float]]     # heights in voxels; a measured trim leaves fractions
 
 
 @dataclass
@@ -70,6 +70,17 @@ class SiteCfg:
     """How far below its wheels the drum digs, metres: at the arm's limit
     the vane tips are 0.186 m below the wheel plane."""
 
+    # --- trims on the soil, read back ---------------------------------
+    done_tol: float = 0.015
+    """A patch within this of its target is done, metres: the dig leaves its
+    floor a centimetre or two off the plane."""
+
+    progress: float = 0.01
+    """A trim that lowers its patch less than this failed, metres."""
+
+    retries: int = 3
+    """A patch that fails this many trims in a row is set aside."""
+
     def __post_init__(self) -> None:
         self.patch_area = self.patch_x * self.patch_y
         self.trim_mass = self.patch_area * self.voxel * self.soil_density
@@ -80,6 +91,8 @@ class SiteCfg:
             1, int(self.patch_x * math.tan(math.radians(self.climb_degrees)) / self.voxel)
         )
         self.reach_voxels = int(self.reach / self.voxel + 1e-9)
+        self.done_voxels = self.done_tol / self.voxel
+        self.progress_voxels = self.progress / self.voxel
 
 
 @dataclass
@@ -107,10 +120,10 @@ class Site:
         return len(self.height), len(self.height[0])
 
     def pending(self) -> set[Patch]:
-        """Patches still above their target."""
+        """Patches still above their target, by more than done_tol."""
         ny, nx = self.shape
         return {(y, x) for y in range(ny) for x in range(nx)
-                if self.height[y][x] > self.target[y][x]}
+                if self.height[y][x] > self.target[y][x] + self.cfg.done_voxels}
 
     def reachable(self) -> set[Patch]:
         """Flood fill from the entry patch, stepping between neighbours only
@@ -136,6 +149,38 @@ class Site:
         near = self.reachable()
         lowest = -self.cfg.reach_voxels
         return sorted(p for p in self.pending() if p in near or self.height[p[0]][p[1]] > lowest)
+
+    def failed_in_a_row(self, patch) -> int:
+        """How many of the patch's latest trims failed, back to its last success."""
+        n = 0
+        for p, ok, _ in reversed(self.log):
+            if p == patch:
+                if ok:
+                    break
+                n += 1
+        return n
+
+    def next_trim(self) -> Patch | None:
+        """The next patch to trim, layer by layer: of the actionable patches on
+        the highest layer, the cheapest cycle. A patch whose last trim failed
+        waits while any other can go, and is set aside after `retries` failed
+        trims in a row. None when nothing is left to try."""
+        options = [p for p in self.actionable() if self.failed_in_a_row(p) < self.cfg.retries]
+        pool = [p for p in options if self.failed_in_a_row(p) == 0] or options
+        if not pool:
+            return None
+        top = max(self.height[y][x] for y, x in pool)
+        return min((p for p in pool if self.height[p[0]][p[1]] > top - 0.5), key=self.cycle_seconds)
+
+    def next_level(self, patch) -> float:
+        """The level a trim of patch cuts to, voxels: a layer below its
+        surface, not past its target."""
+        y, x = patch
+        return max(self.target[y][x], self.height[y][x] - 1)
+
+    def set_aside(self) -> list[Patch]:
+        """Pending patches that failed `retries` trims in a row."""
+        return sorted(p for p in self.pending() if self.failed_in_a_row(p) >= self.cfg.retries)
 
     def travel_seconds(self, a, b) -> float:
         c = self.cfg
@@ -166,7 +211,7 @@ class Site:
         before = self.height[y][x]
         self.height[y][x] = before - 1 if height is None else height
         self.at = self.dump
-        self.log.append((patch, self.height[y][x] < before, self.clock))
+        self.log.append((patch, self.height[y][x] < before - self.cfg.progress_voxels, self.clock))
         return cost
 
     def done(self) -> bool:

@@ -57,7 +57,7 @@ def _parse():
     p.add_argument("--dump", default="site.npz", help="heightmap frames for render_dig.py")
     p.add_argument("--dump_every", type=int, default=10, help="steps between saved frames")
     p.add_argument("--log", default="site_log.csv", help="one row per trim")
-    p.add_argument("--trace", default="site_trace.csv", help="one row per step: the drive command and what the machine did")
+    p.add_argument("--trace", default="site_trace.csv", help="one row per step: the drive command, what the machine did, the tools")
     add_launcher_args(p)
     p.set_defaults(device=None, visualizer=["newton_gl"])
     # As play_dig: this script's flags off the command line, the rest left for Hydra.
@@ -122,6 +122,7 @@ def main() -> int:
             o = u.scene.env_origins[0]
             root = d.root_pos_w.torch[0] - o
             wheels = d.joint_vel.torch[0] * WHEEL_RADIUS
+            q = d.joint_pos.torch[0]
             trace.append({
                 "t": round(steps[0] * u.step_dt, 2), "mode": u.mode,
                 "x": round(float(root[0]), 3), "y": round(float(root[1]), 3),
@@ -133,6 +134,8 @@ def main() -> int:
                 "yaw_rate": round(float(d.root_ang_vel_b.torch[0, 2]), 3),
                 "rim_left_mps": round(float(wheels[u._left_ids].mean()), 3),
                 "rim_right_mps": round(float(wheels[u._right_ids].mean()), 3),
+                "arm_front": round(float(q[u._arm_ids[0]]), 3), "arm_rear": round(float(q[u._arm_ids[1]]), 3),
+                "shroud_front": round(float(q[u._shroud_ids[0]]), 3), "fill_kg": round(float(u._fill_kg[0, 0]), 1),
             })
             if steps[0] % args.dump_every:
                 return
@@ -146,7 +149,7 @@ def main() -> int:
         with torch.inference_mode():
             rows, ending = run_site(env, dig, nav, site, record, args.minutes)
         print(f"[site] {ending}: {site.summary()}")
-        print(f"[site] patch heights, cm: {[100 * h * site.cfg.voxel for h in site.height[0]]}")
+        print(f"[site] patch heights, cm: {[round(100 * h * site.cfg.voxel, 1) for h in site.height[0]]}")
         names = np.asarray(u.robot.body_names, dtype="U64")
         env.close()
 

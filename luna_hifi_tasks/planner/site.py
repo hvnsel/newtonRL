@@ -104,6 +104,10 @@ class SiteCfg:
     search_budget: int = 3000
     """Trims the order search tries before it settles for the best single trim."""
 
+    overcut: float = 0.01
+    """How much deeper than its level a pass may cut, metres: the order search
+    takes the trims that strand nothing even then first."""
+
     def __post_init__(self) -> None:
         self.patch_area = self.patch_x * self.patch_y
         self.trim_mass = self.patch_area * self.voxel * self.soil_density
@@ -118,6 +122,7 @@ class SiteCfg:
         self.progress_voxels = self.progress / self.voxel
         self.level_voxels = self.level_tol / self.voxel
         self.drive_voxels = self.drive_step / self.voxel
+        self.overcut_voxels = self.overcut / self.voxel
 
 
 @dataclass
@@ -308,8 +313,9 @@ class Site:
     def plan(self, facing: int | None = None) -> list[Trim] | None:
         """An order of trims that finishes the site, each feasible when it comes
         and none stranding a patch; the first faces `facing` if given, and
-        avoids a patch whose last trim failed if it can. Depth first, the trim
-        that leaves the most cuts possible first. If none is found within
+        avoids a patch whose last trim failed if it can. Depth first: the trims
+        that strand nothing even if the pass cuts overcut deeper first, then the
+        one that leaves the most cuts possible. If none is found within
         search_budget trims tried, that best first trim alone; None if there
         is no trim that strands nothing."""
         work = copy.copy(self)
@@ -324,14 +330,17 @@ class Site:
             return sum(work.could_trim((p, f), aside) for p in work.pending() if p not in aside for f in (1, -1))
 
         def ranked(first: bool) -> list[Trim]:
-            """Each trim that strands nothing, the one leaving the most cuts possible first."""
+            """Each trim that strands nothing: those that strand nothing cut
+            overcut deeper first, then the one leaving the most cuts possible."""
             out = []
             for i, (p, f, v) in enumerate(work.moves(aside, facing if first else None, later if first else ())):
                 y, x = p
                 before = work.height[y][x]
                 work.height[y][x] = v
                 if not work.stranded(aside):
-                    out.append((-options(), i, (p, f, v)))
+                    n = options()
+                    work.height[y][x] = v - self.cfg.overcut_voxels
+                    out.append((work.stranded(aside), -n, i, (p, f, v)))
                 work.height[y][x] = before
             return [t for *_, t in sorted(out)]
 

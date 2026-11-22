@@ -21,6 +21,11 @@
 # the left of the trench, turns back into its line and stops on it, lined up,
 # before it drives in to the next pass.
 #
+# The machine has a drum at each end, and navigate brings it to a goal with
+# either end forward along the goal heading. So a pass digs the way the
+# machine faces along the trench, from that end of the patch, and a dump pours
+# wherever the front drum is: outside the lane, or past the trench end.
+#
 # run_site() digs a planner's site (luna_hifi_tasks/planner/site.py), reading
 # each patch's height back from the bed after its pass.
 
@@ -48,7 +53,6 @@ STAGE = 0.6                 # m short of the trench the front drum stops, lined 
 TURN = 1.5                  # m behind that stop the way back turns into the trench line
 PILES, PILE_STEP = 3, 0.6   # the dumps go round three piles, this far apart along x
 WAYPOINT_RADIUS = 0.5       # m: a route waypoint counts as passed this close
-LEAVE = (1.0, 0.5)          # m back along x and further out from a dump stop: the way home starts ahead-left
 DRIVE_SECONDS, PASS_SECONDS, DUMP_SECONDS = 90.0, 40.0, 15.0
 
 
@@ -107,7 +111,6 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         self._route = torch.zeros(1, 2, device=dev)
         self._route_yaw = torch.zeros(1, device=dev)
         self._route_next = 0
-        self._dump_x = 0.0
         self._goal_xy = torch.zeros(1, 2, device=dev)
         self._goal_yaw = torch.zeros(1, device=dev)
         self._held = 0
@@ -122,14 +125,15 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
 
     # --- the runner's commands ---
 
-    def begin_pass(self, anchor_x: float, plane_z: float) -> float:
-        """A dig pass along +x, its work area anchored at (anchor_x, 0) and its
-        plane at plane_z, env-local: the depth below the work area's mean
-        surface, kept inside the trained range. Returns that depth."""
+    def begin_pass(self, anchor_x: float, plane_z: float, facing: int) -> float:
+        """A dig pass along +x (facing 1) or -x (facing -1), its work area
+        anchored at (anchor_x, 0) and its plane at plane_z, env-local: the depth
+        below the work area's mean surface, kept inside the trained range.
+        Returns that depth."""
         ids = torch.zeros(1, dtype=torch.long, device=self.device)
         o = self.scene.env_origins
         anchor = o[:, :2] + torch.tensor([[anchor_x, 0.0]], device=self.device)
-        yaw = torch.zeros(1, device=self.device)
+        yaw = torch.full((1,), 0.0 if facing > 0 else math.pi, device=self.device)
         self._set_work_area(ids, anchor, yaw)
         work = self._work_mask & (self._bed_grid > BED_FLOOR_Z + 0.5 * self.cfg.voxel_size)
         mean = (self._bed_grid * work).sum(dim=(1, 2)) / work.sum(dim=(1, 2)).clamp_min(1)
@@ -162,18 +166,24 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
 
     # --- where things are, env-local ---
 
-    def anchor_x(self, ix: int) -> float:
-        """Patch ix's pass anchor: work_area_behind into the patch."""
-        return self.trench_x + ix * self.patch_length + self.cfg.work_area_behind
+    def facing_x(self) -> int:
+        """1 if the machine's front faces +x, else -1."""
+        return 1 if float(torch.cos(self._base_yaw()[0])) > 0.0 else -1
 
-    def pass_start(self, ix: int) -> tuple[float, float]:
-        """Where the chassis stands to start patch ix's pass, the front drum over its anchor."""
-        return (self.anchor_x(ix) - REACH, 0.0)
+    def anchor_x(self, ix: int, facing: int) -> float:
+        """Patch ix's pass anchor for a pass toward facing: work_area_behind
+        into the patch from the end the pass starts at."""
+        start = self.trench_x + ix * self.patch_length
+        behind = self.cfg.work_area_behind
+        return start + behind if facing > 0 else start + self.patch_length - behind
+
+    def pass_start(self, ix: int, facing: int) -> tuple[float, float]:
+        """Where the chassis stands to start patch ix's pass toward facing, the front drum over its anchor."""
+        return (self.anchor_x(ix, facing) - facing * REACH, 0.0)
 
     def dump_route(self) -> list[tuple[float, float]]:
-        """On past the trench end, then left to face the next pile."""
+        """On past the trench end, then left to the next dump stop on the lane."""
         x = self.trench_x + self.cfg.trench_length + EXIT + PILE_STEP * (self._dumps % PILES)
-        self._dump_x = x
         return [(x, 0.0), (x, LANE)]
 
     def staging(self) -> tuple[float, float]:
@@ -181,11 +191,9 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         return (self.trench_x - STAGE - REACH, 0.0)
 
     def return_route(self) -> list[tuple[float, float]]:
-        """Off the last dump stop ahead-left, so it pulls away forward rather than
-        reversing, back along the lane, round behind the trench and up its line
-        to the staging stop."""
+        """Back along the lane, round behind the trench and up its line to the staging stop."""
         x = self.staging()[0] - TURN
-        return [(self._dump_x - LEAVE[0], LANE + LEAVE[1]), (x, LANE), (x, 0.0), self.staging()]
+        return [(x, LANE), (x, 0.0), self.staging()]
 
     def trench_mask(self) -> torch.Tensor:
         """(ny, nx) the trench's grid cells."""
@@ -217,23 +225,21 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
             n.goal_dist_max, n.goal_near_range,
         )
 
-    def _goal_terms(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """(E,) distance to the goal, heading error to its axis, and the yaw."""
-        yaw = self._base_yaw()
+    def _goal_terms(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """(E,) distance to the goal and heading error to its axis."""
         dist = torch.linalg.norm(self._goal_xy - self.robot.data.root_pos_w.torch[:, :2], dim=-1)
-        return dist, R.axis_heading_error(self._goal_yaw, yaw), yaw
+        return dist, R.axis_heading_error(self._goal_yaw, self._base_yaw())
 
-    def goal_error(self) -> tuple[float, float, bool]:
-        """Distance to the goal, heading error to its axis, and whether the
-        machine faces along goal_yaw rather than against it."""
-        dist, herr, yaw = self._goal_terms()
-        return float(dist[0]), float(herr[0]), bool(torch.cos(yaw - self._goal_yaw)[0] > 0.0)
+    def goal_error(self) -> tuple[float, float]:
+        """Distance to the goal and heading error to its axis, either end forward."""
+        dist, herr = self._goal_terms()
+        return float(dist[0]), float(herr[0])
 
     def arrived(self) -> bool:
         """Inside navigate's goal tolerances and stopped, arrive_hold_steps
         steps in a row. Call once a step."""
         n, d = self._nav, self.robot.data
-        dist, herr, _ = self._goal_terms()
+        dist, herr = self._goal_terms()
         still = R.goal_reached(
             dist, herr, torch.linalg.norm(d.root_lin_vel_b.torch[:, :2], dim=-1), d.root_ang_vel_b.torch[:, 2],
             n.goal_dist_tol, n.goal_heading_tol_rad, n.goal_speed_tol, n.goal_yaw_rate_tol,
@@ -326,23 +332,21 @@ def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tup
             step(a)
             if u.arrived():
                 break
-        dist, herr, forward = u.goal_error()
+        dist, herr = u.goal_error()
         goal = tuple(round(v, 2) for v in route[-1])
-        if not forward:
-            raise RuntimeError(f"reached {goal} facing the wrong way")
         if dist > 0.25 or abs(herr) > math.radians(10.0):
             raise RuntimeError(f"did not reach {goal} in {DRIVE_SECONDS:g} s: {dist:.2f} m, {math.degrees(herr):+.1f} deg off")
         return {"s": round(now() - t0, 1), "miss_m": round(dist, 3), "miss_deg": round(math.degrees(herr), 1)}
 
-    def dig_pass(ix: int, height: int) -> dict:
-        depth = u.begin_pass(u.anchor_x(ix), u.cfg.bed_top + height * voxel)
+    def dig_pass(ix: int, height: int, facing: int) -> dict:
+        depth = u.begin_pass(u.anchor_x(ix, facing), u.cfg.bed_top + height * voxel, facing)
         t0 = now()
         for _ in range(int(PASS_SECONDS / dt)):
             step(dig(state["obs"]["policy"]).clamp(-1.0, 1.0))
             if bool(u._pass_done[0]):
                 break
         return {
-            "depth_cm": round(100 * depth, 1), "pass_s": round(now() - t0, 1),
+            "toward": "+x" if facing > 0 else "-x", "depth_cm": round(100 * depth, 1), "pass_s": round(now() - t0, 1),
             "removed_kg": round(float(u._removed_kg[0]), 1), "held_kg": round(float(u._payload_kg[0]), 1),
             "shape_done": bool(u._shape_done[0]), "floor_cm": round(100 * u.patch_level(), 1),
         }
@@ -366,12 +370,18 @@ def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tup
             row = {"trim": site.trims + 1, "patch": ix, "target_cm": round(100 * (h - 1) * voxel, 1)}
             if not first:
                 row["to_line"] = drive(u.return_route(), 0.0)
+            # The pass digs the way the machine faces; the drive there runs along
+            # the trench line, so keeps it. Should it turn round, start from the other end.
+            facing = u.facing_x()
             if not (first and ix == 0):
-                row["to_pass"] = drive([u.pass_start(ix)], 0.0)
-            row.update(dig_pass(ix, h - 1))
+                row["to_pass"] = drive([u.pass_start(ix, facing)], 0.0)
+                if u.facing_x() != facing:
+                    facing = u.facing_x()
+                    row["to_pass"] = drive([u.pass_start(ix, facing)], 0.0)
+            row.update(dig_pass(ix, h - 1, facing))
             site.trim((iy, ix), height=round(row["floor_cm"] / 100 / voxel))
             rows.append(row)
-            print(f"[site] trim {row['trim']:2d}, patch {ix}: to {row['target_cm']:+.0f} cm, cut {row['depth_cm']:.1f} cm "
+            print(f"[site] trim {row['trim']:2d}, patch {ix} toward {row['toward']}: to {row['target_cm']:+.0f} cm, cut {row['depth_cm']:.1f} cm "
                   f"in {row['pass_s']:.0f} s -> floor {row['floor_cm']:+.1f} cm; {row['removed_kg']:.0f} kg removed, "
                   f"{row['held_kg']:.0f} held; t = {now():.0f} s", flush=True)
             row["to_dump"] = drive(u.dump_route(), 0.5 * math.pi)

@@ -95,6 +95,7 @@ class Heights:
 class StrokeCfg:
     # --- the cut ------------------------------------------------------
     width: float = 0.95         # m the drum cuts across
+    stride: float = 0.475       # m at most between side-by-side strokes' centre lines: each overlaps the next by half
     layer: float = 0.05         # m a move takes off a stroke
     done_tol: float = 0.015     # a stroke this close to its target is done
     progress: float = 0.01      # a move that lowers its stroke less than this failed
@@ -131,10 +132,30 @@ class StrokeSite:
 
     # -- queries -------------------------------------------------------
 
+    def halves(self, i: int, a0: float, a1: float, h: Heights | None = None) -> float:
+        """The height of stroke i's lane from a0 to a1 along it, m: the higher of
+        its two halves side by side. Where strokes overlap, a half is shared
+        with the neighbour, so ground a neighbour has cut half of still stands
+        uncut, and is cut in its turn, over the seam."""
+        s, w = self.strokes[i], 0.5 * self.cfg.width
+        return max((h or self.heights).mean(*Stroke(s.axis, s.across + d, s.span).rect(a0, a1, 0.5 * w))
+                   for d in (-0.5 * w, 0.5 * w))
+
     def level(self, i: int, h: Heights | None = None) -> float:
-        """Stroke i's mean height over its lane, m."""
-        s = self.strokes[i]
-        return (h or self.heights).mean(*s.rect(*s.span, 0.5 * self.cfg.width))
+        """Stroke i's height, m, by its halves all along it."""
+        return self.halves(i, *self.strokes[i].span, h)
+
+    def work_level(self, i: int, anchor: float, way: int, h: Heights | None = None) -> float:
+        """The height of a pass's work area, m, by its halves: at its level, the pass is not needed."""
+        c = self.cfg
+        return self.halves(i, anchor - way * c.behind, anchor + way * c.ahead, h)
+
+    def beside(self, i: int, j: int | None) -> bool:
+        """Whether strokes i and j run the same way and overlap."""
+        if j is None or i == j:
+            return False
+        a, b = self.strokes[i], self.strokes[j]
+        return a.axis == b.axis and abs(a.across - b.across) < self.cfg.width - 1e-9
 
     def failed_in_a_row(self, i: int) -> int:
         n = 0
@@ -228,19 +249,25 @@ class StrokeSite:
 
     def plan(self, at: tuple[float, float] | None = None) -> list[Move] | None:
         """An order of moves that finishes every stroke on the heights expected.
-        Depth first: the shallowest stroke first, so the site goes down a layer
-        at a time across it; then the way along it gentlest on the rover (its
-        strain to the nearest strain_bin); then, for the first move, the way in
-        nearest `at`. If none is found within budget, the best first move
-        alone; None if no move is open."""
+        Depth first: the shallowest stroke first (to the nearest done_tol), so
+        the site goes down a layer at a time across it; then one overlapping
+        the stroke cut last, so a layer sweeps across the strokes side by side,
+        each cut over half of the one before; then the way along it gentlest on
+        the rover (its strain to the nearest strain_bin); then, for the first
+        move, the way in nearest `at`. If none is found within budget, the best
+        first move alone; None if no move is open."""
         order: list[Move] = []
         tried = 0
+        before = self.log[-1][0] if self.log else None
 
         def ranked(h: Heights, first: bool) -> list[Move]:
+            last = order[-1][0] if order else before
+
             def key(ms: tuple[Move, float]):
                 (i, way, _), strain = ms
                 near = math.dist(at, self.entry(i, way)) if first and at else 0.0
-                return -self.level(i, h), round(strain / self.cfg.strain_bin), near
+                return (-round(self.level(i, h) / self.cfg.done_tol), not self.beside(i, last),
+                        round(strain / self.cfg.strain_bin), near)
             return [m for m, _ in sorted(self.moves(h), key=key)]
 
         def search(h: Heights, first: bool) -> bool:
@@ -273,19 +300,25 @@ class StrokeSite:
         self.log.append((i, before - after))
 
 
+def side_by_side(cfg: StrokeCfg, across: float) -> list[float]:
+    """Centre lines of strokes side by side over a strip `across` wide, m in
+    from its edge: the outer two flush with its edges, the rest evenly between,
+    no more than stride apart, so each overlaps the next."""
+    if across <= cfg.width:
+        return [0.5 * across]
+    n = math.ceil((across - cfg.width) / cfg.stride - 1e-9) + 1
+    return [0.5 * cfg.width + k * (across - cfg.width) / (n - 1) for k in range(n)]
+
+
 def l_strokes(cfg: StrokeCfg, corner: tuple[float, float], size: float, thickness: float) -> list[Stroke]:
     """An L `size` on a side, its arms `thickness` across, its outer corner at
-    `corner` (its least x and y): one arm along +x, the other up +y from it.
-    Each arm is two strokes side by side, overlapping where it is under two
-    drum widths across; the arm along x takes the corner."""
+    `corner` (its least x and y): one arm along +x, the other up +y from it,
+    each strokes side by side along it; the arm along x takes the corner."""
     x0, y0 = corner
-    near, far = 0.5 * cfg.width, thickness - 0.5 * cfg.width     # stroke centres in from the arm's outer edge
-    return [
-        Stroke(0, y0 + near, (x0, x0 + size), "along x, outer"),
-        Stroke(0, y0 + far, (x0, x0 + size), "along x, inner"),
-        Stroke(1, x0 + near, (y0 + thickness, y0 + size), "along y, outer"),
-        Stroke(1, x0 + far, (y0 + thickness, y0 + size), "along y, inner"),
-    ]
+    centres = side_by_side(cfg, thickness)
+    n = len(centres)
+    return ([Stroke(0, y0 + c, (x0, x0 + size), f"along x, {k + 1} of {n}") for k, c in enumerate(centres)]
+            + [Stroke(1, x0 + c, (y0 + thickness, y0 + size), f"along y, {k + 1} of {n}") for k, c in enumerate(centres)])
 
 
 def l_rects(corner: tuple[float, float], size: float, thickness: float) -> list[tuple[float, float, float, float]]:
@@ -297,11 +330,10 @@ def l_rects(corner: tuple[float, float], size: float, thickness: float) -> list[
 def hole_strokes(cfg: StrokeCfg, corner: tuple[float, float], size: float) -> list[Stroke]:
     """A square hole `size` on a side, its corner at `corner` (its least x and
     y): strokes side by side along x across it, and the same along y, the
-    planner picking which way each layer goes; they overlap where the side is
-    not a whole number of drum widths."""
+    planner picking which way each layer goes."""
     x0, y0 = corner
-    n = math.ceil((size - cfg.width) / cfg.width - 1e-9) + 1
-    centres = [0.5 * cfg.width + k * (size - cfg.width) / (n - 1) for k in range(n)] if n > 1 else [0.5 * size]
+    centres = side_by_side(cfg, size)
+    n = len(centres)
     return ([Stroke(0, y0 + c, (x0, x0 + size), f"along x, {k + 1} of {n}") for k, c in enumerate(centres)]
             + [Stroke(1, x0 + c, (y0, y0 + size), f"along y, {k + 1} of {n}") for k, c in enumerate(centres)])
 

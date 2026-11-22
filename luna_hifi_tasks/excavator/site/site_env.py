@@ -45,6 +45,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 import torch
 
@@ -168,13 +169,6 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         self._goal_yaw = torch.zeros(1, device=dev)
         self._held = 0
         self._dumps = 0
-        self._soil_drawn = 0
-
-    def _show_soil(self) -> None:
-        """The soil boxes once an env step, for its one rendered frame, not every physics step."""
-        self._soil_drawn += 1
-        if self._soil_drawn % (1 if self._physics_handles_decimation else self.cfg.decimation) == 0:
-            super()._show_soil()
 
     # --- the runner's commands ---
 
@@ -382,9 +376,15 @@ class Machine:
         self.zero = torch.zeros(1, self.u.cfg.action_space, device=self.u.device)
         self.obs = env.reset()[0]
         self.steps = 0
+        self.started = time.time()
 
     def now(self) -> float:
+        """Simulated seconds since the start."""
         return self.steps * self.u.step_dt
+
+    def wall(self) -> float:
+        """Real seconds since the start."""
+        return time.time() - self.started
 
     def step(self, action: torch.Tensor) -> None:
         u = self.u
@@ -545,12 +545,14 @@ def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tup
             rows.append(row)
             print(f"[site] trim {row['trim']:3d}, lane {iy} patch {ix} toward {row['toward']}: to {row['target_cm']:+.1f} cm, "
                   f"cut {row['depth_cm']:.1f} cm in {row['pass_s']:.0f} s -> floor {row['floor_cm']:+.1f} cm; "
-                  f"{row['removed_kg']:.0f} kg removed, {row['held_kg']:.0f} held; t = {m.now():.0f} s", flush=True)
+                  f"{row['removed_kg']:.0f} kg removed, {row['held_kg']:.0f} held; t = {m.now():.0f} s, "
+                  f"{m.wall():.0f} s real", flush=True)
             if m.load() >= DUMP_MIN_KG:
                 row["to_dump"] = m.drive(u.dump_route(u.lane_y(iy)), 0.5 * math.pi, loose=True)
                 row["dumped_kg"] = m.dump()
                 at_pile = True
-                print(f"[site]           dumped {row['dumped_kg']:.0f} kg; t = {m.now():.0f} s", flush=True)
+                print(f"[site]           dumped {row['dumped_kg']:.0f} kg; t = {m.now():.0f} s, {m.wall():.0f} s real",
+                      flush=True)
     except RuntimeError as err:
         return rows, f"stopped: {err}"
     if site.done():
@@ -679,7 +681,7 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0) ->
             m.face(yaw)
             for k, a in enumerate(anchors):
                 look()
-                if site.heights.mean(*site.work_rect(i, a, way)) <= v + c.done_tol:
+                if site.work_level(i, a, way) <= v + c.done_tol:
                     skipped += 1
                     continue
                 drive_in(s.point(a - way * u.dig_reach), gate, yaw)
@@ -702,7 +704,7 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0) ->
             rows.append(row)
             print(f"[site] stroke {row['move']:2d}, {s.name} {row['way']}: to {row['to_cm']:+.1f} cm in {passes} passes "
                   f"({skipped} skipped), {trips} to the piles: {row['from_cm']:+.1f} -> {row['level_cm']:+.1f} cm; "
-                  f"t = {m.now():.0f} s", flush=True)
+                  f"t = {m.now():.0f} s, {m.wall():.0f} s real", flush=True)
     except RuntimeError as err:
         return rows, f"stopped: {err}"
     if site.done():

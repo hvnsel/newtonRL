@@ -109,6 +109,9 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         self._wheel_patches = rft.wheel_patches(device=dev)
         self._wheel_body_ids = self.robot.find_bodies(BODY_WHEELS, preserve_order=True)[0] if c.wheel_soil else []
         self._soil_marker = self._make_soil_marker() if c.soil_marker else None
+        # The soil's colours by _soil_index, and the smooth mesh's fixed parts, made on its first draw.
+        self._soil_rgb = torch.tensor([SOIL_RGB, PILE_RGB, *depth_shades()], device=dev)
+        self._soil_mesh = None
         print(
             f"[excavate] soil: rft.py, density {c.soil_density:.0f} kg/m3, friction {c.soil_friction:.2f} "
             f"-> stress scale {c.rft_scale:.2f} Kp rho g = {self._rft.zeta:.0f} N/m3, cohesion {c.soil_cohesion:.0f} Pa "
@@ -168,7 +171,9 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
             pressed = rft.press(self._bed_grid, self._cells, centre[:, 4:], rft.drum_axis(quat[:, 4:]), self._rft, self._fresh_bed)
             self._loose = (self._loose - (self._bed_grid - pressed)).clamp(min=0.0)
             self._bed_grid = pressed
-        if self._soil_marker is not None:
+        # Drawn only for the frames the viewer renders: after this physics step if
+        # the step counter, already advanced, is a multiple of render_interval.
+        if self._soil_marker is not None and self._sim_step_counter % self.cfg.sim.render_interval == 0:
             self._show_soil()
 
     def _soil(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -188,24 +193,76 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         markers.update({f"depth_{k + 1}": box(rgb) for k, rgb in enumerate(depth_shades())})
         return VisualizationMarkers(VisualizationMarkersCfg(prim_path="/Visuals/soil", markers=markers))
 
-    def _show_soil(self) -> None:
-        """Every grid cell as a box from the floor to its height: the soil's
-        colour as it started, a pile's PILE_RISE or more above, and k steps
-        down (averaged over SHADE_BLUR) the k-th depth shade, in shade_area if
-        one is set (elsewhere, ruts and all, the soil's colour)."""
-        top = self._bed_grid                                              # (E, ny, nx)
-        o = self.scene.env_origins[:, None, None]                         # (E, 1, 1, 3)
-        centre = torch.cat([self._cells + o[..., :2], (o[..., 2] + 0.5 * (top + BED_FLOOR_Z)).unsqueeze(-1)], -1)
-        side = torch.full_like(top, self.cfg.voxel_size)
-        depth = self._fresh_bed - top
+    def _soil_index(self) -> torch.Tensor:
+        """(E, ny, nx) each cell's colour, an index into _soil_rgb: the soil's
+        as it started (0), a pile's PILE_RISE or more above (1), and k steps
+        down (averaged over SHADE_BLUR) the k-th depth shade (1 + k), in
+        shade_area if one is set (elsewhere, ruts and all, the soil's colour)."""
+        depth = self._fresh_bed - self._bed_grid
         k = max(1, round(SHADE_BLUR / self.cfg.voxel_size)) | 1
         soft = F.avg_pool2d(depth.unsqueeze(1), k, stride=1, padding=k // 2, count_include_pad=False).squeeze(1)
         steps = torch.round(soft / SHADE_STEP).clamp(0, DEPTH_SHADES)
         if self.shade_area is not None:
             steps = steps * self.shade_area
-        index = torch.where(steps >= 1, 1 + steps, (depth <= -PILE_RISE).float())
+        return torch.where(steps >= 1, 1 + steps, (depth <= -PILE_RISE).float()).long()
+
+    def _show_soil(self) -> None:
+        """The soil in the viewer: as one smooth mesh per env in Newton's GL
+        viewer, else as a box per cell from the floor to its height."""
+        index = self._soil_index()
+        viewer = self._mesh_viewer()
+        if viewer is not None:
+            try:
+                self._show_soil_mesh(viewer, index)
+                return
+            except Exception as err:            # the boxes for the rest of the run
+                print(f"[excavate] soil mesh failed, drawing boxes instead: {err!r}")
+                self._soil_mesh = False
+        top = self._bed_grid                                              # (E, ny, nx)
+        o = self.scene.env_origins[:, None, None]                         # (E, 1, 1, 3)
+        centre = torch.cat([self._cells + o[..., :2], (o[..., 2] + 0.5 * (top + BED_FLOOR_Z)).unsqueeze(-1)], -1)
+        side = torch.full_like(top, self.cfg.voxel_size)
         self._soil_marker.visualize(
             translations=centre.reshape(-1, 3),
             scales=torch.stack([side, side, top - BED_FLOOR_Z], -1).reshape(-1, 3),
             marker_indices=index.reshape(-1).int(),
         )
+
+    def _mesh_viewer(self):
+        """Newton's GL visualizer if it is on and the soil mesh has not failed; else None."""
+        if self._soil_mesh is False:
+            return None
+        try:
+            from isaaclab_visualizers.newton.newton_visualizer import NewtonGLVisualizer
+        except ImportError:
+            return None
+        sim = sim_utils.SimulationContext.instance()
+        return next((v for v in (getattr(sim, "visualizers", None) or []) if isinstance(v, NewtonGLVisualizer)), None)
+
+    def _show_soil_mesh(self, viewer, index: torch.Tensor) -> None:
+        """Each env's soil as one mesh through its cells' centres at the soil's
+        height, lit as a smooth surface, its cells' colours a texture on it."""
+        import warp as wp
+
+        E, ny, nx = self._bed_grid.shape
+        if self._soil_mesh is None:
+            wp.init()                       # a no-op once Newton has started warp
+            dev = self.device
+            j, i = torch.meshgrid(torch.arange(ny - 1, device=dev), torch.arange(nx - 1, device=dev), indexing="ij")
+            v = (j * nx + i).reshape(-1)
+            # Two triangles per square of four cell centres, anticlockwise seen from above.
+            tris = torch.stack([v, v + 1, v + nx + 1, v, v + nx + 1, v + nx], -1).reshape(-1).to(torch.int32).contiguous()
+            j, i = torch.meshgrid(torch.arange(ny, device=dev), torch.arange(nx, device=dev), indexing="ij")
+            # Texel (j, i) is cell (j, i): the viewer flips an image's rows on upload.
+            uv = torch.stack([(i + 0.5) / nx, 1.0 - (j + 0.5) / ny], -1).reshape(-1, 2).float().contiguous()
+            self._soil_mesh = {"tris": wp.from_torch(tris), "uv": wp.from_torch(uv, dtype=wp.vec2), "points": [None] * E}
+        mesh = self._soil_mesh
+        rgb = (255.0 * self._soil_rgb[index]).round().to(torch.uint8).cpu().numpy()       # (E, ny, nx, 3)
+        o = self.scene.env_origins
+        for e in range(E):
+            # Kept until the next draw: the viewer reads it when it renders the frame.
+            mesh["points"][e] = torch.cat([self._cells + o[e, :2], (o[e, 2] + self._bed_grid[e]).unsqueeze(-1)], -1).reshape(-1, 3).contiguous()
+            viewer.log_mesh(
+                f"soil_{e}", wp.from_torch(mesh["points"][e], dtype=wp.vec3), mesh["tris"], uvs=mesh["uv"],
+                texture=rgb[e], color=(1.0, 1.0, 1.0), roughness=0.95, metallic=0.0,
+            )

@@ -4,16 +4,15 @@
 # L or --hole a square hole cut in strokes along x and y, with the trained
 # policies on the RFT soil (Luna-Excavator-Site): the planner (luna_hifi_tasks/
 # planner/site.py, or strokes.py for strokes) picks each pass or stroke and its
-# level, the navigate
-# policy drives to it, the excavate policy digs it, and the drum is emptied on
-# a pile beside the site. Writes a line per trim or stroke to the terminal and
-# to --log, and heightmap frames to --dump for render_dig.py.
+# level, the navigate policy drives to it, the excavate policy digs it, and the
+# drum is emptied on a pile beside the site. Writes a line per trim or stroke
+# to the terminal, and with --video the run as an mp4, the viewer rendering only
+# the frames the video keeps.
 #
 #   bash workstation/train.sh -p scripts/site_run.py --video site_video
 #   bash workstation/train.sh -p scripts/site_run.py --pit --step 0.075 --video pit_video
 #   bash workstation/train.sh -p scripts/site_run.py --l --video l_video
 #   bash workstation/train.sh -p scripts/site_run.py --hole --video hole_video
-#   python3 scripts/render_dig.py site.npz --stride 4
 #
 # The dig checkpoint defaults to the newest intact one of Luna-Excavator-Excavate-RFT,
 # the navigate one to Luna-Excavator-Navigate-RFT's (fine-tuned on the soil), else
@@ -22,13 +21,10 @@
 from __future__ import annotations
 
 import argparse
-import csv
-import math
 import sys
 from pathlib import Path
 
 import gymnasium as gym
-import numpy as np
 import torch
 
 from isaaclab.app import add_launcher_args, launch_simulation
@@ -38,7 +34,6 @@ from isaaclab_tasks.utils import setup_preset_cli
 from isaaclab_tasks.utils.hydra import resolve_task_config
 
 import luna_hifi_tasks  # noqa: F401  (registers Luna-* tasks)
-from luna_hifi_tasks.excavator.excavator import WHEEL_RADIUS
 from luna_hifi_tasks.excavator.site.site_env import RING, box_corner, run_site, run_strokes
 from luna_hifi_tasks.planner.site import SiteCfg, pit, trench
 from luna_hifi_tasks.planner.strokes import Heights, StrokeCfg, StrokeSite, hole_rects, hole_strokes, l_rects, l_strokes
@@ -68,11 +63,8 @@ def _parse():
     p.add_argument("--video", default=None, help="record an mp4 into this directory, from the Newton viewer")
     p.add_argument("--eye", type=float, nargs=3, default=None, help="video camera position; default over the site")
     p.add_argument("--lookat", type=float, nargs=3, default=None, help="video camera target")
-    p.add_argument("--dump", default="site.npz", help="heightmap frames for render_dig.py")
-    p.add_argument("--dump_every", type=int, default=None, help="steps between saved frames; default 10, a pit 40")
-    p.add_argument("--frame_stride", type=int, default=None, help="video: every n-th step, so n times real time; default 3, a pit 9")
-    p.add_argument("--log", default="site_log.csv", help="one row per trim")
-    p.add_argument("--trace", default="site_trace.csv", help="one row per step: the drive command, what the machine did, the tools")
+    p.add_argument("--frame_stride", type=int, default=None,
+                   help="video: every n-th step, so n times real time; default 3, a pit and an L 9, a hole 6")
     add_launcher_args(p)
     p.set_defaults(device=None, visualizer=["newton_gl"])
     # As play_dig: this script's flags off the command line, the rest left for Hydra.
@@ -81,8 +73,8 @@ def _parse():
     # Defaults for a trench, a pit, an L and a hole.
     mode = 2 if args.l else 3 if args.hole else 1 if args.pit else 0
     for key, values in (("length", (2.4, 4.0, 0.0, 0.0)), ("depth", (0.15, 0.30, 0.15, 0.15)),
-                        ("minutes", (30.0, 300.0, 120.0, 60.0)), ("dump_every", (10, 40, 40, 20)),
-                        ("frame_stride", (3, 9, 9, 6)), ("size", (0.0, 0.0, 3.325, 1.9))):
+                        ("minutes", (30.0, 300.0, 120.0, 60.0)), ("frame_stride", (3, 9, 9, 6)),
+                        ("size", (0.0, 0.0, 3.325, 1.9))):
         if getattr(args, key) is None:
             setattr(args, key, values[mode])
     args.strokes = args.l or args.hole
@@ -127,6 +119,8 @@ def main() -> int:
             lookat=tuple(args.lookat) if args.lookat else (x, y, 0.0),
         )]
         env_cfg.soil_marker = True
+        # The viewer renders, and the soil is drawn, only for the frames the video keeps.
+        env_cfg.sim.render_interval = env_cfg.decimation * args.frame_stride
         env_cfg.video_recorders = [VideoRecorderCfg(
             source="visualizer:newton", output_dir=args.video, video_length=CLIP_STEPS, video_interval=CLIP_STEPS,
             frame_stride=args.frame_stride, fps=round(1.0 / (env_cfg.sim.dt * env_cfg.decimation)),
@@ -167,48 +161,14 @@ def main() -> int:
 
         if not args.strokes:
             area = [(u.pit_x, u.pit_x + args.length, -u.half_width, u.half_width)]
-        trench_cells = u.rects_mask(area)
         # The ground is shaded by depth over the cut and its walls; elsewhere, ruts and all, the soil's colour.
         u.shade_area = u.rects_mask([(x0 - 0.3, x1 + 0.3, y0 - 0.3, y1 + 0.3) for x0, x1, y0, y1 in area])
-        fresh = u._fresh_bed
-        kg_per_m = u.cfg.voxel_size ** 2 * u.cfg.soil_density
-        beds, poses, bodies, trace, steps = [], [], [], [], [0]
-
-        def record(u) -> None:
-            steps[0] += 1
-            d = u.robot.data
-            o = u.scene.env_origins[0]
-            root = d.root_pos_w.torch[0] - o
-            wheels = d.joint_vel.torch[0] * WHEEL_RADIUS
-            q = d.joint_pos.torch[0]
-            trace.append({
-                "t": round(steps[0] * u.step_dt, 2), "mode": u.mode,
-                "x": round(float(root[0]), 3), "y": round(float(root[1]), 3),
-                "yaw_deg": round(math.degrees(float(u._base_yaw()[0])), 1),
-                "goal_m": round(u.goal_error()[0], 3) if u.mode == "drive" else "",
-                "cmd_mps": round(float(u._forward_cmd[0]), 3), "cmd_yaw_rate": round(float(u._yaw_cmd[0]), 3),
-                "speed_mps": round(float(d.root_lin_vel_b.torch[0, 0]), 3),
-                "side_mps": round(float(d.root_lin_vel_b.torch[0, 1]), 3),
-                "yaw_rate": round(float(d.root_ang_vel_b.torch[0, 2]), 3),
-                "rim_left_mps": round(float(wheels[u._left_ids].mean()), 3),
-                "rim_right_mps": round(float(wheels[u._right_ids].mean()), 3),
-                "arm_front": round(float(q[u._arm_ids[0]]), 3), "arm_rear": round(float(q[u._arm_ids[1]]), 3),
-                "shroud_front": round(float(q[u._shroud_ids[0]]), 3), "fill_kg": round(float(u._fill_kg[0, 0]), 1),
-            })
-            if steps[0] % args.dump_every:
-                return
-            bed = u._bed_grid[0]
-            removed = float(((fresh - bed).clamp(min=0.0) * trench_cells).sum()) * kg_per_m
-            beds.append(bed.cpu().numpy().copy())
-            bodies.append((u.robot.data.body_pos_w.torch[0] - o).cpu().numpy().copy())
-            poses.append([float(root[0]), float(root[1]), float(root[2]), float(u._base_yaw()[0]),
-                          steps[0] * u.step_dt, removed, float(u._fill_kg[0, 0])])
 
         with torch.inference_mode():
             if args.strokes:
-                rows, ending = run_strokes(env, dig, nav, site, record, args.minutes)
+                _, ending = run_strokes(env, dig, nav, site, max_minutes=args.minutes)
             else:
-                rows, ending = run_site(env, dig, nav, site, record, args.minutes)
+                _, ending = run_site(env, dig, nav, site, max_minutes=args.minutes)
         if args.strokes:
             print(f"[site] {ending}")
             for i, s in enumerate(site.strokes):
@@ -217,7 +177,6 @@ def main() -> int:
             print(f"[site] {ending}: {site.summary()}")
             for iy, lane in enumerate(site.height):
                 print(f"[site] lane {iy} heights, cm: {[round(100 * h * site.cfg.voxel, 1) for h in lane]}")
-        names = np.asarray(u.robot.body_names, dtype="U64")
         env.close()
 
     if args.video:
@@ -229,38 +188,6 @@ def main() -> int:
             concatenate_videoclips([VideoFileClip(str(c)) for c in clips]).write_videofile(
                 out, codec="libx264", audio=False, logger=None)
             print(f"[site] video {out}: {len(clips)} clips, {args.frame_stride}x real time")
-
-    if beds:
-        np.savez_compressed(
-            args.dump,
-            bed=np.stack(beds).astype("float32"),
-            pose=np.asarray(poses, dtype="float32"),
-            work_mask=trench_cells.cpu().numpy(),
-            body_pos=np.stack(bodies).astype("float32"),
-            body_names=names,
-            wheel_radius=WHEEL_RADIUS,
-            voxel=float(u.cfg.voxel_size),
-            lower=np.asarray(u.cfg.bed_grid_lower, dtype="float32"),
-            bed_x=np.asarray(u.cfg.bed_x, dtype="float32"),
-            bed_y=np.asarray(u.cfg.bed_y, dtype="float32"),
-            drum_capacity_kg=float(u.cfg.drum_capacity_kg),
-        )
-        print(f"[site] wrote {len(beds)} heightmap frames to {args.dump}")
-    if trace:
-        with open(args.trace, "w", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=list(trace[0]))
-            w.writeheader()
-            w.writerows(trace)
-        print(f"[site] wrote {len(trace)} steps to {args.trace}")
-    if rows:
-        flat = [{f"{k}_{kk}" if isinstance(v, dict) else k: vv
-                 for k, v in r.items() for kk, vv in (v.items() if isinstance(v, dict) else [(None, v)])} for r in rows]
-        keys = list(dict.fromkeys(k for r in flat for k in r))
-        with open(args.log, "w", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=keys)
-            w.writeheader()
-            w.writerows(flat)
-        print(f"[site] wrote {len(rows)} trims to {args.log}")
     return 0
 
 

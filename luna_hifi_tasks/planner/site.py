@@ -320,12 +320,12 @@ class Site:
 
     def plan(self, facing: int | None = None) -> list[Trim] | None:
         """An order of trims that finishes the site, each feasible when it comes
-        and none stranding a patch; the first faces `facing` if given, and
-        avoids a patch whose last trim failed if it can. Depth first: the trims
-        that strand nothing even if the pass cuts deeper than asked first, then
-        the one that leaves the most cuts possible. If none is found within
-        search_budget trims tried, that best first trim alone; None if there
-        is no trim that strands nothing."""
+        and none stranding a patch. Depth first: the trims that strand nothing
+        even if the pass cuts deeper than asked first; for the first trim, then
+        those facing `facing` if given, avoiding a patch whose last trim failed
+        if it can; then the one that leaves the most cuts possible. If none is
+        found within search_budget trims tried, that best first trim alone;
+        None if there is no trim that strands nothing."""
         work = copy.copy(self)
         work.height = [row[:] for row in self.height]
         aside = set(self.set_aside())
@@ -339,17 +339,17 @@ class Site:
 
         def ranked(first: bool) -> list[Trim]:
             """Each trim that strands nothing: those that strand nothing cut at
-            least min_cut and overcut past that first, then the one leaving the
-            most cuts possible."""
+            least min_cut and overcut past that first, then for the first trim
+            those facing `facing`, then the one leaving the most cuts possible."""
             out = []
-            for i, (p, f, v) in enumerate(work.moves(aside, facing if first else None, later if first else ())):
+            for i, (p, f, v) in enumerate(work.moves(aside, None, later if first else ())):
                 y, x = p
                 before = work.height[y][x]
                 work.height[y][x] = v
                 if not work.stranded(aside):
                     n = options()
                     work.height[y][x] = min(v, before - self.cfg.min_cut_voxels) - self.cfg.overcut_voxels
-                    out.append((work.stranded(aside), -n, i, (p, f, v)))
+                    out.append((work.stranded(aside), first and f != facing, -n, i, (p, f, v)))
                 work.height[y][x] = before
             return [t for *_, t in sorted(out)]
 
@@ -379,10 +379,10 @@ class Site:
 
     def next_trim(self, facing: int) -> tuple[Patch, float] | None:
         """The next patch to cut, the rover facing `facing`, and the level to
-        cut it to: the first trim of plan(facing). None if it can cut nothing
-        facing this way without stranding a patch."""
+        cut it to: the first trim of plan(facing). None if that trim faces the
+        other way, or there is none that strands nothing."""
         order = self.plan(facing)
-        return (order[0][0], order[0][2]) if order else None
+        return (order[0][0], order[0][2]) if order and order[0][1] == facing else None
 
     def next_level(self, patch) -> float:
         """The level a trim of patch cuts to, voxels: a layer below its

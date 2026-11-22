@@ -403,11 +403,12 @@ def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tup
         return drive(route, 0.0, loose=True)
 
     def turn_round() -> None:
-        """A quarter turn on the spot and back: navigate takes either end of a
-        heading, so half the time the machine ends up facing the other way."""
+        """Half a turn on the spot, in three sixths: navigate turns to the nearer
+        end of a goal heading, so each step, 60 deg on, turns the same way."""
         spot = [here()]
-        drive(spot, 0.5 * math.pi, loose=True)
-        drive(spot, 0.0, loose=True)
+        yaw = float(u._base_yaw()[0])
+        for k in (1, 2, 3):
+            drive(spot, yaw + k * math.pi / 3, loose=True)
 
     def dig_pass(iy: int, ix: int, level: float, facing: int) -> dict:
         u.begin_ready()

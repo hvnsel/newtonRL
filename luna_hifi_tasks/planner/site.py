@@ -83,6 +83,10 @@ class SiteCfg:
     retries: int = 3
     """A patch that fails this many trims in a row is set aside."""
 
+    min_cut: float = 0.03
+    """The shallowest cut a pass makes, metres: the dig is commanded 3-8 cm
+    below the patch's surface."""
+
     # --- the rover's footprint, for trims on the soil -------------------
     wheel_patches: tuple[int, ...] = (1, 2, 3)
     """Patches behind the cut, along the pass, that the rover's wheels stand
@@ -105,8 +109,9 @@ class SiteCfg:
     """Trims the order search tries before it settles for the best single trim."""
 
     overcut: float = 0.01
-    """How much deeper than its level a pass may cut, metres: the order search
-    takes the trims that strand nothing even then first."""
+    """How much deeper than asked a pass may cut, metres, asked at least
+    min_cut: the order search takes the trims that strand nothing even then
+    first."""
 
     def __post_init__(self) -> None:
         self.patch_area = self.patch_x * self.patch_y
@@ -120,6 +125,7 @@ class SiteCfg:
         self.reach_voxels = int(self.reach / self.voxel + 1e-9)
         self.done_voxels = self.done_tol / self.voxel
         self.progress_voxels = self.progress / self.voxel
+        self.min_cut_voxels = self.min_cut / self.voxel
         self.level_voxels = self.level_tol / self.voxel
         self.drive_voxels = self.drive_step / self.voxel
         self.overcut_voxels = self.overcut / self.voxel
@@ -303,9 +309,11 @@ class Site:
                 deepest = self.reach((p, f))
                 if deepest is None:
                     continue
-                # A layer down, the paired track's level, or as deep as the drum gets.
+                # A layer down, the paired track's level, or as deep as the drum
+                # gets; a cut no shallower than a pass makes, unless it finishes.
+                h, done = self.height[y][x], self.target[y][x] + self.cfg.done_voxels
                 for v in dict.fromkeys(self.levels(p) + [max(self.next_level(p), deepest)]):
-                    if v >= deepest - 1e-9 and v < self.height[y][x] - self.cfg.progress_voxels:
+                    if v >= deepest - 1e-9 and (v <= h - self.cfg.min_cut_voxels + 1e-9 or v <= done):
                         out.append((p, f, v))
         out.sort(key=lambda m: (m[0] in later, -self.height[m[0][0]][m[0][1]], self.cycle_seconds(m[0]), -m[1], m[2]))
         return out
@@ -314,8 +322,8 @@ class Site:
         """An order of trims that finishes the site, each feasible when it comes
         and none stranding a patch; the first faces `facing` if given, and
         avoids a patch whose last trim failed if it can. Depth first: the trims
-        that strand nothing even if the pass cuts overcut deeper first, then the
-        one that leaves the most cuts possible. If none is found within
+        that strand nothing even if the pass cuts deeper than asked first, then
+        the one that leaves the most cuts possible. If none is found within
         search_budget trims tried, that best first trim alone; None if there
         is no trim that strands nothing."""
         work = copy.copy(self)
@@ -330,8 +338,9 @@ class Site:
             return sum(work.could_trim((p, f), aside) for p in work.pending() if p not in aside for f in (1, -1))
 
         def ranked(first: bool) -> list[Trim]:
-            """Each trim that strands nothing: those that strand nothing cut
-            overcut deeper first, then the one leaving the most cuts possible."""
+            """Each trim that strands nothing: those that strand nothing cut at
+            least min_cut and overcut past that first, then the one leaving the
+            most cuts possible."""
             out = []
             for i, (p, f, v) in enumerate(work.moves(aside, facing if first else None, later if first else ())):
                 y, x = p
@@ -339,7 +348,7 @@ class Site:
                 work.height[y][x] = v
                 if not work.stranded(aside):
                     n = options()
-                    work.height[y][x] = v - self.cfg.overcut_voxels
+                    work.height[y][x] = min(v, before - self.cfg.min_cut_voxels) - self.cfg.overcut_voxels
                     out.append((work.stranded(aside), -n, i, (p, f, v)))
                 work.height[y][x] = before
             return [t for *_, t in sorted(out)]

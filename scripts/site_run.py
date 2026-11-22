@@ -1,12 +1,14 @@
 # scripts/site_run.py
 #
-# Dig a trench with the trained policies on the RFT soil (Luna-Excavator-Site):
-# the planner (luna_hifi_tasks/planner/site.py) picks each pass, the navigate
+# Dig a trench, or with --pit a pit entered down a staircase ramp, with the
+# trained policies on the RFT soil (Luna-Excavator-Site): the planner
+# (luna_hifi_tasks/planner/site.py) picks each pass and its level, the navigate
 # policy drives to it, the excavate policy digs it, and the drum is emptied on
-# a pile past the trench. Writes a line per trim to the terminal and to --log,
+# a pile beside the pit. Writes a line per trim to the terminal and to --log,
 # and heightmap frames to --dump for render_dig.py.
 #
 #   bash workstation/train.sh -p scripts/site_run.py --video site_video
+#   bash workstation/train.sh -p scripts/site_run.py --pit --step 0.075 --video pit_video
 #   python3 scripts/render_dig.py site.npz --stride 4
 #
 # The dig checkpoint defaults to the newest intact one of Luna-Excavator-Excavate-RFT,
@@ -34,28 +36,32 @@ from isaaclab_tasks.utils.hydra import resolve_task_config
 import luna_hifi_tasks  # noqa: F401  (registers Luna-* tasks)
 from luna_hifi_tasks.excavator.excavator import WHEEL_RADIUS
 from luna_hifi_tasks.excavator.site.site_env import run_site
-from luna_hifi_tasks.planner.site import SiteCfg, trench
+from luna_hifi_tasks.planner.site import SiteCfg, pit, trench
 from play_dig import _load_policy, _resolve_checkpoint
 
 TASK = "Luna-Excavator-Site"
-# The recorder holds a clip's frames in memory: a clip a minute, every third step,
-# played back at the step rate, so three times real time; joined at the end.
-CLIP_STEPS, FRAME_STRIDE = 1500, 3
+# The recorder holds a clip's frames in memory: a clip a minute, every
+# --frame_stride-th step, played back at the step rate; joined at the end.
+CLIP_STEPS = 1500
 
 
 def _parse():
     p = argparse.ArgumentParser(description="Dig a trench with the trained excavate and navigate policies.")
-    p.add_argument("--length", type=float, default=2.4, help="trench length [m]")
-    p.add_argument("--depth", type=float, default=0.15, help="trench depth [m]")
+    p.add_argument("--pit", action="store_true", help="a pit entered down a staircase ramp, not a trench")
+    p.add_argument("--length", type=float, default=None, help="length [m]; default 2.4, a pit 4.0")
+    p.add_argument("--depth", type=float, default=None, help="depth [m]; default 0.15, a pit 0.30")
+    p.add_argument("--step", type=float, default=0.075, help="pit: how much deeper each patch down the ramp [m]")
+    p.add_argument("--lanes", type=int, default=5, help="pit: lanes across, the side ones shelves")
     p.add_argument("--dig_checkpoint", default=None, help="excavate model file; default the newest intact RFT one")
     p.add_argument("--nav_checkpoint", default=None,
                    help="navigate model file; default the newest intact one fine-tuned on the soil, else navigate's")
-    p.add_argument("--minutes", type=float, default=30.0, help="simulated time limit")
+    p.add_argument("--minutes", type=float, default=None, help="simulated time limit; default 30, a pit 300")
     p.add_argument("--video", default=None, help="record an mp4 into this directory, from the Newton viewer")
     p.add_argument("--eye", type=float, nargs=3, default=None, help="video camera position; default over the site")
     p.add_argument("--lookat", type=float, nargs=3, default=None, help="video camera target")
     p.add_argument("--dump", default="site.npz", help="heightmap frames for render_dig.py")
-    p.add_argument("--dump_every", type=int, default=10, help="steps between saved frames")
+    p.add_argument("--dump_every", type=int, default=None, help="steps between saved frames; default 10, a pit 40")
+    p.add_argument("--frame_stride", type=int, default=None, help="video: every n-th step, so n times real time; default 3, a pit 9")
     p.add_argument("--log", default="site_log.csv", help="one row per trim")
     p.add_argument("--trace", default="site_trace.csv", help="one row per step: the drive command, what the machine did, the tools")
     add_launcher_args(p)
@@ -63,6 +69,10 @@ def _parse():
     # As play_dig: this script's flags off the command line, the rest left for Hydra.
     args, hydra_args = setup_preset_cli(p)
     sys.argv = [sys.argv[0]] + hydra_args
+    for key, trench_value, pit_value in (("length", 2.4, 4.0), ("depth", 0.15, 0.30), ("minutes", 30.0, 300.0),
+                                         ("dump_every", 10, 40), ("frame_stride", 3, 9)):
+        if getattr(args, key) is None:
+            setattr(args, key, pit_value if args.pit else trench_value)
     return args
 
 
@@ -82,21 +92,24 @@ def main() -> int:
     print(f"[site] dig policy {dig_ckpt}\n[site] navigate policy {nav_ckpt}")
 
     env_cfg, _ = resolve_task_config(TASK, "")
-    env_cfg.trench_length = args.length
+    env_cfg.pit_length = args.length
+    env_cfg.pit_lanes = args.lanes if args.pit else 1
     env_cfg.__post_init__()
     if args.video:
         from isaaclab.envs.utils.video_recorder_cfg import VideoRecorderCfg
         from isaaclab_visualizers.newton import NewtonGLVisualizerCfg
 
-        x = 0.5 * (env_cfg.bed_x[0] + env_cfg.bed_x[1])
+        # From the -y side, over the middle of the bed, far enough out for all of it.
+        (x0, x1), (y0, y1) = env_cfg.bed_x, env_cfg.bed_y
+        x, span = 0.5 * (x0 + x1), max(x1 - x0, y1 - y0)
         env_cfg.sim.visualizer_cfgs = [NewtonGLVisualizerCfg(
-            eye=tuple(args.eye) if args.eye else (x, -6.5, 7.0),
-            lookat=tuple(args.lookat) if args.lookat else (x, 1.0, 0.0),
+            eye=tuple(args.eye) if args.eye else (x, y0 - 0.45 * span, 0.75 * span),
+            lookat=tuple(args.lookat) if args.lookat else (x, 0.5 * (y0 + y1), 0.0),
         )]
         env_cfg.soil_marker = True
         env_cfg.video_recorders = [VideoRecorderCfg(
             source="visualizer:newton", output_dir=args.video, video_length=CLIP_STEPS, video_interval=CLIP_STEPS,
-            frame_stride=FRAME_STRIDE, fps=round(1.0 / (env_cfg.sim.dt * env_cfg.decimation)),
+            frame_stride=args.frame_stride, fps=round(1.0 / (env_cfg.sim.dt * env_cfg.decimation)),
         )]
     earlier = set(Path(args.video).glob("clip_*.mp4")) if args.video else set()
     args.device = env_cfg.sim.device
@@ -107,11 +120,17 @@ def main() -> int:
         u = env.unwrapped
         dig = _load_policy(str(u.device), dig_ckpt)
         nav = _load_policy(str(u.device), nav_ckpt)
-        site = trench(SiteCfg(), args.length, args.depth)
-        print(f"[site] trench {args.length:g} m x {u.cfg.work_area_width:g} m x {args.depth:g} m: "
-              f"{len(site.height[0])} patches, {-site.target[0][0]} passes of {100 * site.cfg.voxel:g} cm each")
+        if args.pit:
+            site = pit(SiteCfg(), args.length, args.depth, args.step, args.lanes)
+            print(f"[site] pit {args.length:g} m x {args.lanes * u.cfg.work_area_width:g} m x {args.depth:g} m, "
+                  f"{args.lanes} lanes of {len(site.height[0])} patches, the side lanes shelves; "
+                  f"down a ramp {100 * args.step:g} cm a patch")
+        else:
+            site = trench(SiteCfg(), args.length, args.depth)
+            print(f"[site] trench {args.length:g} m x {u.cfg.work_area_width:g} m x {args.depth:g} m: "
+                  f"{len(site.height[0])} patches, {-site.target[0][0]} passes of {100 * site.cfg.voxel:g} cm each")
 
-        trench_cells = u.trench_mask()
+        trench_cells = u.pit_mask()
         fresh = u._fresh_bed
         kg_per_m = u.cfg.voxel_size ** 2 * u.cfg.soil_density
         beds, poses, bodies, trace, steps = [], [], [], [], [0]
@@ -149,7 +168,8 @@ def main() -> int:
         with torch.inference_mode():
             rows, ending = run_site(env, dig, nav, site, record, args.minutes)
         print(f"[site] {ending}: {site.summary()}")
-        print(f"[site] patch heights, cm: {[round(100 * h * site.cfg.voxel, 1) for h in site.height[0]]}")
+        for iy, lane in enumerate(site.height):
+            print(f"[site] lane {iy} heights, cm: {[round(100 * h * site.cfg.voxel, 1) for h in lane]}")
         names = np.asarray(u.robot.body_names, dtype="U64")
         env.close()
 
@@ -161,7 +181,7 @@ def main() -> int:
             out = f"{args.video.rstrip('/')}.mp4"
             concatenate_videoclips([VideoFileClip(str(c)) for c in clips]).write_videofile(
                 out, codec="libx264", audio=False, logger=None)
-            print(f"[site] video {out}: {len(clips)} clips, {FRAME_STRIDE}x real time")
+            print(f"[site] video {out}: {len(clips)} clips, {args.frame_stride}x real time")
 
     if beds:
         np.savez_compressed(

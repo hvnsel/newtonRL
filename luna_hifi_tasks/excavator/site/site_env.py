@@ -340,12 +340,14 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
 def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tuple[list[dict], str]:
     """Dig a planner's site. Before each pass the machine is lined up along a
     lane; the planner picks a cut it can make facing the way it faces (it turns
-    on the spot if there is none) and the level to cut to. The machine drives
-    in along the cut's lane to the pass start, sets its tools to the dig's
-    start pose and digs the pass; with soil in the drum it backs out to the
-    yard, goes round to a pile and empties it. Each patch's height is read back
-    from the bed. dig and nav map their observations to actions; record(env)
-    is called after every step. Returns a row per trim and how the run ended."""
+    on the spot if there is none) and the level to cut to. The machine crosses
+    to the cut's lane at the yard, turning back round if it comes out of the
+    crossing the other way, drives in along the lane to the pass start, sets
+    its tools to the dig's start pose and digs the pass; with soil in the drum
+    it backs out to the yard, goes round to a pile and empties it. Each patch's
+    height is read back from the bed. dig and nav map their observations to
+    actions; record(env) is called after every step. Returns a row per trim and
+    how the run ended."""
     u = env.unwrapped
     if abs(site.cfg.patch_x - u.patch_length) > 1e-6:
         raise ValueError(f"the planner's patch is {site.cfg.patch_x} m, the dig's work area {u.patch_length} m")
@@ -461,8 +463,8 @@ def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tup
             if iy != lane:
                 to_yard(u.lane_y(iy))
                 lane = iy
-                if u.facing_x() != facing:          # turned round crossing over: choose again
-                    continue
+                if u.facing_x() != facing:          # came out of the crossing the other way round
+                    turn_round()
             start = u.pass_start(iy, ix, facing)
             row = {"trim": site.trims + 1, "lane": iy, "patch": ix, "target_cm": round(100 * level * voxel, 1)}
             if math.dist(here(), start) > 0.05:

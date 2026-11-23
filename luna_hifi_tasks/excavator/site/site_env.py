@@ -712,5 +712,8 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0) ->
         return rows, "done"
     short = sum(site.level(i) > site.target_of(i) + c.done_tol for i in range(len(site.strokes)))
     aside = [site.strokes[i].name for i in site.set_aside()]
-    why = f"{aside} set aside after {c.retries} failed moves in a row" if aside else "no stroke open to the rover"
+    closed: list[str] = []
+    site.moves(site.heights, closed)
+    why = (f"{aside} set aside after {c.retries} failed moves in a row" if aside
+           else f"no stroke open to the rover ({'; '.join(closed)})")
     return rows, f"stopped with {short} strokes short: {why}"

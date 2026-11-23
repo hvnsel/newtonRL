@@ -381,6 +381,15 @@ class StrokeSite:
         """Stroke i went from before to after (m) in a move."""
         self.log.append((i, before - after))
 
+    def save(self, path: str) -> None:
+        """The heights, the moves made and each stroke's rectangle, target and
+        name, to an .npz for scripts/render_cut.py."""
+        h, half = self.heights, 0.5 * self.cfg.width
+        np.savez_compressed(path, z=h.z.astype(np.float32), lower=np.asarray(h.lower), cell=h.cell, moves=len(self.log),
+                            rects=np.array([s.rect(*s.span, half) for s in self.strokes]),
+                            targets=np.array([self.target_of(i) for i in range(len(self.strokes))]),
+                            names=np.array([s.name for s in self.strokes]))
+
 
 def side_by_side(cfg: StrokeCfg, across: float) -> list[float]:
     """Centre lines of strokes side by side over a strip `across` wide, m in

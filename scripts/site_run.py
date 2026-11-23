@@ -203,19 +203,21 @@ def main() -> int:
 
         if not args.strokes:
             area = [(u.pit_x, u.pit_x + args.length, -u.half_width, u.half_width)]
+        cut = f"{(args.video or 'site').rstrip('/')}_cut.npz"
         # The ground is shaded by depth over the cut and its walls; elsewhere, ruts and all, the soil's colour.
         u.shade_area = u.rects_mask([(x0 - 0.3, x1 + 0.3, y0 - 0.3, y1 + 0.3) for x0, x1, y0, y1 in area])
         u.shade_depth = max(u.shade_depth, args.depth)
 
         with torch.inference_mode():
             if args.strokes:
-                _, ending = run_strokes(env, dig, nav, site, max_minutes=args.minutes)
+                _, ending = run_strokes(env, dig, nav, site, max_minutes=args.minutes, save=cut)
             else:
                 _, ending = run_site(env, dig, nav, site, max_minutes=args.minutes)
         if args.strokes:
             print(f"[site] {ending}")
             for i, s in enumerate(site.strokes):
                 print(f"[site] stroke {s.name}: {100 * site.level(i):+.1f} cm")
+            print(f"[site] the cut's heights: {cut} (scripts/render_cut.py draws it)")
         else:
             print(f"[site] {ending}: {site.summary()}")
             for iy, lane in enumerate(site.height):

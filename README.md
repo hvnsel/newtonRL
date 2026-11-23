@@ -54,6 +54,7 @@ scripts/
   play_dig.py                     excavate playback with a CSV trace and heightmap dump
   render_dig.py, render_attitude.py   GIFs from play_dig dumps
   site_run.py                     the trench: plan, drive, dig and dump with the trained policies
+  render_cut.py                   a stroke site's cut from site_run's saved heights: 3D and cross sections
   rft_pass.py                     scripted drum pass through the analytical soil (mdp/rft.py), no simulator
   patch_newton_mpm.py             gives the installed Newton the soil solver excavate runs on (setup step)
 workstation/                      single-box setup and run scripts (Setup.md)

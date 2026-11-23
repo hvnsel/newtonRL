@@ -617,15 +617,18 @@ class Ring:
         return out
 
 
-def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0) -> tuple[list[dict], str]:
+def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
+                save: str | None = None) -> tuple[list[dict], str]:
     """Dig a stroke planner's site (luna_hifi_tasks/planner/strokes.py). Before
     each move the planner gets the bed's heights and picks a stroke, the way
     along it and the level. The machine goes round the ring road to where the
     stroke is entered, faces along it, and drives in to each pass's start in
     turn, digging from the dig's start pose, its drum empty at the first; once
     the drum is as full as the dig's training counts full it backs out, goes
-    round to a pile, empties it and comes back to carry on. After the stroke it backs out to the ring and
-    empties what is left. Returns a row per move and how the run ended."""
+    round to a pile, empties it and comes back to carry on. After the stroke it
+    backs out to the ring and empties what is left. Given save, the bed's
+    heights go to that .npz after every move and where the run stops
+    (StrokeSite.save). Returns a row per move and how the run ended."""
     u, c = env.unwrapped, site.cfg
     full = u.cfg.fill_success_fraction * u.cfg.target_load_kg
     m = Machine(env, dig, nav, record, max_minutes)
@@ -698,6 +701,8 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0) ->
                 trips += 1
             look()
             site.record(i, before, site.level(i))
+            if save:
+                site.save(save)
             row = {"move": len(rows) + 1, "stroke": s.name, "way": f"{'+' if way > 0 else '-'}{'xy'[s.axis]}",
                    "to_cm": round(100 * v, 1), "passes": passes, "skipped": skipped, "trips": trips,
                    "from_cm": round(100 * before, 1), "level_cm": round(100 * site.level(i), 1),
@@ -707,6 +712,9 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0) ->
                   f"({skipped} skipped), {trips} to the piles: {row['from_cm']:+.1f} -> {row['level_cm']:+.1f} cm; "
                   f"t = {m.now():.0f} s, {m.wall():.0f} s real", flush=True)
     except RuntimeError as err:
+        if save:
+            look()
+            site.save(save)
         return rows, f"stopped: {err}"
     if site.done():
         return rows, "done"

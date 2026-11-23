@@ -154,9 +154,10 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         self._dig_arm = torch.full((E,), dig_arm, device=dev)
         self._dig_shroud = cfg.dig_inlet_tilt - self._dig_arm
         self._arm_pivot_ids = self.robot.find_bodies(["arm_front_body", "arm_rear_body"], preserve_order=True)[0]
-        # Turned: the rear drum digs, the machine turned round (the site). The
-        # policy sees and drives it as its front: its observations and actions
-        # are the front's, mirrored (mdp/symmetry). Training never turns.
+        # Turned: the rear drum digs, the machine facing away from the pass and
+        # reversing along it (the site). The policy sees and drives it as its
+        # front: its observations and actions are the front's, mirrored
+        # (mdp/symmetry). Training never turns.
         self._turned = False
         # The policy's offsets on the digging arm's and shroud's dig angles, rad.
         self._arm_offset = torch.zeros(E, device=dev)
@@ -474,9 +475,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         c = self.cfg
         p, fill = self._proprio(), self._fill_observed()
         if self._turned:
-            # The rear drum read as the front. The front, full by then, reads as
-            # the rear did in training: empty, as it never dug there.
-            p, fill = turn_proprio(p), torch.stack([fill[:, 1], torch.zeros_like(fill[:, 1])], dim=-1)
+            p, fill = turn_proprio(p), fill.flip(-1)
+        if not c.dig_rear_drum:
+            # Trained digging with its front alone, the policy only ever saw its
+            # rear drum empty; at the site that drum may hold soil from its own passes.
+            fill[:, 1] = 0.0
         actor_scan, critic_scan = self._scans(self._soil()[0])
         cut = self._cut_state(actor_scan)
         policy = DIG_OBS.assemble({

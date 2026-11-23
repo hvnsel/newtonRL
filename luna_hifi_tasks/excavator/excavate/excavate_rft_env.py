@@ -24,7 +24,7 @@ from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
 from isaaclab_newton.physics import NewtonBuilderCfg
 
-from ..excavator import BODY_WHEELS
+from ..excavator import BODY_CHASSIS, BODY_WHEELS
 from ..excavator_cfg import EXCAVATOR_PRIM_REGEX, LUNAR_G
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rft
@@ -113,6 +113,9 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         # Wheels on the soil: left front, left rear, right front, right rear.
         self._wheel_patches = rft.wheel_patches(device=dev)
         self._wheel_body_ids = self.robot.find_bodies(BODY_WHEELS, preserve_order=True)[0] if c.wheel_soil else []
+        # The chassis frame on the soil too (chassis_soil, with the wheels).
+        self._chassis_ids = self.robot.find_bodies([BODY_CHASSIS])[0] if c.chassis_soil and c.wheel_soil else []
+        self._frame_patches = rft.frame_patches(device=dev) if self._chassis_ids else None
         self._soil_marker = self._make_soil_marker() if c.soil_marker else None
         # The smooth mesh's colours, and its fixed parts, made on its first draw.
         self._soil_rgb = torch.tensor([SOIL_RGB, PILE_RGB, DEPTH_DARK], device=dev)
@@ -126,21 +129,25 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         )
         if c.wheel_soil:
             print(f"[excavate] wheels on the soil: {self._wheel_patches.area.numel()} patches per wheel, ruts pressed into the grid")
+        if self._chassis_ids:
+            print(f"[excavate] the chassis frame on the soil: {self._frame_patches.area.numel()} patches; "
+                  f"it bulldozes the loose soil in its way")
 
     def _apply_action(self):
         super()._apply_action()
         self._step_soil()
 
     def _step_soil(self, drums: bool = True) -> None:
-        """The soil's loads onto the drums (and wheels), then the soil the drums
-        take in or shove, its slump, and the ruts. Without drums (the site's
-        machine driving, its drums stowed clear of the ground, as navigate
-        trains): the wheels' loads and ruts only."""
+        """The soil's loads onto the drums (and wheels, and the chassis frame),
+        then the soil the drums take in or shove and the frame bulldozes, its
+        slump, and the ruts. Without drums (the site's machine driving, its
+        drums stowed clear of the ground, as navigate trains): the wheels' and
+        the frame's only."""
         d = self.robot.data
         # Front and rear rotor, front and rear shroud, then any wheels: (E, B, ...),
         # positions on the drum and wheel axes.
         tools = self._tool_ids if drums else []
-        ids = tools + self._wheel_body_ids
+        ids = tools + self._wheel_body_ids + self._chassis_ids
         pos = d.body_link_pos_w.torch[:, ids]
         quat = d.body_link_quat_w.torch[:, ids]
         lin = d.body_link_lin_vel_w.torch[:, ids]
@@ -148,6 +155,7 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         centre = pos - self.scene.env_origins[:, None]          # env-local axis points
         firm = self._bed_grid - self._loose
         w = len(tools)                                          # the wheels' first index
+        f = w + len(self._wheel_body_ids)                       # the chassis's, with chassis_soil
 
         forces, torques = [], []
         if drums:
@@ -159,10 +167,16 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
             forces, torques = [rotor_f, shroud_f], [rotor_t, shroud_t]
         if self.cfg.wheel_soil:
             wheel_f, wheel_t = rft.wheel_loads(
-                self._wheel_patches, centre[:, w:], lin[:, w:], quat[:, w:], ang[:, w:], firm, self._rft,
+                self._wheel_patches, centre[:, w:f], lin[:, w:f], quat[:, w:f], ang[:, w:f], firm, self._rft,
             )
             forces.append(wheel_f)
             torques.append(wheel_t)
+        if self._chassis_ids:
+            frame_f, frame_t = rft.frame_loads(
+                self._frame_patches, centre[:, f], lin[:, f], quat[:, f], ang[:, f], self._bed_grid, self._rft,
+            )
+            forces.append(frame_f[:, None])
+            torques.append(frame_t[:, None])
         if forces:
             self.robot.instantaneous_wrench_composer.set_forces_and_torques_index(
                 forces=torch.cat(forces, dim=1),
@@ -171,6 +185,7 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
                 body_ids=ids,
                 is_global=True,
             )
+        body = None                                             # where loose soil may not run: drums, the frame
         if drums:
             drum_axis = rft.drum_axis(quat[:, 2:4])
             self._bed_grid, self._loose, self._fill_kg = rft.excavate(
@@ -179,9 +194,16 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
             )
             if self._rft.repose:
                 body = rft.drum_body(self._cells, centre[:, 2:4], drum_axis, self._bed_grid)
-                self._bed_grid, self._loose = rft.slump(self._bed_grid, self._loose, body, self._rft)
+        if self._chassis_ids:
+            self._bed_grid, self._loose, frame = rft.frame_shove(
+                self._bed_grid, self._loose, centre[:, f], quat[:, f], lin[:, f], self._rft,
+            )
+            if self._rft.repose and bool(frame.any()):          # only where the frame meets the soil
+                body = frame if body is None else body | frame
+        if body is not None:
+            self._bed_grid, self._loose = rft.slump(self._bed_grid, self._loose, body, self._rft)
         if self.cfg.wheel_soil:
-            pressed = rft.press(self._bed_grid, self._cells, centre[:, w:], rft.drum_axis(quat[:, w:]), self._rft, self._fresh_bed)
+            pressed = rft.press(self._bed_grid, self._cells, centre[:, w:f], rft.drum_axis(quat[:, w:f]), self._rft, self._fresh_bed)
             self._loose = (self._loose - (self._bed_grid - pressed)).clamp(min=0.0)
             self._bed_grid = pressed
         # Drawn only for the frames the viewer renders: after this physics step if

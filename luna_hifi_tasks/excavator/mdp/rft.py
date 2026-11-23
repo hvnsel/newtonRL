@@ -42,6 +42,17 @@
 # soil's load on it, in the sideways share of its contact's slip, so a wheel
 # spinning in a skid-steer turn grips less sideways than one drifting.
 #
+# The chassis frame (its rails, crossmembers, deck and masts) is patches over
+# the bottom and sides of its boxes, loaded the same way where they face their
+# motion, each in the vertical plane it moves in. It meets the soil's whole
+# height, loose soil and all, as a blade meets a pile: firm soil holds it up
+# and stops it, and the loose soil its leading end runs into, moving along its
+# length, is bulldozed out past that end, in its own lane. Its depth
+# takes no cohesion: what it pushes is mostly loose soil, which has none, and
+# over its broad flat plates the stand-in would load it all at once at a
+# touch, many times the machine's weight; with depth alone the load builds as
+# it sinks in, a centimetre or two holding the machine up.
+#
 # Positions are env-local metres. Forces and torques are world-frame, torques
 # about the drum's or wheel's axis point. Tensors lead with (E, D): envs, drums
 # (or wheels).
@@ -55,6 +66,9 @@
 #   wheels      wheels = wheel_patches()
 #               force, torque = wheel_loads(wheels, <wheel state>, height, soil)
 #               height = press(height, cells, centre, drum_axis(wheel_quat), soil)
+#   chassis     frame = frame_patches()
+#               force, torque = frame_loads(frame, <chassis state>, height, soil)
+#               height, loose, body = frame_shove(height, loose, <chassis state>, soil)
 #   dumping     height, loose = deposit(height, loose, cells, centre, drum_axis(shroud_quat), kg, soil)
 
 from __future__ import annotations
@@ -66,6 +80,7 @@ from typing import NamedTuple
 import torch
 
 from ..excavator import (
+    FRAME_BOXES,
     GROUSER_HALF_T,
     GROUSER_PROTRUDE,
     POCKET_ARC,
@@ -84,6 +99,7 @@ from ..excavator import (
 V_STILL = 0.005     # m/s; below this a patch's force fades to zero
 V_SLIDE = 0.05      # m/s; a tyre sliding sideways this fast has half its grip, smooth for 0.01 s steps
 SPIN_STILL = 0.3    # rad/s; below this the carrying torque fades to zero
+V_SHOVE = 0.01      # m/s; the frame bulldozes only moving along its length faster than this
 
 
 @dataclass
@@ -474,3 +490,117 @@ def press(height, cells, centre, axis, soil: Soil, start=None) -> torch.Tensor:
     if start is not None and math.isfinite(soil.compaction):
         tyre = torch.maximum(tyre, start[gy, gx] - soil.compaction)
     return height.reshape(E, -1).scatter_reduce(1, (gy * nx + gx).reshape(E, -1), tyre.reshape(E, -1), "amin").reshape(E, ny, nx)
+
+
+def frame_patches(boxes=FRAME_BOXES, spacing: float = 0.05, device="cpu") -> Patches:
+    """The chassis frame in its body frame: patches about `spacing` apart over
+    the bottom and the four sides of each of its boxes, (centre, half size)
+    pairs, but none on a face another box covers. Tops are left out: they face
+    the soil only buried."""
+    pos, normal, area = [], [], []
+    for c, h in boxes:
+        c, h = torch.tensor(c), torch.tensor(h)
+        for k, sign in ((2, -1.0), (0, 1.0), (0, -1.0), (1, 1.0), (1, -1.0)):
+            a, b = [j for j in range(3) if j != k]          # the face's own two axes
+            na, nb = (max(1, round(2.0 * float(h[j]) / spacing)) for j in (a, b))
+            p = torch.zeros(na, nb, 3)
+            p[..., a] = ((torch.arange(na) + 0.5) / na * 2.0 - 1.0)[:, None] * h[a]
+            p[..., b] = ((torch.arange(nb) + 0.5) / nb * 2.0 - 1.0)[None, :] * h[b]
+            p[..., k] = sign * h[k]
+            p = (p + c).reshape(-1, 3)
+            n = torch.zeros(3)
+            n[k] = sign
+            pos.append(p)
+            normal.append(n.expand_as(p))
+            area.append(torch.full((len(p),), 4.0 * float(h[a] * h[b]) / (na * nb)))
+    pos, normal, area = torch.cat(pos), torch.cat(normal), torch.cat(area)
+    # Just outside a covered face lies inside the box covering it.
+    out = pos + 1e-3 * normal
+    covered = torch.stack([((out - torch.tensor(c)).abs() < torch.tensor(h)).all(-1) for c, h in boxes]).any(0)
+    return Patches(pos[~covered].to(device), normal[~covered].to(device), area[~covered].to(device))
+
+
+def frame_loads(patches: Patches, centre, lin, quat, ang, height, soil: Soil) -> tuple[torch.Tensor, torch.Tensor]:
+    """Soil force and torque on the chassis frame, (E, 3) each, the torque
+    about its origin. As on a wheel, a patch is loaded where it faces its
+    motion, from its depth below the surface just beyond its face; but in the
+    vertical plane it moves in (one hardly moving sideways, the frame's
+    length's), from the soil's whole height, loose soil and all, and with no
+    cohesion depth (see the top of this file).
+
+    patches: frame_patches(). centre, lin, ang (E, 3): the chassis origin, its
+    velocity and angular velocity; quat (E, 4) its orientation. height (E, ny,
+    nx): the soil grid.
+    """
+    arm = rotate(quat[:, None, :], patches.pos)
+    normal = rotate(quat[:, None, :], patches.normal)
+    vel = lin[:, None, :] + torch.linalg.cross(ang[:, None, :], arm)
+    point = centre[:, None, :] + arm
+    surface = height_at(height, soil, point[..., :2] + 0.5 * soil.cell * normal[..., :2])
+    depth = (surface - point[..., 2]).clamp(min=0.0)
+    level = torch.tensor([1.0, 1.0, 0.0], device=vel.device)
+    length = rotate(quat, torch.tensor([1.0, 0.0, 0.0], device=quat.device)) * level
+    u = torch.where((vel * level).norm(dim=-1, keepdim=True) > V_STILL, vel * level, length[:, None, :])
+    force = patch_force(normal, vel, patches.area * depth, torch.nn.functional.normalize(u, dim=-1), soil.zeta)
+    force = force * ((normal * vel).sum(-1) > 0.0)[..., None]
+    return force.sum(-2), torch.linalg.cross(arm, force).sum(-2)
+
+
+def frame_shove(height, loose, centre, quat, lin, soil: Soil, boxes=FRAME_BOXES):
+    """Bulldoze: the loose soil standing above the frame's underside in the
+    cells just inside its leading end, two cells deep, pushed out past that end
+    in its own lane, while the frame moves along its length faster than
+    V_SHOVE. Firm soil, and soil further under it, stays and holds it up.
+
+    height, loose (E, ny, nx): the grid and the loose soil on it. centre, lin
+    (E, 3) and quat (E, 4): the chassis origin, its velocity and orientation.
+    boxes: the frame's, as frame_patches(). Returns height, loose and the cells
+    (E, ny, nx) where the frame stands in the soil, for slump() to keep loose
+    soil from running into.
+    """
+    E, ny, nx = height.shape
+    dev = height.device
+    c = torch.tensor([b[0] for b in boxes], device=dev)                       # (B, 3)
+    h = torch.tensor([b[1] for b in boxes], device=dev)
+    # The square of cells round the chassis that the frame can reach over.
+    k = int(math.ceil(2.0 * float((c[:, :2].abs() + h[:, :2]).norm(dim=-1).max()) / soil.cell)) + 4
+    off = torch.arange(k, device=dev) - k // 2
+    ix = torch.floor((centre[:, 0] - soil.lower[0]) / soil.cell).long()[:, None, None] + off
+    iy = torch.floor((centre[:, 1] - soil.lower[1]) / soil.cell).long()[:, None, None] + off[:, None]
+    ix, iy = torch.broadcast_tensors(ix, iy)                                   # (E, k, k)
+    on = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny)
+    index = (iy.clamp(0, ny - 1) * nx + ix.clamp(0, nx - 1)).reshape(E, -1)
+    # Each cell along the frame's length (bx) and across it (by), from its origin.
+    length = rotate(quat, torch.tensor([1.0, 0.0, 0.0], device=dev))
+    across = rotate(quat, torch.tensor([0.0, 1.0, 0.0], device=dev))
+    up = rotate(quat, torch.tensor([0.0, 0.0, 1.0], device=dev))
+    f = torch.nn.functional.normalize(length[:, :2], dim=-1)[:, None, None, :]
+    s = torch.stack([-f[..., 1], f[..., 0]], -1)
+    rel = torch.stack([ix, iy], -1) * soil.cell + torch.tensor(soil.lower, device=dev) + 0.5 * soil.cell \
+        - centre[:, None, None, :2]
+    bx, by = (rel * f).sum(-1), (rel * s).sum(-1)
+    # The underside over each cell, the lowest box bottom there, in the world.
+    inside = ((bx[..., None] - c[:, 0]).abs() <= h[:, 0]) & ((by[..., None] - c[:, 1]).abs() <= h[:, 1])
+    bottom = torch.where(inside, c[:, 2] - h[:, 2], math.inf).min(-1).values
+    under = torch.isfinite(bottom) & on
+    z = (centre[:, 2, None, None] + length[:, 2, None, None] * bx + across[:, 2, None, None] * by
+         + up[:, 2, None, None] * torch.where(under, bottom, 0.0))
+    here = height.reshape(E, -1).gather(1, index).reshape(E, k, k)
+    over = torch.where(under, here - z, 0.0).clamp(min=0.0)
+    run = (lin[:, :2] * f[:, 0, 0]).sum(-1)
+    way = torch.where(run.abs() > V_SHOVE, torch.sign(run), 0.0)[:, None, None]
+    # The leading end of the boxes in each cell's lane, along the way it moves.
+    lane = (by[..., None] - c[:, 1]).abs() <= h[:, 1]
+    end = torch.where(lane, way[..., None] * c[:, 0] + h[:, 0], 0.0).max(-1).values
+    front = end - way * bx <= 2.0 * soil.cell
+    moved = torch.minimum(over, loose.reshape(E, -1).gather(1, index).reshape(E, k, k)) * way.abs() * front
+    # Out half a cell past that end.
+    to = centre[:, None, None, :2] + (way * (end + 0.5 * soil.cell))[..., None] * f + by[..., None] * s
+    jx = torch.floor((to[..., 0] - soil.lower[0]) / soil.cell).long().clamp(0, nx - 1)
+    jy = torch.floor((to[..., 1] - soil.lower[1]) / soil.cell).long().clamp(0, ny - 1)
+    flat = moved.reshape(E, -1)
+    shift = torch.zeros(E, ny * nx, device=dev).scatter_add_(1, index, -flat)
+    shift = shift.scatter_add_(1, (jy * nx + jx).reshape(E, -1), flat).reshape(E, ny, nx)
+    stands = (under & (z < here)).reshape(E, -1).float()
+    body = torch.zeros(E, ny * nx, device=dev).scatter_reduce_(1, index, stands, "amax") > 0.5
+    return height + shift, loose + shift, body.reshape(E, ny, nx)

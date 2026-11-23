@@ -871,6 +871,11 @@ class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     # off, rft.py carries them and their tyres press ruts, and the ground drops
     # to the bed floor, so the machine can drive down into its own cuts.
     wheel_soil: bool = True
+    # The chassis frame on the soil too, with wheel_soil: the soil holds it up
+    # and resists it where it reaches in, and it bulldozes the loose soil in its
+    # way (rft.frame_loads, frame_shove). Off in training: the policies trained
+    # without it. The site turns it on.
+    chassis_soil: bool = False
 
     # Soil pushed out of the work area costs w_unheld - w_removal = 1.75 per kg.
     w_unheld = 3.0

@@ -42,9 +42,10 @@
 # a staircase, in a box (box[0] > 0), by run_strokes() (luna_hifi_tasks/planner/
 # strokes.py): the machine goes round it on a ring road RING out from the box,
 # turns in from it along a stroke, either end first, and digs the stroke's
-# passes one after another with the drum leading. Once that drum is about
-# full it backs out and pours both outside the ring, on the sides no stroke is
-# entered from. It runs until every stroke is at its target, out of time or
+# passes one after another with one drum a trip, the one leading as the trip
+# begins. Once that drum is about full it backs out and pours it outside the
+# ring, on the sides no stroke is entered from. It turns only on the ring road,
+# never in the pit. It runs until every stroke is at its target, out of time or
 # the machine fails; a drive short of its goal is commanded there again. It
 # spawns on the ring west of the box.
 
@@ -111,6 +112,7 @@ class ExcavatorSiteEnvCfg(ExcavatorExcavateRftEnvCfg):
     max_env_excursion = 24.0
     # Ruts and the spots it turns on stop sinking 3 cm down: hours of traffic, not one episode.
     soil_compaction: float = 0.03
+    chassis_soil: bool = True                  # the frame meets the soil: high-centring, bulldozing
     # Dumping: the front inlet dump_tilt off straight down, its load laid out at dump_rate.
     dump_tilt: float = 0.0                     # rad
     dump_rate: float = 30.0                    # kg/s
@@ -183,7 +185,9 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
     def begin_pass(self, anchor_x: float, anchor_y: float, plane_z: float, heading: float, drum: int = 0) -> float:
         """A dig pass heading the given yaw, its work area anchored at
         (anchor_x, anchor_y) and its plane at plane_z, env-local: the depth
-        below the work area's mean surface, kept inside the trained range.
+        below the work area's mean surface, no deeper than trained, and never
+        below plane_z, so shallower than trained (or above the mean) where the
+        area already stands within the trained shallowest of it.
         Drum 1, the rear, digs with the machine facing the other way, reversing
         along the pass: the dig policy sees and drives it as its front. Returns
         the depth."""
@@ -194,8 +198,7 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         self._set_work_area(ids, anchor, yaw)
         work = self._work_mask & (self._bed_grid > BED_FLOOR_Z + 0.5 * self.cfg.voxel_size)
         mean = (self._bed_grid * work).sum(dim=(1, 2)) / work.sum(dim=(1, 2)).clamp_min(1)
-        lo, hi = self.cfg.cut_depth_range
-        depth = (mean - plane_z).clamp(lo, hi)
+        depth = (mean - plane_z).clamp(max=self.cfg.cut_depth_range[1])
         arm = torch.full((1,), self.cfg.arm_start_angle, device=self.device)     # ready() put the arms there
         self._turned = drum == 1
         self._begin_pass(ids, anchor, o[:, 2] + mean, yaw, arm, depth, torch.zeros(1, 2, device=self.device))
@@ -668,13 +671,16 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
     every stroke is at its target. Before each move the planner gets the bed's
     heights and picks a stroke, the way along it and the level. The machine
     goes round the ring road to where the stroke is entered and drives in to
-    each pass's start in turn, either end first, and digs with the drum
-    leading along the pass, front or rear alike, from the dig's start pose.
-    Once that drum is as full as the dig's training counts full, it backs out,
-    goes round to the piles, empties both drums and comes back. Given save,
-    the bed's heights go to that .npz after every move and where the run
-    stops (StrokeSite.save). Returns a row per move and how the run ended:
-    done, out of time or the machine failed."""
+    each pass's start in turn, digging from the dig's start pose with one drum
+    a trip: the one leading as the trip's first pass begins, front or rear
+    alike. Once it is as full as the dig's training counts full, the machine
+    backs out, goes round to the piles, pours it and comes back. It turns only
+    on the ring road, never in the pit: at the gate if it faces the wrong way
+    for its drum, and at the piles; if navigation swings it round in the pit,
+    it backs out to the gate to turn there. Given save, the bed's heights go
+    to that .npz after every move and where the run stops (StrokeSite.save).
+    Returns a row per move and how the run ended: done, out of time or the
+    machine failed."""
     u, c = env.unwrapped, site.cfg
     full = u.cfg.fill_success_fraction * u.cfg.target_load_kg
     m = Machine(env, dig, nav, record, max_minutes)
@@ -692,35 +698,48 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
         """The drum leading along yaw: the front if the machine faces it, else the rear."""
         return 0 if m.facing(yaw) else 1
 
+    def carrying() -> int | None:
+        """This trip's drum: the one holding soil; None between trips, both empty."""
+        loads = [m.load(0), m.load(1)]
+        return max((0, 1), key=loads.__getitem__) if max(loads) >= DUMP_MIN_KG else None
+
     def dig(i: int, way: int, a: float, level: float, gate: tuple[float, float]) -> tuple[int, bool]:
         """A pass on stroke i running `way`, anchored at a, down to level, with
-        the drum leading along it. In to its start either end first; within
+        this trip's drum leading, or between trips whichever leads. With that
+        drum full, out to pour it first. In to the pass's start, turned first
+        at the gate if the machine faces the wrong way for its drum; within
         15 cm past it, as after the pass before, from where it is: the passes
-        overlap by more. With that drum full, out to empty the drums first.
-        The drum that dug, and whether it went to the piles."""
-        s, trip = site.strokes[i], False
+        overlap by more. Swung round in the pit, it backs out to the gate,
+        turns there and goes in again. The drum that dug, and whether it went
+        to the piles."""
+        s, trip, d = site.strokes[i], False, carrying()
         yaw, start = s.yaw(way), s.point(a - way * u.dig_reach)
+        if d is not None and m.load(d) >= full:
+            m.drive([gate], yaw, loose=True)
+            empty(gate, yaw)
+            trip, d = True, None
         while True:
-            if m.load(leading(yaw)) >= full:
-                m.drive([gate], yaw, loose=True)
-                empty(gate, yaw)
-                trip = True
             x, y = m.here()
             along = (x - start[0]) * math.cos(yaw) + (y - start[1]) * math.sin(yaw)
             off = abs((y - start[1]) * math.cos(yaw) - (x - start[0]) * math.sin(yaw))
             if off > 0.05 or not -0.05 <= along <= 0.15:
+                if d is not None and leading(yaw) != d:
+                    m.drive([gate], yaw, loose=True)
+                    m.turn_round()
                 m.drive([start], yaw)
-            if m.load(leading(yaw)) < full:     # else it came in the other end first, that drum full
+            d = leading(yaw) if d is None else d
+            if leading(yaw) == d:
                 break
-        d = leading(yaw)
+            m.drive([gate], yaw, loose=True)        # swung round in the pit: out to turn on the ring road
+            m.turn_round()
         m.dig_pass(s.point(a), u.cfg.bed_top + level, yaw, d)
         return d, trip
 
     def empty(back_to=None, yaw: float = 0.0) -> None:
         """Round the ring to the nearest stop whose pile stands under PILE_MAX
-        (all full: the lowest) and pour the drum facing out of the ring; the
-        other too if it holds soil, after half a turn on the spot. Then, given
-        back_to, round to it, either end first."""
+        (all full: the lowest) and pour the drum holding soil, half a turn on
+        the spot first if it faces into the ring (the other too, should it hold
+        any). Then, given back_to, round to it, either end first."""
         for _ in range(2):
             loaded = [k for k in (0, 1) if m.load(k) >= DUMP_MIN_KG]
             if not loaded:
@@ -761,6 +780,10 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
                 dug[d] += 1
                 trips += trip
             m.drive([gate], yaw, loose=True)
+            d = carrying()
+            if d is not None and m.load(d) >= full:     # out at the gate already: pour it now
+                empty()
+                trips += 1
             look()
             site.record(i, before, site.level(i))
             if save:

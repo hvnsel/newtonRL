@@ -423,6 +423,20 @@ def _arm_assembly(
 # Frame geoms, all fixed to the chassis body.
 # ---------------------------------------------------------------------------
 
+# The boxes of _FRAME_PARTS below as (centre, half size), chassis frame: the
+# rails, crossmembers, deck and masts, for the soil to meet (mdp/rft.py).
+_MAST_X = AXLE_X + 0.5 * MAST_OFFSET_X
+_MAST_HALF = (0.5 * MAST_OFFSET_X + MAST_HALF[0], MAST_HALF[1], MAST_HALF[2])
+FRAME_BOXES = (
+    ((0.0, RAIL_Y, 0.0), (AXLE_X + RAIL_HALF_W, RAIL_HALF_W, RAIL_HALF_H)),
+    ((0.0, -RAIL_Y, 0.0), (AXLE_X + RAIL_HALF_W, RAIL_HALF_W, RAIL_HALF_H)),
+    ((AXLE_X, 0.0, 0.0), (RAIL_HALF_W, RAIL_Y, RAIL_HALF_H)),
+    ((-AXLE_X, 0.0, 0.0), (RAIL_HALF_W, RAIL_Y, RAIL_HALF_H)),
+    ((0.0, 0.0, DECK_Z), DECK_HALF),
+    ((_MAST_X, 0.0, 0.5 * MAST_TOP_Z), _MAST_HALF),
+    ((-_MAST_X, 0.0, 0.5 * MAST_TOP_Z), _MAST_HALF),
+)
+
 _FRAME_PARTS = [
     # side rails, running the length of the machine
     f'<geom name="rail_left" type="box" pos="0 {RAIL_Y} 0" '

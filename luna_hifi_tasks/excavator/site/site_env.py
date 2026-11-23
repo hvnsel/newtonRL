@@ -715,8 +715,8 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
                     m.drive([start], yaw)
                 if m.facing(face):
                     return
-            except Missed:
-                pass
+            except Missed as miss:
+                print(f"[site] {miss}; backing out to the gate to go again", flush=True)
             m.drive([gate], yaw, loose=True)
             m.face(face)
         raise Missed(f"did not get in to {tuple(round(v, 2) for v in start)} in {DRIVE_TRIES} goes")

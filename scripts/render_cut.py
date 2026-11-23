@@ -91,15 +91,20 @@ def render_3d(c: dict, out: str) -> None:
     v.camera.look_at(Vec3(bx0 + 0.6 * length, 0.5 * (by0 + by1), -0.8 * deep))
     v.camera.fov = math.degrees(2.0 * math.atan(15.2908 / (2.0 * FOCAL)))
 
+    # The mesh on the viewer's device, its model's (the CPU): it reads the arrays
+    # there, and one on a GPU would be read by a CPU kernel and crash.
+    dev = v.device
     X, Y = np.meshgrid(x, y)
-    points = wp.array(np.stack([X, Y, z], -1).reshape(-1, 3).astype(np.float32), dtype=wp.vec3)
+    points = wp.array(np.stack([X, Y, z], -1).reshape(-1, 3).astype(np.float32), dtype=wp.vec3, device=dev)
     j, i = np.meshgrid(np.arange(ny - 1), np.arange(nx - 1), indexing="ij")
     q = (j * nx + i).reshape(-1)
     # Two triangles per square of four cell centres, anticlockwise seen from above.
-    tris = wp.array(np.stack([q, q + 1, q + nx + 1, q, q + nx + 1, q + nx], -1).reshape(-1).astype(np.int32), dtype=wp.int32)
+    tris = wp.array(np.stack([q, q + 1, q + nx + 1, q, q + nx + 1, q + nx], -1).reshape(-1).astype(np.int32),
+                    dtype=wp.int32, device=dev)
     j, i = np.meshgrid(np.arange(ny), np.arange(nx), indexing="ij")
     # Texel (j, i) is cell (j, i): the viewer flips an image's rows on upload.
-    uvs = wp.array(np.stack([(i + 0.5) / nx, 1.0 - (j + 0.5) / ny], -1).reshape(-1, 2).astype(np.float32), dtype=wp.vec2)
+    uvs = wp.array(np.stack([(i + 0.5) / nx, 1.0 - (j + 0.5) / ny], -1).reshape(-1, 2).astype(np.float32),
+                   dtype=wp.vec2, device=dev)
     texture = (255.0 * colours(c)).round().astype(np.uint8)
     for _ in range(2):          # log_mesh leaves the texture off: it is turned on once the mesh is made
         v.begin_frame(0.0)
@@ -204,9 +209,10 @@ def main() -> None:
     p.add_argument("cut", help="the .npz site_run.py saved, <video>_cut.npz")
     path = p.parse_args().cut
     c, stem = load(path), str(Path(path).with_suffix(""))
-    render_3d(c, f"{stem}_3d.png")
     render_sections(c, f"{stem}_sections.png")
-    print(f"{stem}_3d.png\n{stem}_sections.png")
+    print(f"{stem}_sections.png", flush=True)
+    render_3d(c, f"{stem}_3d.png")
+    print(f"{stem}_3d.png")
 
 
 if __name__ == "__main__":

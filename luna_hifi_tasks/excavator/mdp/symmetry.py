@@ -1,5 +1,6 @@
-# The navigate machine turned 180 degrees about z, as rsl_rl's symmetry
-# augmentation (RslRlSymmetryCfg.data_augmentation_func).
+# The machine turned 180 degrees about z: navigate's observations for rsl_rl's
+# symmetry augmentation (RslRlSymmetryCfg.data_augmentation_func), and the
+# proprioception the site's dig policy reads digging with the rear drum.
 #
 # Turned round, body x and y negate and z stays; world-frame terms stay. The
 # wheels swap diagonally (fl <-> rr, rl <-> fr) and spin the other way; the
@@ -91,6 +92,20 @@ def turn_group(key: str, x: torch.Tensor) -> torch.Tensor:
 
 def turn_actions(actions: torch.Tensor) -> torch.Tensor:
     return actions * torch.tensor(ACTION_SIGN, device=actions.device, dtype=actions.dtype)
+
+
+def turn_proprio(p: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Proprioception (ExcavatorEnvBase._proprio) as the machine turned round
+    reads it: the site's rear drum digging, seen by the dig policy as its front."""
+    sign = p["base_lin_vel"].new_tensor(_XY[1])
+    wheels, ends = list(_WHEELS[0]), list(_ENDS[0])
+    out = {k: p[k] * sign for k in ("base_lin_vel", "base_ang_vel", "projected_gravity")}
+    out["wheel_vel"] = -p["wheel_vel"][:, wheels]
+    for k in ("arm_pos", "arm_vel", "drum_vel", "shroud_pos", "arm_torque", "drum_torque"):
+        out[k] = p[k][:, ends]
+    sin, cos = p["drum_phase"].chunk(2, dim=-1)
+    out["drum_phase"] = torch.cat([sin[:, ends], cos[:, ends]], dim=-1)
+    return out
 
 
 @torch.no_grad()

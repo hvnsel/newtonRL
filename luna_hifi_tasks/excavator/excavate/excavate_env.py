@@ -26,6 +26,7 @@ from ..excavator_cfg import MAX_WHEEL_SPEED, MAX_YAW_SPEED, usd_status
 from ..excavator_env_base import ExcavatorEnvBase
 from ..mdp import rewards as R
 from ..mdp.sensors import inside_drum, mpm_grid_particle_mass, mpm_particle_state, soil_heightmap
+from ..mdp.symmetry import turn_proprio
 from ..mdp.terrain import (
     degrade_scan,
     dig_critic_far_pattern,
@@ -152,8 +153,12 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         _, dig_arm = cfg.boom_command_for_cut(cfg.dig_cut)
         self._dig_arm = torch.full((E,), dig_arm, device=dev)
         self._dig_shroud = cfg.dig_inlet_tilt - self._dig_arm
-        self._arm_pivot_id = self.robot.find_bodies(["arm_front_body"])[0][0]
-        # The policy's offsets on the front arm's and front shroud's dig angles, rad.
+        self._arm_pivot_ids = self.robot.find_bodies(["arm_front_body", "arm_rear_body"], preserve_order=True)[0]
+        # Turned: the rear drum digs, the machine turned round (the site). The
+        # policy sees and drives it as its front: its observations and actions
+        # are the front's, mirrored (mdp/symmetry). Training never turns.
+        self._turned = False
+        # The policy's offsets on the digging arm's and shroud's dig angles, rad.
         self._arm_offset = torch.zeros(E, device=dev)
         self._shroud_offset = torch.zeros(E, device=dev)
         self._drum_digs = torch.tensor([1.0, float(cfg.dig_rear_drum)], device=dev)
@@ -243,13 +248,13 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         s = c.action_smoothing
         self._prev_actions[:] = self._actions
         self._actions[:] = (1.0 - s) * actions.clamp(-1.0, 1.0) + s * self._actions
-        # Once the ramp is done, a2 moves the front arm: its rate, summed into an
+        # Once the ramp is done, a2 moves the digging arm: its rate, summed into an
         # offset on the dig angle that keeps the arm inside its range.
         driving = self._since_settle >= self._ramp_steps
         lo, hi = c.arm_range
         step = c.dig_arm_rate * self.step_dt * self._actions[:, 2] * driving
         self._arm_offset = (self._arm_offset + step).clamp(lo - self._dig_arm, hi - self._dig_arm)
-        # a3 turns the front shroud the same way, on top of the turn that follows
+        # a3 turns the digging shroud the same way, on top of the turn that follows
         # the arm, keeping the shroud inside its range.
         lo, hi = SHROUD_RANGE
         held = self._dig_shroud - self._arm_offset
@@ -264,23 +269,25 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # Drive: dig_forward * a0 of top speed, either way. Yaw rate: a hold that
         # keeps the front drum on the pass line through the anchor, plus
         # dig_steer_rate * a1. Wheels held until the ramp is done.
-        rel = self._drum_poses()[0][:, 0, :2] - self._target_xy
+        k = self._digger
+        rel = self._drum_poses()[0][:, k, :2] - self._target_xy
         off = rel[:, 1] * torch.cos(self._work_yaw) - rel[:, 0] * torch.sin(self._work_yaw)   # m left of the line
         hold = (-c.line_hold_gain * off).clamp(-c.dig_yaw_rate, c.dig_yaw_rate)
-        forward = torch.where(driving, c.dig_forward * a[:, 0], torch.zeros_like(off))
+        ahead = -1.0 if self._turned else 1.0                 # turned round, its ahead is the body's back
+        forward = torch.where(driving, ahead * c.dig_forward * a[:, 0], torch.zeros_like(off))
         yaw_rate = torch.where(driving, hold + c.dig_steer_rate * a[:, 1], torch.zeros_like(off))
         self._apply_drive(forward, yaw_rate / MAX_YAW_SPEED)
         self._update_lead()
         # Front drum to the dig pose; the rear one too only with dig_rear_drum,
         # else it stays at its start pose, still.
-        ramp = ramp.unsqueeze(-1) * self._drum_digs
+        ramp = ramp.unsqueeze(-1) * (self._drum_digs.flip(0) if self._turned else self._drum_digs)
         start = self._arm_start.unsqueeze(-1)
         arm = start + ramp * (self._dig_arm.unsqueeze(-1) - start)
         shroud = ramp * self._dig_shroud.unsqueeze(-1)
-        # The policy's offset on the front arm. Its shroud turns back by the
+        # The policy's offset on the digging arm. Its shroud turns back by the
         # same angle, so the inlet keeps its tilt, plus the policy's own offset.
-        arm[:, 0] += self._arm_offset
-        shroud[:, 0] += self._shroud_offset - self._arm_offset
+        arm[:, k] += self._arm_offset
+        shroud[:, k] += self._shroud_offset - self._arm_offset
         self._apply_arms(arm)
         self._apply_drums(ramp * c.dig_drum_speed)
         self._apply_shrouds(shroud)
@@ -288,6 +295,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
     # ------------------------------------------------------------------
     # soil sensing
     # ------------------------------------------------------------------
+
+    @property
+    def _digger(self) -> int:
+        """The drum the policy digs with: 0 the front, 1 the rear (turned)."""
+        return 1 if self._turned else 0
 
     def _update_lead(self) -> None:
         """Lead drum from the sign of the commanded drive; held inside
@@ -460,7 +472,11 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
 
     def _get_observations(self) -> dict:
         c = self.cfg
-        p = self._proprio()
+        p, fill = self._proprio(), self._fill_observed()
+        if self._turned:
+            # The rear drum read as the front. The front, full by then, reads as
+            # the rear did in training: empty, as it never dug there.
+            p, fill = turn_proprio(p), torch.stack([fill[:, 1], torch.zeros_like(fill[:, 1])], dim=-1)
         actor_scan, critic_scan = self._scans(self._soil()[0])
         cut = self._cut_state(actor_scan)
         policy = DIG_OBS.assemble({
@@ -475,7 +491,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             "drum_phase": p["drum_phase"],
             "arm_torque": p["arm_torque"],
             "drum_torque": p["drum_torque"],
-            "drum_fill": self._fill_observed(),
+            "drum_fill": fill,
             "target_level": cut["target_level"],
             "grad_forward": cut["grad_forward"],
             "grad_lateral": cut["grad_lateral"],
@@ -532,8 +548,9 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         # During the settle the dig arm angle is set so the ramp puts the vane
         # tips dig_cut into the ground under the front drum, or at the plane if
         # that lies higher: the arm's change in world angle from where it is now.
-        drum = self._drum_poses()[0][:, 0]
-        pivot = d.body_link_pos_w.torch[:, self._arm_pivot_id, 2]
+        k = self._digger
+        drum = self._drum_poses()[0][:, k]
+        pivot = d.body_link_pos_w.torch[:, self._arm_pivot_ids[k], 2]
         ground = self.scene.env_origins[:, 2] + sample_height_grid(
             self._bed_grid, drum[:, None, :2], self.scene.env_origins, c.bed_grid_lower, c.voxel_size, c.bed_top,
         )[:, 0]
@@ -543,7 +560,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
             return torch.asin(((pivot - z) / ARM_LEN).clamp(-1.0, 1.0))
 
         lo, hi = c.arm_range
-        dig = d.joint_pos.torch[:, self._arm_ids[0]] + below_level(centre) - below_level(drum[:, 2])
+        dig = d.joint_pos.torch[:, self._arm_ids[k]] + below_level(centre) - below_level(drum[:, 2])
         self._dig_arm = torch.where(self._cut_fresh, dig.clamp(lo, hi), self._dig_arm)
         self._dig_shroud = c.dig_inlet_tilt - self._dig_arm
 
@@ -559,7 +576,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         elif c.fill_success_mode == "mean":
             self._drum_full = fill_frac.mean(dim=-1) >= c.fill_success_fraction
         else:
-            self._drum_full = R.front_drum_full(fill_frac, c.fill_success_fraction)
+            self._drum_full = R.front_drum_full(fill_frac.flip(-1) if self._turned else fill_frac, c.fill_success_fraction)
 
         above = cut["above_volume"]
         self._above_init = torch.where(self._cut_fresh, above, self._above_init)
@@ -694,7 +711,7 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         failed = self._failed()
         self._nonfinite_now = self._nonfinite_state()
         heading = torch.stack([torch.cos(self._work_yaw), torch.sin(self._work_yaw)], dim=-1)
-        front = self._drum_poses()[0][:, 0, :2]
+        front = self._drum_poses()[0][:, self._digger, :2]
         self._pass_done = ((front - self._target_xy) * heading).sum(dim=-1) >= self.cfg.work_area_length
         terminated = failed | self._nonfinite_now | self._pass_done
         if self.cfg.terminate_early:
@@ -872,8 +889,8 @@ class ExcavatorExcavateEnv(ExcavatorEnvBase):
         """Start a pass in these envs: the work area at anchor_xy (world) facing
         yaw, the plane depth under the ground surface (world z) there and
         sloping grad_b (body frame); _get_rewards re-places it under the work
-        area's mean surface during the settle. The ramp lowers the front arm from
-        arm. The machine, the soil and the drums' load stay as they are."""
+        area's mean surface during the settle. The ramp lowers the digging arm
+        from arm. The machine, the soil and the drums' load stay as they are."""
         floor = self.scene.env_origins[env_ids, 2] + BED_FLOOR_Z
         self._arm_start[env_ids] = arm
         self._arm_offset[env_ids] = 0.0

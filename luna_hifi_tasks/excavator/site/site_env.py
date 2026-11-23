@@ -7,11 +7,13 @@
 #          from in training (both arms at arm_start_angle, shrouds 0), drums still.
 #   dig    a pass of the excavate policy. begin_pass() puts the work area and
 #          the plane where the planner says; the settle, ramp, line hold and
-#          actions are the excavate env's, as in training, from that pose.
+#          actions are the excavate env's, as in training, from that pose. With
+#          the front drum, or the rear with the machine turned round, the policy
+#          reading it as its front (mdp/symmetry.turn_proprio).
 #   drive  the navigate policy, waypoint by waypoint along a route to a goal
 #          pose. nav_obs() is its observation; its [forward, yaw] drive the
 #          wheels as in navigate, the arms stowed, the drums still, the inlets up.
-#   dump   scripted: wheels held, the front inlet turned down and its drum
+#   dump   scripted: wheels held, one drum's inlet turned down and the drum
 #          reversed, its load laid on the bed under it.
 #
 # The soil steps in every mode, with the wheels on it.
@@ -38,9 +40,12 @@
 # Or a site cut in strokes along x and along y, an L, a hole or a trench down
 # a staircase, in a box (box[0] > 0), by run_strokes() (luna_hifi_tasks/planner/
 # strokes.py): the machine goes round it on a ring road RING out from the box,
-# turns in from it along a stroke, digs the stroke's passes one after another
-# until the drum is about full, backs out, and pours outside the ring on its +x
-# and +y sides. It spawns on the ring west of the box.
+# turns in from it along a stroke and digs the stroke's passes one after
+# another, with the front drum until it is about full, then with the rear, the
+# machine turned round at the ring. With both full it backs out and pours them
+# outside the ring, on the sides no stroke is entered from. A drive in that
+# misses is tried again from the ring, and soil a stroke pushes onto the next
+# step's start is levelled. It spawns on the ring west of the box.
 
 from __future__ import annotations
 
@@ -72,6 +77,10 @@ TURN_TRIES = 4              # turns on the spot to face the other way before the
 DRIVE_SECONDS, PASS_SECONDS, DUMP_SECONDS, READY_SECONDS = 90.0, 40.0, 15.0, 3.0
 RING = STAGE + REACH        # m from a stroke site's edge out to the ring road: the drum STAGE short, lined up there
 PILE_MAX = 0.4              # m a pile stands before the next load goes on another: the inlet pours from 0.7 m up
+DRIVE_TRIES = 3             # goes at reaching a pass's start, backing out to the stroke's gate between them
+# After a stroke, the soil its last pass pushed onto the next step's start: over
+# CLEAN_RISE above that step's level within CLEAN_RUN of its start, one pass there levels it.
+CLEAN_RISE, CLEAN_RUN = 0.05, 0.3
 
 
 def box_corner(cfg) -> tuple[float, float]:
@@ -170,14 +179,16 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         self._goal_yaw = torch.zeros(1, device=dev)
         self._held = 0
         self._dumps = 0
+        self._pouring = 0           # the drum a dump empties: 0 the front, 1 the rear
 
     # --- the runner's commands ---
 
-    def begin_pass(self, anchor_x: float, anchor_y: float, plane_z: float, heading: float) -> float:
+    def begin_pass(self, anchor_x: float, anchor_y: float, plane_z: float, heading: float, drum: int = 0) -> float:
         """A dig pass heading the given yaw, its work area anchored at
         (anchor_x, anchor_y) and its plane at plane_z, env-local: the depth
         below the work area's mean surface, kept inside the trained range.
-        Returns that depth."""
+        Drum 1, the rear, digs with the machine turned round: the dig policy
+        sees and drives it as its front. Returns the depth."""
         ids = torch.zeros(1, dtype=torch.long, device=self.device)
         o = self.scene.env_origins
         anchor = o[:, :2] + torch.tensor([[anchor_x, anchor_y]], device=self.device)
@@ -188,7 +199,9 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         lo, hi = self.cfg.cut_depth_range
         depth = (mean - plane_z).clamp(lo, hi)
         arm = torch.full((1,), self.cfg.arm_start_angle, device=self.device)     # ready() put the arms there
+        self._turned = drum == 1
         self._begin_pass(ids, anchor, o[:, 2] + mean, yaw, arm, depth, torch.zeros(1, 2, device=self.device))
+        self._lead[:] = drum                    # the actor's scan and the cut command at the digging drum
         self.mode = "dig"
         return float(depth[0])
 
@@ -208,8 +221,9 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         self._held = 0
         self.mode = "drive"
 
-    def begin_dump(self) -> None:
+    def begin_dump(self, drum: int = 0) -> None:
         self._dumps += 1
+        self._pouring = drum
         self.mode = "dump"
 
     def begin_ready(self) -> None:
@@ -313,7 +327,7 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         return mask
 
     def dumped(self) -> bool:
-        return bool(self._fill_kg[0, 0] < 0.5)
+        return bool(self._fill_kg[0, self._pouring] < 0.5)
 
     # --- actions ---
 
@@ -345,20 +359,23 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         self._step_soil(drums=self.mode == "dump")
 
     def _pour(self) -> None:
-        """Front inlet down and drum reversed; once the inlet is there, its
-        load goes onto the bed under it at dump_rate."""
-        c, d, dev = self.cfg, self.robot.data, self.device
+        """The pouring drum's inlet down and the drum reversed, the other's inlet
+        up; once the inlet is there, its load goes onto the bed under it at dump_rate."""
+        c, d, dev, k = self.cfg, self.robot.data, self.device, self._pouring
         pour = c.dump_tilt - self._nav.arm_hold_angle
-        self._apply_shrouds(torch.tensor([[pour, math.pi]], device=dev))
-        self._apply_drums(torch.tensor([[-c.dig_drum_speed, 0.0]], device=dev))
-        if abs(float(d.joint_pos.torch[0, self._shroud_ids[0]]) - pour) > 0.1:
+        shrouds = torch.full((1, 2), math.pi, device=dev)
+        drums = torch.zeros(1, 2, device=dev)
+        shrouds[:, k], drums[:, k] = pour, -c.dig_drum_speed
+        self._apply_shrouds(shrouds)
+        self._apply_drums(drums)
+        if abs(float(d.joint_pos.torch[0, self._shroud_ids[k]]) - pour) > 0.1:
             return
-        kg = self._fill_kg[:, 0].clamp(max=c.dump_rate * self._dig_dt)
-        body = self._shroud_body_ids[0]
+        kg = self._fill_kg[:, k].clamp(max=c.dump_rate * self._dig_dt)
+        body = self._shroud_body_ids[k]
         centre = d.body_link_pos_w.torch[:, body] - self.scene.env_origins
         axis = rft.drum_axis(d.body_link_quat_w.torch[:, body])
         self._bed_grid, self._loose = rft.deposit(self._bed_grid, self._loose, self._cells, centre, axis, kg, self._rft)
-        self._fill_kg[:, 0] -= kg
+        self._fill_kg[:, k] -= kg
 
     def _get_rewards(self) -> torch.Tensor:
         """The dig's, digging; nothing otherwise: nothing reads them, and a pass starts its own afresh."""
@@ -376,6 +393,10 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         super()._get_dones()
         none = torch.zeros_like(self._pass_done)
         return none, none
+
+
+class Missed(RuntimeError):
+    """A drive that did not reach its goal in time."""
 
 
 class Machine:
@@ -425,9 +446,9 @@ class Machine:
         """Whether its front is toward yaw, not away from it."""
         return math.cos(float(self.u._base_yaw()[0]) - yaw) > 0.0
 
-    def load(self) -> float:
-        """kg in the front drum."""
-        return float(self.u._fill_kg[0, 0])
+    def load(self, drum: int = 0) -> float:
+        """kg in the front drum, or the rear (1)."""
+        return float(self.u._fill_kg[0, drum])
 
     def drive(self, route, yaw: float, loose: bool = False) -> dict:
         """To the route's end, along yaw either way; a loose stop is done within LOOSE_M and LOOSE_DEG."""
@@ -444,7 +465,7 @@ class Machine:
         dist, herr = u.goal_error()
         goal = tuple(round(v, 2) for v in route[-1])
         if dist > LOOSE_M or abs(herr) > math.radians(LOOSE_DEG):
-            raise RuntimeError(f"did not reach {goal} in {DRIVE_SECONDS:g} s: {dist:.2f} m, {math.degrees(herr):+.1f} deg off")
+            raise Missed(f"did not reach {goal} in {DRIVE_SECONDS:g} s: {dist:.2f} m, {math.degrees(herr):+.1f} deg off")
         return {"s": round(self.now() - t0, 1), "miss_m": round(dist, 3), "miss_deg": round(math.degrees(herr), 1)}
 
     def turn_round(self) -> None:
@@ -460,15 +481,16 @@ class Machine:
         if not self.facing(yaw):
             self.turn_round()
 
-    def dig_pass(self, anchor: tuple[float, float], plane_z: float, heading: float) -> dict:
-        """The dig's start pose, then a pass heading `heading` from anchor down to plane_z, env-local."""
+    def dig_pass(self, anchor: tuple[float, float], plane_z: float, heading: float, drum: int = 0) -> dict:
+        """The dig's start pose, then a pass heading `heading` from anchor down to
+        plane_z, env-local, with the front drum or the rear (1, the machine turned round)."""
         u = self.u
         u.begin_ready()
         for _ in range(int(READY_SECONDS / u.step_dt)):
             self.step(self.zero)
             if u.ready():
                 break
-        depth = u.begin_pass(anchor[0], anchor[1], plane_z, heading)
+        depth = u.begin_pass(anchor[0], anchor[1], plane_z, heading, drum)
         self.obs = u._get_observations()
         t0 = self.now()
         for _ in range(int(PASS_SECONDS / u.step_dt)):
@@ -481,15 +503,15 @@ class Machine:
             "shape_done": bool(u._shape_done[0]), "floor_cm": round(100 * u.patch_level(), 1),
         }
 
-    def dump(self) -> float:
-        """Empty the front drum where it is; kg poured."""
-        u, before = self.u, self.load()
-        u.begin_dump()
+    def dump(self, drum: int = 0) -> float:
+        """Empty the front drum, or the rear (1), where it is; kg poured."""
+        u, before = self.u, self.load(drum)
+        u.begin_dump(drum)
         for _ in range(int(DUMP_SECONDS / u.step_dt)):
             self.step(self.zero)
             if u.dumped():
                 break
-        return round(before - self.load(), 1)
+        return round(before - self.load(drum), 1)
 
 
 def run_site(env, dig, nav, site, record=None, max_minutes: float = 60.0) -> tuple[list[dict], str]:
@@ -651,13 +673,16 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
     """Dig a stroke planner's site (luna_hifi_tasks/planner/strokes.py). Before
     each move the planner gets the bed's heights and picks a stroke, the way
     along it and the level. The machine goes round the ring road to where the
-    stroke is entered, faces along it, and drives in to each pass's start in
-    turn, digging from the dig's start pose, its drum empty at the first; once
-    the drum is as full as the dig's training counts full it backs out, goes
-    round to a pile, empties it and comes back to carry on. After the stroke it
-    backs out to the ring and empties what is left. Given save, the bed's
-    heights go to that .npz after every move and where the run stops
-    (StrokeSite.save). Returns a row per move and how the run ended."""
+    stroke is entered and drives in to each pass's start in turn, digging from
+    the dig's start pose. It digs with the front drum until that is as full as
+    the dig's training counts full, then with the rear, turned round at the
+    gate so the rear leads; with both full it backs out, goes round to the
+    piles, empties both and comes back. A drive in that misses is tried again
+    from the gate. After the stroke, the soil its last pass pushed onto the
+    next step's start is levelled by a pass there if it stands CLEAN_RISE
+    high. Given save, the bed's heights go to that .npz after every move and
+    where the run stops (StrokeSite.save). Returns a row per move and how the
+    run ended."""
     u, c = env.unwrapped, site.cfg
     full = u.cfg.fill_success_fraction * u.cfg.target_load_kg
     m = Machine(env, dig, nav, record, max_minutes)
@@ -671,37 +696,69 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
     def look() -> None:
         site.heights = Heights(*u.heights())
 
-    def drive_in(start: tuple[float, float], gate: tuple[float, float], yaw: float) -> None:
-        """To a pass's start along its stroke, front toward yaw. Within 15 cm
-        past it, as after the pass before, it starts from where it is: the
-        passes overlap by more. On coming out the other way round, it backs out
-        to the gate, turns and goes in again, once."""
-        for _ in range(2):
+    def digger() -> int | None:
+        """The drum to dig with: the front until it is full, then the rear; None, both full."""
+        return 0 if m.load(0) < full else 1 if m.load(1) < full else None
+
+    def drive_in(start: tuple[float, float], gate: tuple[float, float], yaw: float, face: float) -> None:
+        """To a pass's start along its stroke (yaw), front toward face. Within
+        15 cm past it, as after the pass before, it starts from where it is: the
+        passes overlap by more. If it misses, or comes out the other way round,
+        it backs out to the gate, turns to face and goes in again: DRIVE_TRIES
+        goes in all."""
+        for _ in range(DRIVE_TRIES):
             x, y = m.here()
             along = (x - start[0]) * math.cos(yaw) + (y - start[1]) * math.sin(yaw)
             off = abs((y - start[1]) * math.cos(yaw) - (x - start[0]) * math.sin(yaw))
-            if off > 0.05 or not -0.05 <= along <= 0.15:
-                m.drive([start], yaw)
-            if m.facing(yaw):
-                return
+            try:
+                if off > 0.05 or not -0.05 <= along <= 0.15:
+                    m.drive([start], yaw)
+                if m.facing(face):
+                    return
+            except Missed:
+                pass
             m.drive([gate], yaw, loose=True)
-            m.face(yaw)
-        raise RuntimeError(f"turned round twice driving in to {tuple(round(v, 2) for v in start)}")
+            m.face(face)
+        raise Missed(f"did not get in to {tuple(round(v, 2) for v in start)} in {DRIVE_TRIES} goes")
+
+    def dig(i: int, way: int, a: float, level: float, gate: tuple[float, float]) -> bool:
+        """A pass on stroke i running `way`, anchored at a, down to level, with
+        the drum digger() picks leading: the machine turned round at the gate
+        if it faces the other way. With both drums full, out to empty them
+        first. Whether it went to the piles."""
+        s, d, trip = site.strokes[i], digger(), False
+        yaw = s.yaw(way)
+        if d is None:
+            m.drive([gate], yaw, loose=True)
+            empty(gate, yaw)
+            d, trip = 0, True
+        face = yaw if d == 0 else yaw + math.pi
+        if not m.facing(face):
+            m.drive([gate], yaw, loose=True)
+            m.face(face)
+        drive_in(s.point(a - way * u.dig_reach), gate, yaw, face)
+        m.dig_pass(s.point(a), u.cfg.bed_top + level, yaw, d)
+        return trip
 
     def empty(back_to=None, yaw: float = 0.0) -> None:
-        """Round the ring to the nearest stop whose pile stands under PILE_MAX
-        (all full: the lowest) and empty the drum facing out of the ring; then,
-        given back_to, round to it, facing yaw."""
-        h = Heights(*u.heights())
-        piles = [h.peak(x + REACH * math.cos(out) - 0.5, x + REACH * math.cos(out) + 0.5,
-                        y + REACH * math.sin(out) - 0.5, y + REACH * math.sin(out) + 0.5) for (x, y), out in stops]
-        room = [k for k, z in enumerate(piles) if z < PILE_MAX]
-        k = (min(room, key=lambda k: ring.apart(m.here(), stops[k][0])) if room
-             else min(range(len(stops)), key=piles.__getitem__))
-        point, out = stops[k]
-        m.drive(ring.route(m.here(), point), out, loose=True)
-        m.face(out)
-        m.dump()
+        """Each drum with soil in it in turn: round the ring to the nearest stop
+        whose pile stands under PILE_MAX (all full: the lowest), the drum facing
+        out of the ring (the rear with the machine turned round), and empty it;
+        then, given back_to, round to it, facing yaw."""
+        for drum in (0, 1):
+            if m.load(drum) < DUMP_MIN_KG:
+                continue
+            h = Heights(*u.heights())
+            piles = [h.peak(x + REACH * math.cos(out) - 0.5, x + REACH * math.cos(out) + 0.5,
+                            y + REACH * math.sin(out) - 0.5, y + REACH * math.sin(out) + 0.5) for (x, y), out in stops]
+            room = [k for k, z in enumerate(piles) if z < PILE_MAX]
+            k = (min(room, key=lambda k: ring.apart(m.here(), stops[k][0])) if room
+                 else min(range(len(stops)), key=piles.__getitem__))
+            point, out = stops[k]
+            face = out if drum == 0 else out + math.pi
+            m.drive(ring.route(m.here(), point), face, loose=True)
+            m.face(face)
+            m.dump(drum)
         if back_to is not None:
             m.drive(ring.route(m.here(), back_to), yaw, loose=True)
             m.face(yaw)
@@ -716,24 +773,26 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
             i, way, v = move
             s = site.strokes[i]
             yaw, gate, anchors = s.yaw(way), ring.entry(s, way), site.anchors(i, way)
-            before, t0, passes, skipped, trips = site.level(i), m.now(), 0, 0, 0
-            spent0 = {mode: list(v) for mode, v in m.spent.items()}
+            before, t0, passes, skipped, trips, cleaned = site.level(i), m.now(), 0, 0, 0, False
+            spent0 = {mode: list(t) for mode, t in m.spent.items()}
             m.drive(ring.route(m.here(), gate), yaw, loose=True)
-            m.face(yaw)
-            for k, a in enumerate(anchors):
+            for a in anchors:
                 look()
                 if site.work_level(i, a, way) <= v + c.done_tol:
                     skipped += 1
                     continue
-                drive_in(s.point(a - way * u.dig_reach), gate, yaw)
-                m.dig_pass(s.point(a), u.cfg.bed_top + v, yaw)
+                trips += dig(i, way, a, v, gate)
                 passes += 1
-                if m.load() >= full and k < len(anchors) - 1:
-                    m.drive([gate], yaw, loose=True)
-                    empty(gate, yaw)
-                    trips += 1
+            # The soil the last pass pushed onto the next step's start, levelled if it stands high.
+            j = site.next_along(i, way)
+            if j is not None:
+                look()
+                near = site.strokes[j].span[0] if way > 0 else site.strokes[j].span[1]
+                if site.halves(j, near, near + way * CLEAN_RUN) - site.level(j) > CLEAN_RISE:
+                    trips += dig(j, way, site.anchors(j, way)[0], site.level(j), gate)
+                    cleaned = True
             m.drive([gate], yaw, loose=True)
-            if m.load() >= DUMP_MIN_KG:
+            if digger() is None:
                 empty()
                 trips += 1
             look()
@@ -746,10 +805,11 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
                    "s": round(m.now() - t0, 1)}
             rows.append(row)
             print(f"[site] stroke {row['move']:2d}, {s.name} {row['way']}: to {row['to_cm']:+.1f} cm in {passes} passes "
-                  f"({skipped} skipped), {trips} to the piles: {row['from_cm']:+.1f} -> {row['level_cm']:+.1f} cm; "
+                  f"({skipped} skipped{', the next step levelled' if cleaned else ''}), {trips} to the piles: "
+                  f"{row['from_cm']:+.1f} -> {row['level_cm']:+.1f} cm; drums {m.load(0):.0f} + {m.load(1):.0f} kg; "
                   f"t = {m.now():.0f} s, {m.wall():.0f} s real", flush=True)
-            took = {mode: [v[0] - spent0.get(mode, [0.0, 0.0])[0], v[1] - spent0.get(mode, [0.0, 0.0])[1]]
-                    for mode, v in m.spent.items()}
+            took = {mode: [t[0] - spent0.get(mode, [0.0, 0.0])[0], t[1] - spent0.get(mode, [0.0, 0.0])[1]]
+                    for mode, t in m.spent.items()}
             print("[site]           s simulated / real: " + ", ".join(
                 f"{mode} {sim:.0f} / {real:.0f}" for mode, (sim, real) in took.items() if sim > 0), flush=True)
     except RuntimeError as err:

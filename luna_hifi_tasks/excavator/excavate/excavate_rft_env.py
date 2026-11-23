@@ -131,49 +131,57 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         super()._apply_action()
         self._step_soil()
 
-    def _step_soil(self) -> None:
+    def _step_soil(self, drums: bool = True) -> None:
         """The soil's loads onto the drums (and wheels), then the soil the drums
-        take in or shove, its slump, and the ruts."""
+        take in or shove, its slump, and the ruts. Without drums (the site's
+        machine driving, its drums stowed clear of the ground, as navigate
+        trains): the wheels' loads and ruts only."""
         d = self.robot.data
         # Front and rear rotor, front and rear shroud, then any wheels: (E, B, ...),
         # positions on the drum and wheel axes.
-        ids = self._tool_ids + self._wheel_body_ids
+        tools = self._tool_ids if drums else []
+        ids = tools + self._wheel_body_ids
         pos = d.body_link_pos_w.torch[:, ids]
         quat = d.body_link_quat_w.torch[:, ids]
         lin = d.body_link_lin_vel_w.torch[:, ids]
         ang = d.body_link_ang_vel_w.torch[:, ids]
         centre = pos - self.scene.env_origins[:, None]          # env-local axis points
         firm = self._bed_grid - self._loose
+        w = len(tools)                                          # the wheels' first index
 
-        shroud_f, shroud_t, rotor_f, rotor_t = rft.drum_loads(
-            self._patches, centre[:, 2:4], lin[:, 2:4], quat[:, 2:4], ang[:, 2:4], quat[:, :2], ang[:, :2],
-            firm, self._fill_kg, self._capacity, self._rft,
-        )
-        self._soil_force = rotor_f + shroud_f                    # (E, 2, 3) on each drum, for play_dig
-        forces, torques = [rotor_f, shroud_f], [rotor_t, shroud_t]
+        forces, torques = [], []
+        if drums:
+            shroud_f, shroud_t, rotor_f, rotor_t = rft.drum_loads(
+                self._patches, centre[:, 2:4], lin[:, 2:4], quat[:, 2:4], ang[:, 2:4], quat[:, :2], ang[:, :2],
+                firm, self._fill_kg, self._capacity, self._rft,
+            )
+            self._soil_force = rotor_f + shroud_f                # (E, 2, 3) on each drum, for play_dig
+            forces, torques = [rotor_f, shroud_f], [rotor_t, shroud_t]
         if self.cfg.wheel_soil:
             wheel_f, wheel_t = rft.wheel_loads(
-                self._wheel_patches, centre[:, 4:], lin[:, 4:], quat[:, 4:], ang[:, 4:], firm, self._rft,
+                self._wheel_patches, centre[:, w:], lin[:, w:], quat[:, w:], ang[:, w:], firm, self._rft,
             )
             forces.append(wheel_f)
             torques.append(wheel_t)
-        self.robot.instantaneous_wrench_composer.set_forces_and_torques_index(
-            forces=torch.cat(forces, dim=1),
-            torques=torch.cat(torques, dim=1),
-            positions=pos,
-            body_ids=ids,
-            is_global=True,
-        )
-        drum_axis = rft.drum_axis(quat[:, 2:4])
-        self._bed_grid, self._loose, self._fill_kg = rft.excavate(
-            self._bed_grid, self._loose, self._fill_kg, self._cells, centre[:, 2:4], drum_axis,
-            rft.drum_inlet(quat[:, 2:4]), self._capacity, self._dig_dt, self._rft,
-        )
-        if self._rft.repose:
-            body = rft.drum_body(self._cells, centre[:, 2:4], drum_axis, self._bed_grid)
-            self._bed_grid, self._loose = rft.slump(self._bed_grid, self._loose, body, self._rft)
+        if forces:
+            self.robot.instantaneous_wrench_composer.set_forces_and_torques_index(
+                forces=torch.cat(forces, dim=1),
+                torques=torch.cat(torques, dim=1),
+                positions=pos,
+                body_ids=ids,
+                is_global=True,
+            )
+        if drums:
+            drum_axis = rft.drum_axis(quat[:, 2:4])
+            self._bed_grid, self._loose, self._fill_kg = rft.excavate(
+                self._bed_grid, self._loose, self._fill_kg, self._cells, centre[:, 2:4], drum_axis,
+                rft.drum_inlet(quat[:, 2:4]), self._capacity, self._dig_dt, self._rft,
+            )
+            if self._rft.repose:
+                body = rft.drum_body(self._cells, centre[:, 2:4], drum_axis, self._bed_grid)
+                self._bed_grid, self._loose = rft.slump(self._bed_grid, self._loose, body, self._rft)
         if self.cfg.wheel_soil:
-            pressed = rft.press(self._bed_grid, self._cells, centre[:, 4:], rft.drum_axis(quat[:, 4:]), self._rft, self._fresh_bed)
+            pressed = rft.press(self._bed_grid, self._cells, centre[:, w:], rft.drum_axis(quat[:, w:]), self._rft, self._fresh_bed)
             self._loose = (self._loose - (self._bed_grid - pressed)).clamp(min=0.0)
             self._bed_grid = pressed
         # Drawn only for the frames the viewer renders: after this physics step if

@@ -97,6 +97,10 @@ class Heights:
         cells = self.z[self._box(x0, x1, y0, y1)]
         return float(cells.mean()) if cells.size else 0.0
 
+    def peak(self, x0: float, x1: float, y0: float, y1: float) -> float:
+        cells = self.z[self._box(x0, x1, y0, y1)]
+        return float(cells.max()) if cells.size else 0.0
+
     def cut(self, x0: float, x1: float, y0: float, y1: float, level: float) -> None:
         """Lower the rectangle to level where it stands above it."""
         box = self._box(x0, x1, y0, y1)
@@ -435,10 +439,11 @@ def hole_rects(corner: tuple[float, float], size: float) -> list[tuple[float, fl
     return [(x0, x0 + size, y0, y0 + size)]
 
 
-# A trench one drum wide down a staircase: each step STEP_RISE below the one
-# before it over STEP_RUN, the wheelbase, so the wheels stand at most one step
-# apart; then a flat bottom BOTTOM long at the full depth. From one step the
-# drum reaches the next with room to spare (StrokeCfg.reach).
+# A trench down a staircase: each step STEP_RISE below the one before it over
+# STEP_RUN, the wheelbase, so the wheels stand at most one step apart; then a
+# flat bottom BOTTOM long at the full depth. From one step the drum reaches the
+# next with room to spare (StrokeCfg.reach). Wider than the drum, it is cut in
+# lanes side by side, each overlapping the next, each its own staircase.
 STEP_RISE, STEP_RUN, BOTTOM = 0.12, 1.4, 2.0
 
 
@@ -447,18 +452,21 @@ def trench_length(depth: float) -> float:
     return (math.ceil(depth / STEP_RISE - 1e-9) - 1) * STEP_RUN + BOTTOM
 
 
-def trench_strokes(cfg: StrokeCfg, corner: tuple[float, float], depth: float) -> list[Stroke]:
-    """A trench `depth` deep along +x from `corner` (its least x and y), one
-    drum wide: a stroke a step, each down to its own level, the last the
-    bottom, all cut running down the staircase (+x)."""
+def trench_strokes(cfg: StrokeCfg, corner: tuple[float, float], depth: float, width: float) -> list[Stroke]:
+    """A trench `depth` deep and `width` wide along +x from `corner` (its least
+    x and y): in each lane a stroke a step, each down to its own level, the last
+    the bottom, all cut running down the staircase (+x)."""
     x0, y0 = corner
     n = math.ceil(depth / STEP_RISE - 1e-9)
     ends = [x0 + k * STEP_RUN for k in range(n)] + [x0 + trench_length(depth)]
-    return [Stroke(0, y0 + 0.5 * cfg.width, (ends[k], ends[k + 1]), f"step {k + 1} of {n - 1}" if k < n - 1 else "bottom",
-                   -min(depth, (k + 1) * STEP_RISE), way=1) for k in range(n)]
+    lanes = side_by_side(cfg, width)
+    return [Stroke(0, y0 + c, (ends[k], ends[k + 1]),
+                   (f"step {k + 1} of {n - 1}" if k < n - 1 else "bottom") + (f", lane {j + 1}" if len(lanes) > 1 else ""),
+                   -min(depth, (k + 1) * STEP_RISE), way=1)
+            for j, c in enumerate(lanes) for k in range(n)]
 
 
-def trench_rects(cfg: StrokeCfg, corner: tuple[float, float], depth: float) -> list[tuple[float, float, float, float]]:
+def trench_rects(corner: tuple[float, float], depth: float, width: float) -> list[tuple[float, float, float, float]]:
     """The trench as (x0, x1, y0, y1)."""
     x0, y0 = corner
-    return [(x0, x0 + trench_length(depth), y0, y0 + cfg.width)]
+    return [(x0, x0 + trench_length(depth), y0, y0 + width)]

@@ -1,8 +1,8 @@
 # scripts/site_run.py
 #
 # Dig a trench, with --pit a pit entered down a staircase ramp, or with --l an
-# L, --hole a square hole or --deep a trench one drum wide down a staircase of
-# steps, cut in strokes, with the trained policies on the RFT soil
+# L, --hole a square hole or --deep a trench 1.5 drums wide (--width) down a
+# staircase of steps, cut in strokes, with the trained policies on the RFT soil
 # (Luna-Excavator-Site): the planner (luna_hifi_tasks/
 # planner/site.py, or strokes.py for strokes) picks each pass or stroke and its
 # level, the navigate policy drives to it, the excavate policy digs it, and the
@@ -77,7 +77,9 @@ def _parse():
     p.add_argument("--l", action="store_true", help="an L cut in strokes along x and y, not a trench")
     p.add_argument("--hole", action="store_true", help="a square hole cut in strokes along x and y, not a trench")
     p.add_argument("--deep", action="store_true",
-                   help=f"a trench one drum wide down a staircase, a step {STEP_RISE:g} m lower each wheelbase, to --depth")
+                   help=f"a trench down a staircase, a step {STEP_RISE:g} m lower each wheelbase, to --depth")
+    p.add_argument("--width", type=float, default=1.5 * DRUM,
+                   help=f"staircase trench: its width [m]; {1.5 * DRUM:g}, 1.5 drum widths, cut in two lanes side by side")
     p.add_argument("--size", type=float, default=None,
                    help=f"L or hole: its side [m]; default an L {3.5 * DRUM:g}, a hole {2.0 * DRUM:g} (3.5 and 2 drum widths)")
     p.add_argument("--thickness", type=float, default=1.5 * DRUM, help="L: its arms across [m]; 1.5 drum widths")
@@ -130,7 +132,7 @@ def main() -> int:
     env_cfg, _ = resolve_task_config(TASK, "")
     env_cfg.pit_length = args.length
     env_cfg.pit_lanes = args.lanes if args.pit else 1
-    env_cfg.box = (((trench_length(args.depth), DRUM) if args.deep else (args.size, args.size)) if args.strokes
+    env_cfg.box = (((trench_length(args.depth), args.width) if args.deep else (args.size, args.size)) if args.strokes
                    else (0.0, 0.0))
     # Soil 0.4 m deeper than the cut: the dig trained on a 0.4 m bed.
     env_cfg.bed_depth = max(env_cfg.bed_depth, args.depth + 0.4)
@@ -186,9 +188,11 @@ def main() -> int:
                 what = f"hole {args.size:g} m square, strokes along x and y"
             else:
                 cfg.layer = 0.5 * STEP_RISE         # two layers a step
-                strokes, area = trench_strokes(cfg, corner, args.depth), trench_rects(cfg, corner, args.depth)
-                what = (f"trench {trench_length(args.depth):g} m long, {cfg.width:g} m wide, down "
-                        f"{len(strokes) - 1} steps of {STEP_RISE:g} m to the bottom")
+                strokes = trench_strokes(cfg, corner, args.depth, args.width)
+                area = trench_rects(corner, args.depth, args.width)
+                steps = math.ceil(args.depth / STEP_RISE - 1e-9) - 1
+                what = (f"trench {trench_length(args.depth):g} m long, {args.width:g} m wide, down "
+                        f"{steps} steps of {STEP_RISE:g} m to the bottom, in {len(strokes) // (steps + 1)} lanes")
             site = StrokeSite(cfg, strokes, -args.depth, Heights(*u.heights()))
             print(f"[site] {what}, {args.depth:g} m deep: {len(site.strokes)} strokes, {100 * cfg.layer:g} cm a layer")
         elif args.pit:

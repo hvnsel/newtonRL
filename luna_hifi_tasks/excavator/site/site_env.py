@@ -71,6 +71,7 @@ DUMP_MIN_KG = 5.0           # less soil than this in the drum: no trip to the pi
 TURN_TRIES = 4              # turns on the spot to face the other way before the run gives up
 DRIVE_SECONDS, PASS_SECONDS, DUMP_SECONDS, READY_SECONDS = 90.0, 40.0, 15.0, 3.0
 RING = STAGE + REACH        # m from a stroke site's edge out to the ring road: the drum STAGE short, lined up there
+PILE_MAX = 0.4              # m a pile stands before the next load goes on another: the inlet pours from 0.7 m up
 
 
 def box_corner(cfg) -> tuple[float, float]:
@@ -328,11 +329,12 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
             return super()._apply_action()
         n, dev = self.num_envs, self.device
         self._apply_drive(self._nav_actions[:, 0], self._nav_actions[:, 1])
+        # Readying and driving, the drums are clear of the ground: the soil carries the wheels only.
         if self.mode == "ready":
             self._apply_arms(torch.full((n,), self.cfg.arm_start_angle, device=dev))
             self._apply_shrouds(torch.zeros(n, device=dev))
             self._apply_drums(torch.zeros(n, device=dev))
-            self._step_soil()
+            self._step_soil(drums=False)
             return
         self._apply_arms(torch.full((n,), self._nav.arm_hold_angle, device=dev))
         if self.mode == "drive":
@@ -340,7 +342,7 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
             self._apply_shrouds(torch.full((n,), math.pi, device=dev))
         else:
             self._pour()
-        self._step_soil()
+        self._step_soil(drums=self.mode == "dump")
 
     def _pour(self) -> None:
         """Front inlet down and drum reversed; once the inlet is there, its
@@ -357,6 +359,17 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         axis = rft.drum_axis(d.body_link_quat_w.torch[:, body])
         self._bed_grid, self._loose = rft.deposit(self._bed_grid, self._loose, self._cells, centre, axis, kg, self._rft)
         self._fill_kg[:, 0] -= kg
+
+    def _get_rewards(self) -> torch.Tensor:
+        """The dig's, digging; nothing otherwise: nothing reads them, and a pass starts its own afresh."""
+        return super()._get_rewards() if self.mode == "dig" else torch.zeros(self.num_envs, device=self.device)
+
+    def _get_observations(self) -> dict:
+        """The dig's, digging; otherwise the last: the runner reads them only
+        digging, and makes them afresh as a pass begins (Machine.dig_pass)."""
+        if self.mode == "dig" or getattr(self, "_last_obs", None) is None:
+            self._last_obs = super()._get_observations()
+        return self._last_obs
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Never done: the runner ends the run. The pass's end and failures are still read."""
@@ -376,7 +389,8 @@ class Machine:
         self.zero = torch.zeros(1, self.u.cfg.action_space, device=self.u.device)
         self.obs = env.reset()[0]
         self.steps = 0
-        self.started = time.time()
+        self.started = self.last = time.time()
+        self.spent: dict[str, list[float]] = {}     # mode: [simulated s, real s]
 
     def now(self) -> float:
         """Simulated seconds since the start."""
@@ -388,8 +402,14 @@ class Machine:
 
     def step(self, action: torch.Tensor) -> None:
         u = self.u
+        mode = u.mode
         self.obs = self.env.step(action)[0]
         self.steps += 1
+        now = time.time()
+        spent = self.spent.setdefault(mode, [0.0, 0.0])
+        spent[0] += u.step_dt
+        spent[1] += now - self.last
+        self.last = now
         if self.record is not None:
             self.record(u)
         if bool(u._failed_now[0] | u._nonfinite_now[0]):
@@ -449,6 +469,7 @@ class Machine:
             if u.ready():
                 break
         depth = u.begin_pass(anchor[0], anchor[1], plane_z, heading)
+        self.obs = u._get_observations()
         t0 = self.now()
         for _ in range(int(PASS_SECONDS / u.step_dt)):
             self.step(self.dig(self.obs["policy"]).clamp(-1.0, 1.0))
@@ -595,24 +616,32 @@ class Ring:
         passed = sorted((((t - ta) * way) % self.length, c) for c, t in zip(self.corners, self.marks))
         return [c for d, c in passed if 1e-6 < d < span - 1e-6] + [tuple(b)]
 
+    def apart(self, a, b) -> float:
+        """How far round the ring from a to b, the shorter way."""
+        d = abs(self.round_to(a) - self.round_to(b))
+        return min(d, self.length - d)
+
     def entry(self, stroke, way: int) -> tuple[float, float]:
         """Where a stroke run `way` along it is entered from the ring."""
         if stroke.axis == 0:
             return (self.x0 if way > 0 else self.x1, stroke.across)
         return (stroke.across, self.y0 if way > 0 else self.y1)
 
-    def stops(self, corner: float = 1.85) -> list[tuple[tuple[float, float], float]]:
-        """Dump stops on the +y and +x sides, PILE_STEP apart, each with the
-        heading out of the ring the drum pours toward. A pile lies REACH out,
-        past the wheels of a machine lined up on the ring, its raised drums
-        over it, so one behind where a stroke is entered is no obstacle; the
+    def stops(self, sides=("+y", "+x"), corner: float = 1.85) -> list[tuple[tuple[float, float], float]]:
+        """Dump stops on the given sides, PILE_STEP apart, each with the heading
+        out of the ring the drum pours toward. A pile lies REACH out, past the
+        wheels of a machine lined up on the ring, its raised drums over it; the
         stops keep `corner` from the ring's corners, where the drums sweep as
         the machine turns."""
         out = []
-        for along_x, side, lo, hi, yaw in ((True, self.y1, self.x0, self.x1, 0.5 * math.pi), (False, self.x1, self.y0, self.y1, 0.0)):
+        for side in sides:
+            along_x = side[1] == "y"                    # the -y and +y sides run along x
+            at = {"+y": self.y1, "-y": self.y0, "+x": self.x1, "-x": self.x0}[side]
+            lo, hi = (self.x0, self.x1) if along_x else (self.y0, self.y1)
+            yaw = {"+y": 0.5 * math.pi, "-y": -0.5 * math.pi, "+x": 0.0, "-x": math.pi}[side]
             t = lo + corner
             while t <= hi - corner + 1e-9:
-                out.append(((t, side) if along_x else (side, t), yaw))
+                out.append(((t, at) if along_x else (at, t), yaw))
                 t += PILE_STEP
         return out
 
@@ -634,8 +663,10 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
     m = Machine(env, dig, nav, record, max_minutes)
     lanes = [s.rect(*s.span, 0.5 * c.width) for s in site.strokes]
     ring = Ring((min(r[0] for r in lanes), max(r[1] for r in lanes), min(r[2] for r in lanes), max(r[3] for r in lanes)))
-    stops = ring.stops()
-    dumps = 0
+    # Piles on the ring's sides no stroke is entered from (a trench: all but its near end); else +y and +x.
+    entered = {("-x" if w > 0 else "+x") if s.axis == 0 else ("-y" if w > 0 else "+y")
+               for s in site.strokes for w in ((s.way,) if s.way else (1, -1))}
+    stops = ring.stops([side for side in ("+y", "+x", "-y", "-x") if side not in entered] or ("+y", "+x"))
 
     def look() -> None:
         site.heights = Heights(*u.heights())
@@ -658,11 +689,16 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
         raise RuntimeError(f"turned round twice driving in to {tuple(round(v, 2) for v in start)}")
 
     def empty(back_to=None, yaw: float = 0.0) -> None:
-        """Round the ring to the next pile and empty the drum facing out of the
-        ring; then, given back_to, round to it, facing yaw."""
-        nonlocal dumps
-        point, out = stops[dumps % len(stops)]
-        dumps += 1
+        """Round the ring to the nearest stop whose pile stands under PILE_MAX
+        (all full: the lowest) and empty the drum facing out of the ring; then,
+        given back_to, round to it, facing yaw."""
+        h = Heights(*u.heights())
+        piles = [h.peak(x + REACH * math.cos(out) - 0.5, x + REACH * math.cos(out) + 0.5,
+                        y + REACH * math.sin(out) - 0.5, y + REACH * math.sin(out) + 0.5) for (x, y), out in stops]
+        room = [k for k, z in enumerate(piles) if z < PILE_MAX]
+        k = (min(room, key=lambda k: ring.apart(m.here(), stops[k][0])) if room
+             else min(range(len(stops)), key=piles.__getitem__))
+        point, out = stops[k]
         m.drive(ring.route(m.here(), point), out, loose=True)
         m.face(out)
         m.dump()
@@ -681,6 +717,7 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
             s = site.strokes[i]
             yaw, gate, anchors = s.yaw(way), ring.entry(s, way), site.anchors(i, way)
             before, t0, passes, skipped, trips = site.level(i), m.now(), 0, 0, 0
+            spent0 = {mode: list(v) for mode, v in m.spent.items()}
             m.drive(ring.route(m.here(), gate), yaw, loose=True)
             m.face(yaw)
             for k, a in enumerate(anchors):
@@ -711,6 +748,10 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
             print(f"[site] stroke {row['move']:2d}, {s.name} {row['way']}: to {row['to_cm']:+.1f} cm in {passes} passes "
                   f"({skipped} skipped), {trips} to the piles: {row['from_cm']:+.1f} -> {row['level_cm']:+.1f} cm; "
                   f"t = {m.now():.0f} s, {m.wall():.0f} s real", flush=True)
+            took = {mode: [v[0] - spent0.get(mode, [0.0, 0.0])[0], v[1] - spent0.get(mode, [0.0, 0.0])[1]]
+                    for mode, v in m.spent.items()}
+            print("[site]           s simulated / real: " + ", ".join(
+                f"{mode} {sim:.0f} / {real:.0f}" for mode, (sim, real) in took.items() if sim > 0), flush=True)
     except RuntimeError as err:
         if save:
             look()

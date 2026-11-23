@@ -1,7 +1,8 @@
 """Stroke planner: an excavation cut as straight strokes of the drum.
 
 A stroke is a straight lane the drum's width, along x or along y. A move cuts
-one stroke a layer deeper, running along it either way, in passes of the dig
+one stroke down a layer at most and the dig's shallowest cut at least (less
+only for the last of it), running along it either way, in passes of the dig
 policy that overlap, so the cut has no seams along it; strokes side by side
 overlap too. The planner keeps the site's heights (m, relative to the ground as
 it was; off its grid the ground) and before each move picks which stroke, which
@@ -15,10 +16,14 @@ either side of the cut
     the dig trained with its lane moved up to 0.5 m over three passes),
   - meet no step over drive_step from outside the site in,
   - leave the cut no more than rise above the higher of them (no ridges),
-and the drum reaches the level from them. Strokes carrying on from one
-another along a line (a trench's steps) keep a staircase all the way down:
-each is cut no deeper than the next one stands, nor more than its own last
-step below the one before it.
+and the drum reaches the level from them. When a bank alone shuts every
+move, as where the soil a pass pushes on ahead piles up at the next
+stroke's start, the rover cuts into one up to bank high rather than stop.
+The stroke with the most left to cut goes first, so a hole goes down a
+layer at a time and a trench's deeper steps lead. Strokes carrying on from
+one another along a line (a trench's steps) keep a staircase all the way
+down: each is cut no deeper than the next one stands, nor more than its own
+last step below the one before it, even with a stroke set aside.
 
 Pure Python and numpy; site_env.run_strokes cuts the strokes on the RFT soil.
 """
@@ -103,9 +108,10 @@ class StrokeCfg:
     # --- the cut ------------------------------------------------------
     width: float = 1.6          # m the drum cuts across
     stride: float = 0.8         # m at most between side-by-side strokes' centre lines: each overlaps the next by half
-    layer: float = 0.05         # m a move takes off a stroke
+    layer: float = 0.05         # m a move takes off a stroke at most ...
+    least: float = 0.03         # ... and at least, unless that is all it has left: the dig's shallowest cut
     done_tol: float = 0.015     # a stroke this close to its target is done
-    progress: float = 0.01      # a move that lowers its stroke less than this failed
+    progress: float = 0.005     # a move that lowers its stroke less than this failed
     retries: int = 3            # failed moves in a row before a stroke is set aside
     # --- the dig's passes, set from the env -----------------------------
     ahead: float = 0.6          # m the work area runs ahead of a pass's anchor
@@ -119,7 +125,9 @@ class StrokeCfg:
     level_tol: float = 0.18     # m the two tracks may stand apart: one in a 15 cm cut beside, and a pass's overcut
     drive_step: float = 0.18    # m the highest step a wheel takes driving in ...
     step_window: float = 0.3    # ... over this much of its track
-    rise: float = 0.05          # m a stroke may stand above its higher track: no ridges
+    rise: float = 0.05          # m a stroke may stand above its higher track: no ridges ...
+    bank: float = 0.15          # ... but up to this when nothing else is open: the soil passes push on ahead
+    patch: float = 0.1          # m either way of a wheel's centre its height is averaged over: the tyre's contact patch
     sample: float = 0.05        # m between the points checked along a track
     run_in: float = 2.9         # m outside a stroke's end its tracks are checked from: the rear wheels, lined up to go in
     # --- the search ---------------------------------------------------
@@ -189,13 +197,17 @@ class StrokeSite:
         """Strokes whose last retries moves each failed."""
         return [i for i in range(len(self.strokes)) if self.failed_in_a_row(i) >= self.cfg.retries]
 
+    def short(self, h: Heights | None = None) -> list[int]:
+        """Strokes not yet down to their targets."""
+        return [i for i in range(len(self.strokes)) if self.level(i, h) > self.target_of(i) + self.cfg.done_tol]
+
     def pending(self, h: Heights | None = None) -> list[int]:
+        """Strokes still to cut: short, and not set aside."""
         aside = self.set_aside()
-        return [i for i in range(len(self.strokes))
-                if i not in aside and self.level(i, h) > self.target_of(i) + self.cfg.done_tol]
+        return [i for i in self.short(h) if i not in aside]
 
     def done(self) -> bool:
-        return not any(self.level(i) > self.target_of(i) + self.cfg.done_tol for i in range(len(self.strokes)))
+        return not self.short()
 
     def anchors(self, i: int, way: int) -> list[float]:
         """Where along stroke i its passes start, in order running `way`: the first
@@ -218,11 +230,22 @@ class StrokeSite:
         s = self.strokes[i]
         return s.point((s.span[0] if way > 0 else s.span[1]) - way * out)
 
-    def strain(self, i: int, way: int, v: float, h: Heights, why: list | None = None) -> float | None:
+    def wheel(self, i: int, along: float, off: float, h: Heights,
+              cut: tuple[float, float, float] | None = None) -> float:
+        """The height under a tyre `along` stroke i, `off` its centre line: the
+        mean over its contact patch; given cut (a0, a1, v), no higher than v
+        from a0 to a1 along it, where the passes before have cut down to v."""
+        s, p = self.strokes[i], self.cfg.patch
+        z = h.mean(*Stroke(s.axis, s.across + off, s.span).rect(along - p, along + p, p))
+        return min(z, cut[2]) if cut and min(cut[:2]) <= along <= max(cut[:2]) else z
+
+    def strain(self, i: int, way: int, v: float, h: Heights, why: list | None = None,
+               rise: float | None = None) -> float | None:
         """How hard cutting stroke i running `way` along it down to v is on the
         rover, on heights h: the most its wheel tracks stand apart or step, m.
         None if it cannot: a track limit broken, the drum short of v, or the cut
-        a ridge above the tracks; the rule it broke appended to why, if given."""
+        a bank over rise (cfg.rise if None) above the tracks; the rule it broke
+        appended to why, if given."""
         def no(reason: str) -> None:
             if why is not None:
                 why.append(reason)
@@ -241,48 +264,54 @@ class StrokeSite:
             return no(f"tracks {100 * apart:.0f} cm apart")
         if step > c.drive_step:
             return no(f"a {100 * step:.0f} cm step driving in")
-        # At every pass the drum reaches v, and the cut stands no more than rise above the higher track.
+        # At every pass the drum reaches v from where the wheels then stand, on the cut the passes
+        # before made, and its work area stands no more than rise above the higher front wheel now.
+        rise = c.rise if rise is None else rise
+        cut = None
         for a, ch in zip(anchors, chassis):
-            front = [float(h.at(*s.point(ch + way * c.wheelbase, off))) for off in (-c.track, c.track)]
-            rear = [float(h.at(*s.point(ch - way * c.wheelbase, off))) for off in (-c.track, c.track)]
+            front, rear = ([self.wheel(i, ch + d * c.wheelbase, off, h, cut) for off in (-c.track, c.track)]
+                           for d in (way, -way))
             f, r = 0.5 * sum(front), 0.5 * sum(rear)
             reach = f + c.pitch_lever * (f - r) - c.reach
             if v < reach - 1e-9:
                 return no(f"the drum reaches {100 * reach:.0f} cm, not {100 * v:.0f}")
-            bank = h.mean(*self.work_rect(i, a, way)) - max(front)
-            if bank > c.rise:
+            now = max(self.wheel(i, ch + way * c.wheelbase, off, h) for off in (-c.track, c.track))
+            bank = h.mean(*self.work_rect(i, a, way)) - now
+            if bank > rise:
                 return no(f"a {100 * bank:.0f} cm bank above the front wheels")
+            cut = (anchors[0] - way * c.behind, a + way * c.ahead, v)
         return max(apart, step)
 
-    def moves(self, h: Heights, why: list | None = None) -> list[tuple[Move, float]]:
+    def moves(self, h: Heights, why: list | None = None, rise: float | None = None) -> list[tuple[Move, float]]:
         """The open moves on h, each with its strain: every stroke to come a
-        layer down, not past the target, its way along it or either. In a
-        staircase a step is cut no deeper than the next one stands while that
-        one is still to cut, so no step stands above the one before it, not
-        even with the soil a pass pushes on ahead; and no more than its own
-        last step below the one before it, so the way down stays one step at
-        a time. Given why, each closed one's reason is appended to it."""
-        out = []
-        pending = self.pending(h)
-        for i in pending:
-            s = self.strokes[i]
+        layer down, not past the target, its way along it or either, and at
+        least `least` unless that is all it has left. In a staircase a step is
+        cut no deeper than the next one stands while that one is short, so no
+        step stands above the one before it, not even with the soil a pass
+        pushes on ahead; and no more than its own last step below the one
+        before it, so the way down stays one step at a time. Given why, each
+        closed one's reason is appended to it; rise as in strain."""
+        c, out = self.cfg, []
+        short = self.short(h)
+        for i in self.pending(h):
+            s, lv, t = self.strokes[i], self.level(i, h), self.target_of(i)
             for way in (s.way,) if s.way else (1, -1):
                 label = f"{s.name} {'+' if way > 0 else '-'}{'xy'[s.axis]}"
-                v, held = max(self.target_of(i), self.level(i, h) - self.cfg.layer), ""
+                v, held = max(t, lv - c.layer), ""
                 before = self.next_along(i, -way)
-                if before in pending:
-                    lowest = self.level(before, h) - (self.target_of(before) - self.target_of(i))
+                if before in short:
+                    lowest = self.level(before, h) - (self.target_of(before) - t)
                     if lowest > v:
                         v, held = lowest, f"a step at most below {self.strokes[before].name}"
                 j = self.next_along(i, way)
-                if j in pending and self.level(j, h) > v:
+                if j in short and self.level(j, h) > v:
                     v, held = self.level(j, h), f"waits for {self.strokes[j].name}"
-                if v > self.level(i, h) - self.cfg.done_tol:
+                if v > lv - min(c.least, lv - t) + 1e-9:
                     if why is not None:
                         why.append(f"{label}: {held}")
                     continue
                 reasons = [] if why is not None else None
-                strain = self.strain(i, way, v, h, reasons)
+                strain = self.strain(i, way, v, h, reasons, rise)
                 if strain is not None:
                     out.append(((i, way, v), strain))
                 elif why is not None:
@@ -299,27 +328,29 @@ class StrokeSite:
 
     def plan(self, at: tuple[float, float] | None = None) -> list[Move] | None:
         """An order of moves that finishes every stroke on the heights expected.
-        Depth first: the shallowest stroke first (to the nearest done_tol), so
-        the site goes down a layer at a time across it; then one overlapping
-        the stroke cut last, so a layer sweeps across the strokes side by side,
-        each cut over half of the one before; then the one with the deepest
-        target (a trench's far steps); then the way along it gentlest on the
-        rover (its strain to the nearest strain_bin); then, for the first move,
-        the way in nearest `at`. If none is found within budget, the best first
-        move alone; None if no move is open."""
+        Depth first: the stroke with the most left to cut first (to the
+        nearest done_tol), so a hole goes down a layer at a time across it and
+        a trench's deeper steps lead; then one overlapping the stroke cut last,
+        so a layer sweeps across the strokes side by side, each cut over half
+        of the one before; then the one with the deepest target; then the way
+        along it gentlest on the rover (its strain to the nearest strain_bin);
+        then, for the first move, the way in nearest `at`. If none is found
+        within budget, the best first move alone. If a bank alone shuts every
+        move, the best one cutting into a bank up to cfg.bank; None if none."""
         order: list[Move] = []
         tried = 0
         before = self.log[-1][0] if self.log else None
 
-        def ranked(h: Heights, first: bool) -> list[Move]:
+        def ranked(h: Heights, first: bool, rise: float | None = None) -> list[Move]:
             last = order[-1][0] if order else before
 
             def key(ms: tuple[Move, float]):
                 (i, way, _), strain = ms
                 near = math.dist(at, self.entry(i, way)) if first and at else 0.0
-                return (-round(self.level(i, h) / self.cfg.done_tol), not self.beside(i, last), self.target_of(i),
+                left = self.level(i, h) - self.target_of(i)
+                return (-round(left / self.cfg.done_tol), not self.beside(i, last), self.target_of(i),
                         round(strain / self.cfg.strain_bin), near)
-            return [m for m, _ in sorted(self.moves(h), key=key)]
+            return [m for m, _ in sorted(self.moves(h, rise=rise), key=key)]
 
         def search(h: Heights, first: bool) -> bool:
             nonlocal tried
@@ -339,7 +370,7 @@ class StrokeSite:
 
         top = ranked(self.heights, True)
         if not top:
-            return None
+            return ranked(self.heights, True, self.cfg.bank)[:1] or None
         return order if search(self.heights, True) else top[:1]
 
     def next_move(self, at: tuple[float, float] | None = None) -> Move | None:

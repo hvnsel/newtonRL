@@ -874,6 +874,9 @@ class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
 
     # Soil pushed out of the work area costs w_unheld - w_removal = 1.75 per kg.
     w_unheld = 3.0
+    # Following the command: at 2, riding a few cm above the plane cost less
+    # than the soil a full-depth cut shoves; the v2_w10 dig trained at 10.
+    w_track = 10.0
 
     def __post_init__(self) -> None:
         self.derive_bed()

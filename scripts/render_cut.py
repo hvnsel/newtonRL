@@ -4,8 +4,8 @@
 # after every stroke (<video>_cut.npz, StrokeSite.save): the ground in 3D
 # through Newton's GL viewer, coloured and lit as the run's video, true to
 # scale; and cross sections against the targets, along the strokes' line and
-# across each stroke's middle. Writes <name>_3d.png and <name>_sections.png
-# beside it.
+# across each step's middle, its lanes side by side together. Writes
+# <name>_3d.png and <name>_sections.png beside it.
 #
 #   ~/IsaacLab/.venv/bin/python scripts/render_cut.py deep60_video_cut.npz
 
@@ -122,26 +122,38 @@ def render_3d(c: dict, out: str) -> None:
     plt.close(fig)
 
 
+def steps(c: dict) -> list[tuple]:
+    """The stretches of the strokes' line in order along x, the strokes side by
+    side on each taken together: (x0, x1, y0, y1, target, name), their widths
+    joined and the lane left off the name."""
+    out: dict = {}
+    for (x0, x1, y0, y1), t, name in zip(c["rects"], c["targets"], c["names"]):
+        key = (round(float(x0), 3), round(float(x1), 3))
+        a, b = out[key][2:4] if key in out else (y0, y1)
+        out[key] = (x0, x1, min(a, y0), max(b, y1), t, name.split(",")[0].split(" of ")[0])
+    return [out[key] for key in sorted(out)]
+
+
 def staircase(c: dict) -> tuple[list[float], list[float]]:
-    """The target floor along x, the strokes' targets end to end, up to the ground at either end."""
-    order = np.argsort(c["rects"][:, 0])
-    xs, zs = [c["x"][0], c["rects"][order[0], 0]], [0.0, 0.0]
-    for k in order:
-        xs += [c["rects"][k, 0], c["rects"][k, 1]]
-        zs += [c["targets"][k]] * 2
-    return xs + [c["rects"][order[-1], 1], c["x"][-1]], zs + [0.0, 0.0]
+    """The target floor along x, the steps' targets end to end, up to the ground at either end."""
+    st = steps(c)
+    xs, zs = [c["x"][0], st[0][0]], [0.0, 0.0]
+    for x0, x1, _, _, t, _ in st:
+        xs += [x0, x1]
+        zs += [t, t]
+    return xs + [st[-1][1], c["x"][-1]], zs + [0.0, 0.0]
 
 
 def render_sections(c: dict, out: str) -> None:
     """Along the strokes' line: the ground at its middle and the range across
-    the cut's width; across each stroke's middle: the ground from side to side.
+    the cut's width; across each step's middle: the ground from side to side.
     Both against the targets."""
     z, x, y, rects = c["z"], c["x"], c["y"], c["rects"]
     mid_y = 0.5 * (rects[:, 2].min() + rects[:, 3].max())
     inside = (y >= rects[:, 2].min()) & (y <= rects[:, 3].max())
-    order = np.argsort(rects[:, 0])
+    st = steps(c)
     fig = plt.figure(figsize=(14, 9), dpi=200, facecolor=SURFACE)
-    grid = fig.add_gridspec(2, len(order), height_ratios=[1.0, 1.0], hspace=0.55, wspace=0.12,
+    grid = fig.add_gridspec(2, len(st), height_ratios=[1.0, 1.0], hspace=0.55, wspace=0.12,
                             left=0.06, right=0.98, top=0.8, bottom=0.08)
     fig.text(0.06, 0.95, f"Cross sections after {c['moves']} strokes", fontsize=16, fontweight="semibold", color=INK)
     fig.text(0.06, 0.915, "the ground as the run left it (blue) against the target floor (grey); depth not to scale "
@@ -155,21 +167,19 @@ def render_sections(c: dict, out: str) -> None:
     along.plot(x, 100 * z[j], color=LINE, lw=2, label="middle of the cut")
     tx, tz = staircase(c)
     along.plot(tx, 100 * np.asarray(tz), color=TARGET, lw=1.5, label="target floor")
-    for k in order:
-        along.text(0.5 * (rects[k, 0] + rects[k, 1]), 4, c["names"][k].split(" of ")[0], ha="center", fontsize=10,
-                   color=INK2)
+    for x0, x1, _, _, _, name in st:
+        along.text(0.5 * (x0 + x1), 4, name, ha="center", fontsize=10, color=INK2)
     along.set_title("Along the trench", loc="left", fontsize=12, fontweight="semibold", color=INK, pad=22)
     along.set_xlabel("along x (m)")
     along.legend(loc="lower left", frameon=False, fontsize=9.5, labelcolor=INK2, ncol=3)
 
     lo = 100 * min(z[inside].min(), c["targets"].min()) - 5
-    for col, k in enumerate(order):
+    for col, (x0, x1, y0, y1, t, name) in enumerate(st):
         ax = fig.add_subplot(grid[1, col])
-        i = np.argmin(np.abs(x - 0.5 * (rects[k, 0] + rects[k, 1])))
+        i = np.argmin(np.abs(x - 0.5 * (x0 + x1)))
         ax.plot(y, 100 * z[:, i], color=LINE, lw=2)
-        y0, y1, t = rects[k, 2], rects[k, 3], c["targets"][k]
         ax.plot([y[0], y0, y0, y1, y1, y[-1]], [0, 0, 100 * t, 100 * t, 0, 0], color=TARGET, lw=1.5)
-        ax.set_title(f"{c['names'][k].split(' of ')[0]}, at x = {x[i]:.1f} m", fontsize=10.5, color=INK, loc="left")
+        ax.set_title(f"{name}, at x = {x[i]:.1f} m", fontsize=10.5, color=INK, loc="left")
         ax.set_ylim(lo, 12)
         ax.set_xlabel("across y (m)")
         if col:

@@ -10,7 +10,7 @@ class ExcavatorExcavatePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     # task): 25 settling, 50 lowering the tool, then the dig.
     num_steps_per_env = 256
     max_iterations = 800
-    save_interval = 5
+    save_interval = 25                  # about 18 min of RFT training
     experiment_name = "excavator_excavate"
     empirical_normalization = False
     # The critic also reads the privileged "critic" group.

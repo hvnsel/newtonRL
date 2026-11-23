@@ -37,3 +37,10 @@ dig_train.log
 # The converted excavator asset and its source stamp, generated per machine
 assets/excavator/
 assets/excavator.usd.srchash
+
+# The excavator asset, built per machine (README.md, "Assets"), and the MJCF
+# converter's notes on its last run, rewritten by every build
+assets/excavator/
+assets/excavator.usd.srchash
+assets/config.yaml
+assets/.asset_hash

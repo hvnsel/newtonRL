@@ -52,7 +52,7 @@ dig_demo's crawl speed is `--drive` × `MAX_WHEEL_SPEED` × `WHEEL_RADIUS`:
 | discount | `gamma` | `0.997` | `0.997` |
 | rollout | `num_steps_per_env` | `256` | `128` |
 | envs | `scene.num_envs` | `16` | `256` |
-| checkpoint every | `save_interval` | `5` | `25` |
+| checkpoint every | `save_interval` | `25` | `25` |
 
 The value horizon is `1 / (1 - gamma)` policy steps: 333 steps, 13 s at 25 Hz.
 

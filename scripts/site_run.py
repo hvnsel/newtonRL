@@ -49,7 +49,8 @@ from play_dig import _load_policy, _resolve_checkpoint
 
 TASK = "Luna-Excavator-Site"
 # The recorder holds a clip's frames in memory: a clip a minute, every
-# --frame_stride-th step, played back at the step rate; joined at the end.
+# --frame_stride-th step, played back at the step rate, written to the --video
+# directory as it ends; joined at the end (scripts/join_clips.py, also mid-run).
 CLIP_STEPS = 1500
 # The video's light: the sun from the side (+x, a little toward the camera),
 # 35 degrees up, at plain exposure. Newton's default sun is high and behind the
@@ -229,14 +230,12 @@ def main() -> int:
         env.close()
 
     if args.video:
-        from moviepy.editor import VideoFileClip, concatenate_videoclips
+        from join_clips import join
 
-        clips = sorted(set(Path(args.video).glob("clip_*.mp4")) - earlier)
+        out = f"{args.video.rstrip('/')}.mp4"
+        clips = join(sorted(set(Path(args.video).glob("clip_*.mp4")) - earlier), out)
         if clips:
-            out = f"{args.video.rstrip('/')}.mp4"
-            concatenate_videoclips([VideoFileClip(str(c)) for c in clips]).write_videofile(
-                out, codec="libx264", audio=False, logger=None)
-            print(f"[site] video {out}: {len(clips)} clips, {args.frame_stride}x real time")
+            print(f"[site] video {out}: {clips} clips, {args.frame_stride}x real time")
     return 0
 
 

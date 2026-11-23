@@ -55,6 +55,7 @@ scripts/
   render_dig.py, render_attitude.py   GIFs from play_dig dumps
   site_run.py                     the trench: plan, drive, dig and dump with the trained policies
   render_cut.py                   a stroke site's cut from site_run's saved heights: 3D and cross sections
+  join_clips.py                   a site run's video clips so far into one mp4, while it runs
   rft_pass.py                     scripted drum pass through the analytical soil (mdp/rft.py), no simulator
   patch_newton_mpm.py             gives the installed Newton the soil solver excavate runs on (setup step)
 workstation/                      single-box setup and run scripts (Setup.md)
@@ -123,6 +124,7 @@ workstation/train.sh -p scripts/play_dig.py --task Luna-Excavator-Excavate-RFT -
 workstation/train.sh -p scripts/play_dig.py --task Luna-Excavator-Excavate-RFT --no_window --slope -0.1 --depth 0.05   # policy on a set slope
 workstation/train.sh -p scripts/site_run.py --video site_video     # the trench, newest dig and navigate checkpoints
 workstation/train.sh -p scripts/site_run.py --deep --depth 0.6 --video deep_video     # a trench 1.5 drums wide down a staircase
+~/IsaacLab/.venv/bin/python scripts/join_clips.py deep_video     # its video so far, mid-run: deep_video_so_far.mp4
 workstation/train.sh -p scripts/rft_pass.py --cut 0.05 --drive 0.1          # analytical soil, no simulator
 
 # tricycle

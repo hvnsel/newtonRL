@@ -42,11 +42,12 @@ SOIL_RGB = (0.62, 0.55, 0.45)    # as play_dig colours MPM particles
 PILE_RGB = (0.80, 0.73, 0.58)    # soil laid above where the ground started
 # Ground below where it started darkens from the soil's colour toward
 # DEPTH_DARK, reached DEPTH_SHADES * SHADE_STEP down (on the mesh smoothly, on
-# the boxes a step per SHADE_STEP): gently, so the centimetre or two a cut's
-# floor varies hardly shows while 3 cm against 13 cm does. The depth it is
-# shaded by is averaged over SHADE_BLUR, so pass seams and single cells do not
-# stand out; the surface's heights are the soil's own. Soil PILE_RISE or more
-# above where the ground started is a pile's colour.
+# the boxes a step per SHADE_STEP; a deep site sets its own shade_depth):
+# gently, so the centimetre or two a cut's floor varies hardly shows while
+# 3 cm against 13 cm does. The depth it is shaded by is averaged over
+# SHADE_BLUR, so pass seams and single cells do not stand out; the surface's
+# heights are the soil's own. Soil PILE_RISE or more above where the ground
+# started is a pile's colour.
 SHADE_STEP = 0.01                # m
 DEPTH_SHADES = 20
 DEPTH_DARK = tuple(0.5 * c for c in SOIL_RGB)
@@ -101,7 +102,9 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         # Loose soil on the grid, part of _bed_grid; it carries no load.
         self._loose = torch.zeros_like(self._bed_grid)
         # (ny, nx) where _show_soil shades the ground by depth; None: everywhere.
+        # And how deep the shade reaches DEPTH_DARK, m.
         self.shade_area: torch.Tensor | None = None
+        self.shade_depth = DEPTH_SHADES * SHADE_STEP
         # Time between _apply_action calls, which dig: Isaac Lab calls it every
         # physics step unless Newton runs the whole decimation in one.
         self._dig_dt = self.physics_dt * (c.decimation if self._physics_handles_decimation else 1)
@@ -197,13 +200,13 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
 
     def _soil_shade(self) -> tuple[torch.Tensor, torch.Tensor]:
         """(E, ny, nx) each cell's depth below where the ground started,
-        averaged over SHADE_BLUR, in SHADE_STEPs up to DEPTH_SHADES, in
+        averaged over SHADE_BLUR, in DEPTH_SHADES steps down to shade_depth, in
         shade_area if one is set (elsewhere, ruts and all, 0); and whether the
         cell is a pile's, PILE_RISE or more above."""
         depth = self._fresh_bed - self._bed_grid
         k = max(1, round(SHADE_BLUR / self.cfg.voxel_size)) | 1
         soft = F.avg_pool2d(depth.unsqueeze(1), k, stride=1, padding=k // 2, count_include_pad=False).squeeze(1)
-        steps = (soft / SHADE_STEP).clamp(0, DEPTH_SHADES)
+        steps = (soft * (DEPTH_SHADES / self.shade_depth)).clamp(0, DEPTH_SHADES)
         if self.shade_area is not None:
             steps = steps * self.shade_area
         return steps, depth <= -PILE_RISE

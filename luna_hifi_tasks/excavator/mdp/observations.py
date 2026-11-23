@@ -39,9 +39,11 @@ DIG_CRITIC_NEAR_CELL = 0.20
 DIG_CRITIC_NEAR_BIAS = 1.30
 DIG_CRITIC_SCAN_CELLS = DIG_CRITIC_FAR_NX * DIG_CRITIC_FAR_NY + DIG_CRITIC_NEAR_NX * DIG_CRITIC_NEAR_NY
 
-# Excavate actor's scan: the cutting face at the front drum.
+# Excavate actor's scan: the cutting face at the front drum, 0.125 m apart
+# along it and 0.2 m across, its rows spread over the 1.6 m drum.
 DIG_SCAN_NX, DIG_SCAN_NY = 16, 8
 DIG_SCAN_CELL = 0.125
+DIG_SCAN_CELL_Y = 0.2
 DIG_SCAN_CELLS = DIG_SCAN_NX * DIG_SCAN_NY
 
 
@@ -141,7 +143,8 @@ def navigate_actor_obs(
 def excavate_obs_spec(terrain_cells: int = DIG_SCAN_CELLS, num_arms: int = 2, num_wheels: int = 4) -> ObsSpec:
     """Excavate's observation.
 
-    terrain_scan: 2.0 x 1.0 m at 0.125 m, centred on the front drum.
+    terrain_scan: 2.0 m along at 0.125 m by 1.6 m across at 0.2 m, centred
+    on the front drum.
     drum_phase: (sin, cos) of vane count times rotor angle.
     target_level: drum height minus target-plane height, in terrain_scan's
     frame; grad_forward and grad_lateral: the plane's rise over run along

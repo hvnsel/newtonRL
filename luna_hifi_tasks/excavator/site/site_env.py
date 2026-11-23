@@ -35,8 +35,8 @@
 # run_site() digs a planner's site (luna_hifi_tasks/planner/site.py), reading
 # each patch's height back from the bed after its pass.
 #
-# Or a site cut in strokes along x and along y, an L or a hole, in a square
-# box_size on a side (box_size > 0), by run_strokes() (luna_hifi_tasks/planner/
+# Or a site cut in strokes along x and along y, an L, a hole or a trench down
+# a staircase, in a box (box[0] > 0), by run_strokes() (luna_hifi_tasks/planner/
 # strokes.py): the machine goes round it on a ring road RING out from the box,
 # turns in from it along a stroke, digs the stroke's passes one after another
 # until the drum is about full, backs out, and pours outside the ring on its +x
@@ -71,13 +71,12 @@ DUMP_MIN_KG = 5.0           # less soil than this in the drum: no trip to the pi
 TURN_TRIES = 4              # turns on the spot to face the other way before the run gives up
 DRIVE_SECONDS, PASS_SECONDS, DUMP_SECONDS, READY_SECONDS = 90.0, 40.0, 15.0, 3.0
 RING = STAGE + REACH        # m from a stroke site's edge out to the ring road: the drum STAGE short, lined up there
-FULL_KG = 90.0              # a stroke goes on until the drum holds this: what the dig's training counts as full
 
 
 def box_corner(cfg) -> tuple[float, float]:
     """A stroke site's box, its least x and y corner, env-local: the machine
     spawns on the ring road west of it, facing it."""
-    return RING, -0.5 * cfg.box_size
+    return RING, -0.5 * cfg.box[1]
 
 
 def site_layout(cfg) -> tuple[float, float, float]:
@@ -102,23 +101,24 @@ class ExcavatorSiteEnvCfg(ExcavatorExcavateRftEnvCfg):
     soil_reset_every: int = 1_000_000
     bed_margin_x: float = 0.5
     bed_margin_y: float = 0.5
-    max_env_excursion = 12.0
+    max_env_excursion = 24.0
     # Ruts and the spots it turns on stop sinking 3 cm down: hours of traffic, not one episode.
     soil_compaction: float = 0.03
     # Dumping: the front inlet dump_tilt off straight down, its load laid out at dump_rate.
     dump_tilt: float = 0.0                     # rad
     dump_rate: float = 30.0                    # kg/s
-    # Or a site cut in strokes (an L or a hole) in a square box this side, m; 0: a pit or trench.
-    box_size: float = 0.0
+    # Or a site cut in strokes (an L, a hole, a staircase trench) in a box this
+    # long along x and wide across y, m; (0, 0): a pit or trench.
+    box: tuple[float, float] = (0.0, 0.0)
 
     def __post_init__(self) -> None:
-        if self.box_size > 0.0:
+        if self.box[0] > 0.0:
             # The site, the ring road RING round it, the machine's far drum
             # turning there, and on the +x and +y sides the piles outside the ring.
             x0, y0 = box_corner(self)
             out = RING + REACH + 1.2
-            self.bed_x = (x0 - RING - REACH - 1.0, x0 + self.box_size + out)
-            self.bed_y = (y0 - RING - REACH - 1.0, y0 + self.box_size + out)
+            self.bed_x = (x0 - RING - REACH - 1.0, x0 + self.box[0] + out)
+            self.bed_y = (y0 - RING - REACH - 1.0, y0 + self.box[1] + out)
         else:
             x0, half, way = site_layout(self)
             # West: the yard, the machine turning there; east: a pass from beyond
@@ -623,10 +623,11 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0) ->
     along it and the level. The machine goes round the ring road to where the
     stroke is entered, faces along it, and drives in to each pass's start in
     turn, digging from the dig's start pose, its drum empty at the first; once
-    the drum holds FULL_KG it backs out, goes round to a pile, empties it and
-    comes back to carry on. After the stroke it backs out to the ring and
+    the drum is as full as the dig's training counts full it backs out, goes
+    round to a pile, empties it and comes back to carry on. After the stroke it backs out to the ring and
     empties what is left. Returns a row per move and how the run ended."""
     u, c = env.unwrapped, site.cfg
+    full = u.cfg.fill_success_fraction * u.cfg.target_load_kg
     m = Machine(env, dig, nav, record, max_minutes)
     lanes = [s.rect(*s.span, 0.5 * c.width) for s in site.strokes]
     ring = Ring((min(r[0] for r in lanes), max(r[1] for r in lanes), min(r[2] for r in lanes), max(r[3] for r in lanes)))
@@ -687,7 +688,7 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0) ->
                 drive_in(s.point(a - way * u.dig_reach), gate, yaw)
                 m.dig_pass(s.point(a), u.cfg.bed_top + v, yaw)
                 passes += 1
-                if m.load() >= FULL_KG and k < len(anchors) - 1:
+                if m.load() >= full and k < len(anchors) - 1:
                     m.drive([gate], yaw, loose=True)
                     empty(gate, yaw)
                     trips += 1
@@ -709,7 +710,7 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0) ->
         return rows, f"stopped: {err}"
     if site.done():
         return rows, "done"
-    short = sum(site.level(i) > site.target + c.done_tol for i in range(len(site.strokes)))
+    short = sum(site.level(i) > site.target_of(i) + c.done_tol for i in range(len(site.strokes)))
     aside = [site.strokes[i].name for i in site.set_aside()]
     why = f"{aside} set aside after {c.retries} failed moves in a row" if aside else "no stroke open to the rover"
     return rows, f"stopped with {short} strokes short: {why}"

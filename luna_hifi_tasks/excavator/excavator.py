@@ -107,7 +107,7 @@ ARM_RANGE = (-0.55, 0.72)       # -31.5 deg (stowed high) .. +41.3 deg (full dig
 # --- rotor: a hub with spiral vanes; the shroud closes the pockets between them ---
 ROTOR_HUB_R = 0.045             # central drum the vanes are welded to
 ROTOR_TIP_R = 0.185             # vane tip; fill is counted inside this
-ROTOR_HALF_LEN = 0.475          # 0.95 m wide
+ROTOR_HALF_LEN = 0.80           # 1.6 m wide: wider than the tyres' 1.35 m, so the machine follows its own cut
 ROTOR_VANES = 4
 VANE_SEGMENTS = 5               # straight boxes approximating one spiral vane
 VANE_HALF_T = 0.006

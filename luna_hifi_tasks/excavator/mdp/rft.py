@@ -188,7 +188,7 @@ def strips_of(xz, normal_xz, length, strips: int, half_len: float, device) -> Pa
 
 
 def drum_patches(
-    strips: int = 5, arcs: int = 72, pieces: int = 4, device="cpu"
+    strips: int = 8, arcs: int = 72, pieces: int = 4, device="cpu"
 ) -> tuple[Patches, torch.Tensor, Patches]:
     """(wall, opening, vanes) in the drum's body frames, axis along y.
 

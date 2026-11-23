@@ -381,7 +381,7 @@ class ExcavatorExcavateEnvCfg(DirectRLEnvCfg):
     # ends when the front drum is work_area_length past the anchor.
     work_area_length: float = 0.60           # m ahead of the anchor
     work_area_behind: float = 0.20           # m behind it
-    work_area_width: float = 0.95            # m, the drums' swath
+    work_area_width: float = 2.0 * ROTOR_HALF_LEN    # m, the drum's swath
 
     # The shape is achieved when the soil left above the plane plus the soil cut
     # below it is within this fraction of the episode's layer: the work area's
@@ -831,8 +831,8 @@ class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     # Time to take a layer in at the drum's intake, or to back up and take a second pass.
     episode_length_s = 30.0
 
-    # --- bed: 2.8 m wide for the lanes, 0.40 m of soil, kept for three episodes ---
-    bed_y: tuple[float, float] = (-1.40, 1.40)
+    # --- bed: 3.5 m wide for the lanes, 0.40 m of soil, kept for three episodes ---
+    bed_y: tuple[float, float] = (-1.75, 1.75)
     bed_depth: float = 0.40
     soil_reset_every: int = 3
     spawn_y_jitter = 0.5                 # m
@@ -845,7 +845,7 @@ class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     # The ramp stops at the shallowest commanded depth; the policy lowers the
     # arm from there.
     dig_cut: float = 0.03
-    # The payload counts up to the drum's capacity: an 8 cm layer is 91 kg.
+    # The payload counts up to the drum's capacity, 252 kg: an 8 cm layer is 154 kg.
     target_load_bore_fraction: float = 1.0
 
     # rft.py takes tan(phi) and the Mohr-Coulomb cohesion.
@@ -855,8 +855,9 @@ class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     # grid the scripted dig met about twice rft.py's force at the same depth,
     # counting MPM's 2 cm contact band.
     rft_scale: float = 12.3
-    # How fast a drum swallows soil [kg/s]: inf takes all its opening faces.
-    drum_intake: float = 3.4
+    # How fast a drum swallows soil [kg/s], 3.58 per metre of its width: inf
+    # takes all its opening faces.
+    drum_intake: float = 3.58 * 2.0 * ROTOR_HALF_LEN
     # Angle of repose of loose soil [deg]. Above 0, soil a drum reaches but does not
     # take is shoved out of its circle and slumps; 0 leaves it where it is.
     soil_repose: float = 40.0

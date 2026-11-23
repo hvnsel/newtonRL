@@ -51,11 +51,13 @@ MAX_DRUM_SPEED = 2.9        # rad/s
 # Drum speed at which the vane tips' centripetal acceleration equals lunar gravity.
 SPIN_LIMIT = math.sqrt(LUNAR_G / ROTOR_TIP_R)
 
-# Actuator effort limits, N m. Observations divide joint torque by these.
+# Actuator effort limits, N m. Observations divide joint torque by these. The
+# soil's load on a drum goes with its width: the arm, drum and shroud limits
+# are the 0.95 m drum's 360, 350 and 200 times 1.68 for the 1.6 m one.
 WHEEL_EFFORT = 2000.0
-ARM_EFFORT = 360.0
-DRUM_EFFORT = 350.0
-SHROUD_EFFORT = 200.0
+ARM_EFFORT = 600.0
+DRUM_EFFORT = 590.0
+SHROUD_EFFORT = 340.0
 
 
 def usd_status() -> str | None:

@@ -63,8 +63,8 @@ in the training log is each term's episode total. Excavate's `w_removal`,
 | excavate | field | value |
 |---|---|---|
 | full drum | `target_load_kg` | `40` kg |
-| what counts as in a drum | `BORE_*` constants | inside the shroud shell: within 0.195 m of the axis, between the end plates, above the chord across the inlet; holds 150 kg |
-| nominal cut volume (prints and GIFs) | `cut_volume_ref` | `0.0304` m³ |
+| what counts as in a drum | `BORE_*` constants | inside the shroud shell: within 0.195 m of the axis, between the end plates, above the chord across the inlet; holds 252 kg |
+| nominal cut volume (prints and GIFs) | `cut_volume_ref` | `0.0512` m³ |
 | shape achieved | `shape_success_fraction` | soil left above the plane plus soil cut below it within `0.30` of the episode's layer, and half the cut held |
 | commanded depth below the surface | `cut_depth_range` | `(0.04, 0.04)` m |
 | drum full (logged as `Episode/drum_full`) | `fill_success_fraction` | `0.6` of `target_load_kg`, front drum |
@@ -97,13 +97,13 @@ The excavate task on the analytical soil of `mdp/rft.py`. What differs:
 | commanded depth at the anchor | `cut_depth_range` | `(0.03, 0.08)` m, drawn per episode |
 | slope | `cut_gradient_max`, `cut_ramp_fraction` | half the episodes: up to ±0.10 along the pass, ±0.03 across it |
 | ramp depth | `dig_cut` | `0.03` m into the ground under the drum, set per env in the settle, or at the plane if higher; the policy lowers the arm from there |
-| payload counted up to | `target_load_bore_fraction` | `1.0`: the drum's capacity, 149.6 kg |
+| payload counted up to | `target_load_bore_fraction` | `1.0`: the drum's capacity, 252 kg |
 | episode | `episode_length_s` | `30` s |
 | soil | `soil_friction`, `soil_cohesion`, `rft_scale` | tan 40°, 500 Pa, stress factor 12.3 |
-| intake | `drum_intake` | `3.4` kg/s, only soil its opening faces; the rest is shoved |
+| intake | `drum_intake` | `5.73` kg/s (3.58 per metre of drum), only soil its opening faces; the rest is shoved |
 | loose soil | `soil_repose` | `40`°: shoved soil slumps to it and carries no load |
 | wheels | `wheel_soil` | `True`: on the soil, pressing ruts and gripping sideways with the soil friction (`rft.V_SLIDE` 0.05 m/s for half grip); the rigid ground drops to the bed floor |
-| bed | `bed_y`, `bed_depth` | 2.8 m wide, 0.40 m of soil |
+| bed | `bed_y`, `bed_depth` | 3.5 m wide, 0.40 m of soil |
 | carried-over beds, lanes | `soil_reset_every`, `spawn_y_jitter` | a bed kept 3 episodes, each starting up to 0.5 m to either side |
 | soil pushed out of the work area | `w_unheld` | `3.0` per kg, so 1.75 net with `w_removal` |
 | following the command | `w_track` | `2.0` per m the front vane tips sit off the plane, every step after the ramp, capped at 10 cm |
@@ -114,7 +114,7 @@ The excavate task on the analytical soil of `mdp/rft.py`. What differs:
 | what | field | value |
 |---|---|---|
 | grid | `path_res` | `0.25` m over the 32 m cell |
-| impassable band round an obstacle | `path_clearance` | `0.70` m (machine half-width 0.675) |
+| impassable band round an obstacle | `path_clearance` | `0.70` m (wheels 0.675 m out; the drums' yokes 0.91 m) |
 | cost zone beyond it | `path_zone`, `path_zone_cost` | 2.0 m, from 3 down to 1 per metre |
 | inside the band | `path_obstacle_cost` | `50` per metre |
 | path points in the observation | `path_lookahead` | 1 m and 2 m ahead, body frame |
@@ -140,7 +140,7 @@ maps each onto itself.
 | vanes | `ROTOR_VANES` | `4` |
 | rake | `ROTOR_RAKE` | 32° |
 | hub, tip radius | `ROTOR_HUB_R`, `ROTOR_TIP_R` | `0.045`, `0.185` m |
-| half-length | `ROTOR_HALF_LEN` | `0.475` m |
+| half-length | `ROTOR_HALF_LEN` | `0.80` m: 1.6 m wide, wider than the tyres' 1.35 m, so the machine follows its own cut |
 | vane half-thickness | `VANE_HALF_T` | `0.006` m |
 | boxes per vane | `VANE_SEGMENTS` | `5` |
 | spiral handedness | `RAKE_SIGN` | `1.0` |

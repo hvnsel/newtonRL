@@ -19,6 +19,7 @@ from .observations import (
     DIG_CRITIC_NEAR_NX,
     DIG_CRITIC_NEAR_NY,
     DIG_SCAN_CELL,
+    DIG_SCAN_CELL_Y,
     DIG_SCAN_NX,
     DIG_SCAN_NY,
     NAV_NEAR_CELL,
@@ -30,11 +31,13 @@ from .observations import (
 # --- scan patterns ---
 
 
-def scan_pattern(nx: int, ny: int, cell: float, forward_bias: float = 0.0, device="cpu") -> torch.Tensor:
+def scan_pattern(
+    nx: int, ny: int, cell: float, forward_bias: float = 0.0, device="cpu", cell_y: float | None = None
+) -> torch.Tensor:
     """(ny * nx, 2) local xy offsets of a grid centred forward_bias ahead of
-    the origin, row-major in (y, x)."""
+    the origin, row-major in (y, x), cell apart (cell_y across, if given)."""
     xs = (torch.arange(nx, device=device, dtype=torch.float32) - (nx - 1) / 2) * cell + forward_bias
-    ys = (torch.arange(ny, device=device, dtype=torch.float32) - (ny - 1) / 2) * cell
+    ys = (torch.arange(ny, device=device, dtype=torch.float32) - (ny - 1) / 2) * (cell_y or cell)
     gy, gx = torch.meshgrid(ys, xs, indexing="ij")
     return torch.stack([gx.reshape(-1), gy.reshape(-1)], dim=-1)
 
@@ -52,7 +55,7 @@ def dig_critic_near_pattern(device="cpu") -> torch.Tensor:
 
 
 def dig_scan_pattern(device="cpu") -> torch.Tensor:
-    return scan_pattern(DIG_SCAN_NX, DIG_SCAN_NY, DIG_SCAN_CELL, device=device)
+    return scan_pattern(DIG_SCAN_NX, DIG_SCAN_NY, DIG_SCAN_CELL, device=device, cell_y=DIG_SCAN_CELL_Y)
 
 
 def degrade_scan(

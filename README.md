@@ -120,7 +120,8 @@ workstation/train.sh -p scripts/play_dig.py --no_window --trace dig.csv     # ne
 workstation/train.sh -p scripts/play_dig.py --dig --no_window               # scripted pass, no policy
 workstation/train.sh -p scripts/play_dig.py --task Luna-Excavator-Excavate-RFT --dig --no_window --video dig_rft_video   # mp4, soil drawn from the grid
 workstation/train.sh -p scripts/play_dig.py --task Luna-Excavator-Excavate-RFT --no_window --slope -0.1 --depth 0.05   # policy on a set slope
-workstation/train.sh -p scripts/site_run.py --video site_video     # the trench, newest dig and navigate checkpoints; site.npz, site_log.csv
+workstation/train.sh -p scripts/site_run.py --video site_video     # the trench, newest dig and navigate checkpoints
+workstation/train.sh -p scripts/site_run.py --deep --depth 0.6 --video deep_video     # a trench one drum wide down a staircase
 workstation/train.sh -p scripts/rft_pass.py --cut 0.05 --drive 0.1          # analytical soil, no simulator
 
 # tricycle

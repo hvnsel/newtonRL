@@ -15,7 +15,9 @@ either side of the cut
     the dig trained with its lane moved up to 0.5 m over three passes),
   - meet no step over drive_step from outside the site in,
   - leave the cut no more than rise above the higher of them (no ridges),
-and the drum reaches the level from them.
+and the drum reaches the level from them. A stroke that another carries on
+from along the same line (a trench's steps) waits for that one to be cut
+deeper first, so a staircase is cut back from its far end.
 
 Pure Python and numpy; site_env.run_strokes cuts the strokes on the RFT soil.
 """
@@ -31,12 +33,14 @@ import numpy as np
 @dataclass(frozen=True)
 class Stroke:
     """A straight lane the drum's width, along x (axis 0) or y (axis 1), its
-    centre line at `across` (a y, or an x), from span[0] to span[1] along it."""
+    centre line at `across` (a y, or an x), from span[0] to span[1] along it,
+    cut down to `target` (m, below the ground; None: the site's)."""
 
     axis: int
     across: float
     span: tuple[float, float]
     name: str = ""
+    target: float | None = None
 
     def point(self, along, off=0.0):
         """Env-local (x, y) `along` the axis, `off` the centre line toward +y (axis 0) or +x (axis 1)."""
@@ -94,8 +98,8 @@ class Heights:
 @dataclass
 class StrokeCfg:
     # --- the cut ------------------------------------------------------
-    width: float = 0.95         # m the drum cuts across
-    stride: float = 0.475       # m at most between side-by-side strokes' centre lines: each overlaps the next by half
+    width: float = 1.6          # m the drum cuts across
+    stride: float = 0.8         # m at most between side-by-side strokes' centre lines: each overlaps the next by half
     layer: float = 0.05         # m a move takes off a stroke
     done_tol: float = 0.015     # a stroke this close to its target is done
     progress: float = 0.01      # a move that lowers its stroke less than this failed
@@ -122,7 +126,8 @@ class StrokeCfg:
 
 @dataclass
 class StrokeSite:
-    """Strokes to cut down to target (m, below the ground), on heights."""
+    """Strokes to cut down to target (m, below the ground), or each to its
+    own, on heights."""
 
     cfg: StrokeCfg
     strokes: list[Stroke]
@@ -131,6 +136,10 @@ class StrokeSite:
     log: list = field(default_factory=list)     # (stroke, m it went down) per move
 
     # -- queries -------------------------------------------------------
+
+    def target_of(self, i: int) -> float:
+        t = self.strokes[i].target
+        return self.target if t is None else t
 
     def halves(self, i: int, a0: float, a1: float, h: Heights | None = None) -> float:
         """The height of stroke i's lane from a0 to a1 along it, m: the higher of
@@ -157,6 +166,13 @@ class StrokeSite:
         a, b = self.strokes[i], self.strokes[j]
         return a.axis == b.axis and abs(a.across - b.across) < self.cfg.width - 1e-9
 
+    def next_along(self, i: int, way: int) -> int | None:
+        """The stroke carrying on from stroke i along its line, running `way`."""
+        s = self.strokes[i]
+        end = s.span[1] if way > 0 else s.span[0]
+        return next((j for j, t in enumerate(self.strokes) if t.axis == s.axis and abs(t.across - s.across) < 1e-6
+                     and abs((t.span[0] if way > 0 else t.span[1]) - end) < 1e-6), None)
+
     def failed_in_a_row(self, i: int) -> int:
         n = 0
         for j, down in reversed(self.log):
@@ -173,10 +189,10 @@ class StrokeSite:
     def pending(self, h: Heights | None = None) -> list[int]:
         aside = self.set_aside()
         return [i for i in range(len(self.strokes))
-                if i not in aside and self.level(i, h) > self.target + self.cfg.done_tol]
+                if i not in aside and self.level(i, h) > self.target_of(i) + self.cfg.done_tol]
 
     def done(self) -> bool:
-        return not any(self.level(i) > self.target + self.cfg.done_tol for i in range(len(self.strokes)))
+        return not any(self.level(i) > self.target_of(i) + self.cfg.done_tol for i in range(len(self.strokes)))
 
     def anchors(self, i: int, way: int) -> list[float]:
         """Where along stroke i its passes start, in order running `way`: the first
@@ -229,11 +245,16 @@ class StrokeSite:
 
     def moves(self, h: Heights) -> list[tuple[Move, float]]:
         """The open moves on h, each with its strain: every stroke to come a
-        layer down, not past the target, either way along it."""
+        layer down, not past the target, either way along it, unless the
+        stroke carrying on from it that way is still to cut and no deeper."""
         out = []
-        for i in self.pending(h):
-            v = max(self.target, self.level(i, h) - self.cfg.layer)
+        pending = self.pending(h)
+        for i in pending:
+            v = max(self.target_of(i), self.level(i, h) - self.cfg.layer)
             for way in (1, -1):
+                j = self.next_along(i, way)
+                if j in pending and self.level(j, h) > self.level(i, h) - self.cfg.done_tol:
+                    continue
                 strain = self.strain(i, way, v, h)
                 if strain is not None:
                     out.append(((i, way, v), strain))
@@ -252,10 +273,11 @@ class StrokeSite:
         Depth first: the shallowest stroke first (to the nearest done_tol), so
         the site goes down a layer at a time across it; then one overlapping
         the stroke cut last, so a layer sweeps across the strokes side by side,
-        each cut over half of the one before; then the way along it gentlest on
-        the rover (its strain to the nearest strain_bin); then, for the first
-        move, the way in nearest `at`. If none is found within budget, the best
-        first move alone; None if no move is open."""
+        each cut over half of the one before; then the one with the deepest
+        target (a trench's far steps); then the way along it gentlest on the
+        rover (its strain to the nearest strain_bin); then, for the first move,
+        the way in nearest `at`. If none is found within budget, the best first
+        move alone; None if no move is open."""
         order: list[Move] = []
         tried = 0
         before = self.log[-1][0] if self.log else None
@@ -266,7 +288,7 @@ class StrokeSite:
             def key(ms: tuple[Move, float]):
                 (i, way, _), strain = ms
                 near = math.dist(at, self.entry(i, way)) if first and at else 0.0
-                return (-round(self.level(i, h) / self.cfg.done_tol), not self.beside(i, last),
+                return (-round(self.level(i, h) / self.cfg.done_tol), not self.beside(i, last), self.target_of(i),
                         round(strain / self.cfg.strain_bin), near)
             return [m for m, _ in sorted(self.moves(h), key=key)]
 
@@ -342,3 +364,31 @@ def hole_rects(corner: tuple[float, float], size: float) -> list[tuple[float, fl
     """The hole as (x0, x1, y0, y1)."""
     x0, y0 = corner
     return [(x0, x0 + size, y0, y0 + size)]
+
+
+# A trench one drum wide down a staircase: each step STEP_RISE below the one
+# before it over STEP_RUN, the wheelbase, so the wheels stand at most one step
+# apart; then a flat bottom BOTTOM long at the full depth. From one step the
+# drum reaches the next with room to spare (StrokeCfg.reach).
+STEP_RISE, STEP_RUN, BOTTOM = 0.12, 1.4, 2.0
+
+
+def trench_length(depth: float) -> float:
+    """How long the staircase trench down to depth (m) is, m."""
+    return (math.ceil(depth / STEP_RISE - 1e-9) - 1) * STEP_RUN + BOTTOM
+
+
+def trench_strokes(cfg: StrokeCfg, corner: tuple[float, float], depth: float) -> list[Stroke]:
+    """A trench `depth` deep along +x from `corner` (its least x and y), one
+    drum wide: a stroke a step, each down to its own level, the last the bottom."""
+    x0, y0 = corner
+    n = math.ceil(depth / STEP_RISE - 1e-9)
+    ends = [x0 + k * STEP_RUN for k in range(n)] + [x0 + trench_length(depth)]
+    return [Stroke(0, y0 + 0.5 * cfg.width, (ends[k], ends[k + 1]), f"step {k + 1} of {n - 1}" if k < n - 1 else "bottom",
+                   -min(depth, (k + 1) * STEP_RISE)) for k in range(n)]
+
+
+def trench_rects(cfg: StrokeCfg, corner: tuple[float, float], depth: float) -> list[tuple[float, float, float, float]]:
+    """The trench as (x0, x1, y0, y1)."""
+    x0, y0 = corner
+    return [(x0, x0 + trench_length(depth), y0, y0 + cfg.width)]

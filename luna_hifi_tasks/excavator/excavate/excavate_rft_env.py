@@ -35,8 +35,8 @@ from .excavate_env_cfg import BED_FLOOR_Z
 # shrouds meet the soil through rft.py, and only the wheels touch the ground
 # (with wheel_soil, only the chassis, should it reach the bed floor).
 ARM_COLLIDERS = EXCAVATOR_PRIM_REGEX + r"/Geometry/chassis/arm_(front|rear)_body/.*"
-# The tyres and grousers, off with wheel_soil.
-WHEEL_COLLIDERS = EXCAVATOR_PRIM_REGEX + r"/Geometry/chassis/wheel_(fl|fr|rl|rr)_body/.*"
+# The tyres and grousers, off with wheel_soil; the rear pair on the swinging axle.
+WHEEL_COLLIDERS = EXCAVATOR_PRIM_REGEX + r"/Geometry/chassis/(axle_rear_body/)?wheel_(fl|fr|rl|rr)_body/.*"
 
 SOIL_RGB = (0.62, 0.55, 0.45)    # as play_dig colours MPM particles
 PILE_RGB = (0.80, 0.73, 0.58)    # soil laid above where the ground started
@@ -116,6 +116,9 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         # The chassis frame on the soil too (chassis_soil, with the wheels).
         self._chassis_ids = self.robot.find_bodies([BODY_CHASSIS])[0] if c.chassis_soil and c.wheel_soil else []
         self._frame_patches = rft.frame_patches(device=dev) if self._chassis_ids else None
+        # The soil's lift on each wheel and on the frame, N (the site's stall report).
+        self._wheel_load = torch.zeros(self.num_envs, len(BODY_WHEELS), device=dev)
+        self._frame_load = torch.zeros(self.num_envs, device=dev)
         self._soil_marker = self._make_soil_marker() if c.soil_marker else None
         # The smooth mesh's colours, and its fixed parts, made on its first draw.
         self._soil_rgb = torch.tensor([SOIL_RGB, PILE_RGB, DEPTH_DARK], device=dev)
@@ -171,12 +174,14 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
             )
             forces.append(wheel_f)
             torques.append(wheel_t)
+            self._wheel_load = wheel_f[..., 2]
         if self._chassis_ids:
             frame_f, frame_t = rft.frame_loads(
                 self._frame_patches, centre[:, f], lin[:, f], quat[:, f], ang[:, f], self._bed_grid, self._rft,
             )
             forces.append(frame_f[:, None])
             torques.append(frame_t[:, None])
+            self._frame_load = frame_f[:, 2]
         if forces:
             self.robot.instantaneous_wrench_composer.set_forces_and_torques_index(
                 forces=torch.cat(forces, dim=1),

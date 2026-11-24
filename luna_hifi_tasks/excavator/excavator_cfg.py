@@ -12,8 +12,10 @@ from isaaclab.assets import ArticulationCfg
 
 from .excavator import (
     ARM_RANGE,
+    AXLE_DAMPING,
     CHASSIS_Z,
     JOINT_ARMS,
+    JOINT_AXLE,
     JOINT_DRUMS,
     JOINT_SHROUDS,
     JOINT_WHEELS,
@@ -116,6 +118,14 @@ EXCAVATOR_CFG = ArticulationCfg(
             velocity_limit_sim=2.0,
             stiffness=1500.0,
             damping=150.0,
+        ),
+        # Unpowered: the rear axle swings free, only damped.
+        "axle": ImplicitActuatorCfg(
+            joint_names_expr=[JOINT_AXLE],
+            effort_limit_sim=2000.0,
+            velocity_limit_sim=5.0,
+            stiffness=0.0,
+            damping=AXLE_DAMPING,
         ),
     },
 )

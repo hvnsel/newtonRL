@@ -46,11 +46,13 @@
 # begins. Once that drum is about full it backs out and pours it outside the
 # ring, on the sides no stroke is entered from. It turns only on the ring road,
 # never in the pit. It runs until every stroke is at its target, out of time or
-# the machine fails; a drive short of its goal is commanded there again. It
-# spawns on the ring west of the box.
+# the machine fails. A drive that stalls is reported and the machine set down
+# at its goal, a reset the log counts with its time. It spawns on the ring west
+# of the box.
 
 from __future__ import annotations
 
+import collections
 import math
 import time
 
@@ -60,7 +62,10 @@ from isaaclab.utils.configclass import configclass
 
 from ..excavate.excavate_env_cfg import BED_FLOOR_Z, ExcavateRftSceneCfg, ExcavatorExcavateRftEnvCfg
 from ..excavate.excavate_rft_env import ExcavatorExcavateRftEnv
-from ..excavator import ARM_LEN, PIVOT_X, SHROUD_OUT_R
+from ..excavator import (
+    ARM_LEN, AXLE_X, CHASSIS_Z, DECK_HALF, DECK_Z, JOINT_AXLE, JOINT_WHEELS, PIVOT_X, RAIL_HALF_W, RAIL_Y,
+    SHROUD_OUT_R, WHEEL_HALF_W, WHEEL_RADIUS, WHEEL_Y,
+)
 from ..excavator_cfg import ARM_STOW_ANGLE
 from ..mdp import rewards as R
 from ..mdp import rft
@@ -73,10 +78,12 @@ STAGE = 0.6                 # m short of the pit the front drum stops, lined up 
 PILE_CLEAR = 0.7            # m from the pit's edge to a pile poured between it and the way round
 PILES, PILE_STEP = 12, 0.6  # dump stops along the way round, this far apart, from the pit's west end
 WAYPOINT_RADIUS = 0.5       # m: a route waypoint counts as passed this close
-LOOSE_M, LOOSE_DEG = 0.25, 10.0     # a drive this close when DRIVE_SECONDS are up is done; a loose one at once
+LOOSE_M, LOOSE_DEG = 0.25, 10.0     # a loose drive is done this close
 DUMP_MIN_KG = 5.0           # less soil than this in a drum: not poured
 TURN_TRIES = 4              # turns on the spot to face the other way before the run gives up
 DRIVE_SECONDS, PASS_SECONDS, DUMP_SECONDS, READY_SECONDS = 90.0, 40.0, 15.0, 3.0
+# A drive that moves less than STALL_M and turns less than STALL_DEG in STALL_SECONDS has stalled.
+STALL_SECONDS, STALL_M, STALL_DEG = 10.0, 0.05, 5.0
 RING = STAGE + REACH        # m from a stroke site's edge out to the ring road: the drum STAGE short, lined up there
 PILE_MAX = 0.4              # m a pile stands before the next load goes on another: the inlet pours from 0.7 m up
 
@@ -179,6 +186,7 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         self._held = 0
         self._dumps = 0
         self._pouring = 0           # the drum a dump empties: 0 the front, 1 the rear
+        self._axle_ids = self.robot.find_joints([JOINT_AXLE])[0]
 
     # --- the runner's commands ---
 
@@ -230,6 +238,36 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
     def begin_ready(self) -> None:
         self._nav_actions.zero_()
         self.mode = "ready"
+
+    def put(self, x: float, y: float, yaw: float) -> None:
+        """Set the machine down at (x, y), env-local, facing yaw: level and at
+        rest, its rear axle square, its tyres and frame 2 cm over the soil
+        under them, its arms, drums and shrouds as they were."""
+        dev, c, s = self.device, math.cos(yaw), math.sin(yaw)
+
+        def highest(x0: float, x1: float, y0: float, y1: float) -> float:
+            """The highest soil under a rectangle of the machine's own frame, set down there, m."""
+            u, v = torch.meshgrid(torch.linspace(x0, x1, 9, device=dev), torch.linspace(y0, y1, 5, device=dev),
+                                  indexing="ij")
+            xy = torch.stack([x + c * u - s * v, y + s * u + c * v], -1).reshape(1, -1, 2)
+            return float(rft.height_at(self._bed_grid, self._rft, xy).max())
+
+        tyres = max(highest(ax - 0.25, ax + 0.25, wy - WHEEL_HALF_W, wy + WHEEL_HALF_W)
+                    for ax in (AXLE_X, -AXLE_X) for wy in (WHEEL_Y, -WHEEL_Y))
+        reach, half = AXLE_X + RAIL_HALF_W, RAIL_Y + RAIL_HALF_W
+        z = max(tyres + CHASSIS_Z, highest(-reach, reach, -half, half) + DECK_HALF[2] - DECK_Z) + 0.02
+        ids = torch.arange(self.num_envs, dtype=torch.int32, device=dev)
+        root = torch.zeros(1, 13, device=dev)
+        root[:, :3] = self.scene.env_origins[:1] + torch.tensor([[x, y, z]], device=dev)
+        root[:, 5], root[:, 6] = math.sin(0.5 * yaw), math.cos(0.5 * yaw)        # quaternion (x, y, z, w)
+        self.robot.write_root_pose_to_sim(root[:, :7], ids)
+        self.robot.write_root_velocity_to_sim(root[:, 7:], ids)
+        joints = self.robot.data.joint_pos.torch[:1].clone()
+        joints[:, self._axle_ids] = 0.0
+        self.robot.write_joint_state_to_sim(joints, torch.zeros_like(joints), None, ids)
+        self.scene.write_data_to_sim()
+        self.sim.forward()
+        self._nav_actions.zero_()
 
     def ready(self) -> bool:
         """Arms and shrouds within 0.02 rad of the dig's start pose."""
@@ -409,6 +447,7 @@ class Machine:
         self.steps = 0
         self.started = self.last = time.time()
         self.spent: dict[str, list[float]] = {}     # mode: [simulated s, real s]
+        self.resets = 0                             # drives that stalled, the machine put at their goals
 
     def now(self) -> float:
         """Simulated seconds since the start."""
@@ -449,26 +488,60 @@ class Machine:
 
     def drive(self, route, yaw: float, loose: bool = False) -> dict:
         """To the route's end, along yaw either way; a loose stop is done within
-        LOOSE_M and LOOSE_DEG. Not there after DRIVE_SECONDS, navigate is
-        commanded along the rest of the route again, from where it is, until
-        it gets there."""
+        LOOSE_M and LOOSE_DEG. A drive that stalls (moving under STALL_M and
+        turning under STALL_DEG for STALL_SECONDS) or is not there after
+        DRIVE_SECONDS is reported, and the machine is put at the route's end,
+        facing whichever end of yaw is nearer its heading: a reset, counted."""
         u, t0 = self.u, self.now()
         tol = (LOOSE_M, math.radians(LOOSE_DEG)) if loose else (None, None)
-        goal = tuple(round(v, 2) for v in route[-1])
-        while True:
-            u.begin_drive(route, yaw)
-            for _ in range(int(DRIVE_SECONDS / u.step_dt)):
-                a = self.zero.clone()
-                a[:, :2] = self.nav(u.nav_obs()).clamp(-1.0, 1.0)
-                self.step(a)
-                if u.arrived(*tol):
-                    break
-            dist, herr = u.goal_error()
-            if dist <= LOOSE_M and abs(herr) <= math.radians(LOOSE_DEG):
+        u.begin_drive(route, yaw)
+        seen = collections.deque(maxlen=int(STALL_SECONDS / u.step_dt))
+        why = f"not there after {DRIVE_SECONDS:g} s"
+        for _ in range(int(DRIVE_SECONDS / u.step_dt)):
+            a = self.zero.clone()
+            a[:, :2] = self.nav(u.nav_obs()).clamp(-1.0, 1.0)
+            self.step(a)
+            if u.arrived(*tol):
+                dist, herr = u.goal_error()
                 return {"s": round(self.now() - t0, 1), "miss_m": round(dist, 3), "miss_deg": round(math.degrees(herr), 1)}
-            print(f"[site] not at {goal} after {DRIVE_SECONDS:g} s: {dist:.2f} m, {math.degrees(herr):+.1f} deg off; "
-                  f"commanding it there again", flush=True)
-            route = [tuple(p) for p in u._route[u._route_next:].tolist()]
+            seen.append(self._sample(a[0]))
+            first, last = seen[0], seen[-1]
+            if (len(seen) == seen.maxlen and math.hypot(last[0] - first[0], last[1] - first[1]) < STALL_M
+                    and abs(math.remainder(last[2] - first[2], 2.0 * math.pi)) < math.radians(STALL_DEG)):
+                why = f"stalled {STALL_SECONDS:g} s"
+                break
+        self.resets += 1
+        x, y = route[-1]
+        face = yaw if math.cos(float(u._base_yaw()[0]) - yaw) > 0.0 else yaw + math.pi
+        print(f"[site] reset {self.resets} at t = {self.now():.0f} s: {why} going to ({x:.2f}, {y:.2f}); "
+              f"{self._report(seen)}; put there", flush=True)
+        u.put(x, y, face)
+        return {"s": round(self.now() - t0, 1), "reset": self.resets}
+
+    def _sample(self, a: torch.Tensor) -> tuple[float, ...]:
+        """A driving step: x, y, heading, navigate's forward and yaw, the
+        wheels' rim speed and the speed over the ground, m/s."""
+        d = self.u.robot.data
+        x, y = self.here()
+        rim = float(d.joint_vel.torch[0, self.u._wheel_ids].abs().mean()) * WHEEL_RADIUS
+        ground = float(torch.linalg.norm(d.root_lin_vel_w.torch[0, :2]))
+        return x, y, float(self.u._base_yaw()[0]), float(a[0]), float(a[1]), rim, ground
+
+    def _report(self, seen) -> str:
+        """What a stalled drive was doing over its last steps (_sample), and how
+        the machine stands: its tilt and the soil holding up its wheels and frame."""
+        u = self.u
+        dist, herr = u.goal_error()
+        n = max(1, len(seen))
+        forward, turn, rim, ground = (sum(s[k] for s in seen) / n for k in (3, 4, 5, 6))
+        slip = f"{100.0 * (1.0 - ground / rim):.0f}%" if rim > 0.02 else "-"
+        g = u.robot.data.projected_gravity_b.torch[0].tolist()
+        pitch, roll = (math.degrees(math.atan2(g[k], -g[2])) for k in (0, 1))
+        wheels = ", ".join(f"{name[-2:]} {v:.0f}" for name, v in zip(JOINT_WHEELS, u._wheel_load[0].tolist()))
+        return (f"{dist:.2f} m, {math.degrees(herr):+.1f} deg off; over the last {n * u.step_dt:.0f} s navigate "
+                f"asked forward {forward:+.2f}, yaw {turn:+.2f}, the wheels' rims ran {rim:.2f} m/s and the ground "
+                f"went by at {ground:.2f} m/s (slip {slip}); pitch {pitch:+.0f}, roll {roll:+.0f} deg; the soil holds "
+                f"up the wheels {wheels} N and the frame {float(u._frame_load[0]):.0f} N")
 
     def turn_round(self) -> None:
         """Half a turn on the spot, in three sixths: navigate turns to the nearer
@@ -677,10 +750,11 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
     backs out, goes round to the piles, pours it and comes back. It turns only
     on the ring road, never in the pit: at the gate if it faces the wrong way
     for its drum, and at the piles; if navigation swings it round in the pit,
-    it backs out to the gate to turn there. Given save, the bed's heights go
-    to that .npz after every move and where the run stops (StrokeSite.save).
-    Returns a row per move and how the run ended: done, out of time or the
-    machine failed."""
+    it backs out to the gate to turn there. A drive that stalls is reported
+    and the machine put at its goal (Machine.drive). Given save, the bed's
+    heights go to that .npz after every move and where the run stops
+    (StrokeSite.save). Returns a row per move and how the run ended: done, out
+    of time or the machine failed, with the resets."""
     u, c = env.unwrapped, site.cfg
     full = u.cfg.fill_success_fraction * u.cfg.target_load_kg
     m = Machine(env, dig, nav, record, max_minutes)
@@ -764,7 +838,7 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
             look()
             move = site.next_move(m.here())
             if move is None:
-                return rows, "done"
+                return rows, f"done, {m.resets} resets"
             i, way, v = move
             s = site.strokes[i]
             yaw, gate, anchors = s.yaw(way), ring.entry(s, way), site.anchors(i, way)
@@ -805,4 +879,4 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
         if save:
             look()
             site.save(save)
-        return rows, f"stopped: {err}"
+        return rows, f"stopped: {err} ({m.resets} resets)"

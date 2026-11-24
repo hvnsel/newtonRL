@@ -69,6 +69,13 @@ TRACK = 1.15                    # left wheel centre to right wheel centre, along
 AXLE_X = 0.5 * WHEELBASE        # +/- 0.70
 WHEEL_Y = 0.5 * TRACK           # +/- 0.575
 
+# The rear axle swings about the machine's length on a pivot at its middle,
+# as a wheel loader's does, so all four wheels stay down on twisted ground.
+# Unpowered: only damped (excavator_cfg), between stops either way.
+AXLE_SWING = math.radians(15.0)
+AXLE_MASS = 15.0                # the beam carrying the rear wheels
+AXLE_DAMPING = 200.0            # N m s/rad
+
 # Arm pivot distance ahead of the axle; the drum and yoke legs clear the
 # front wheels by 0.069 m at full dig.
 MAST_OFFSET_X = 0.22
@@ -157,11 +164,13 @@ JOINT_WHEELS = JOINT_WHEELS_LEFT + JOINT_WHEELS_RIGHT
 JOINT_ARMS = ["arm_front", "arm_rear"]
 JOINT_DRUMS = ["drum_front", "drum_rear"]
 JOINT_SHROUDS = ["shroud_front", "shroud_rear"]
+JOINT_AXLE = "axle_rear"
 
 BODY_CHASSIS = "chassis"
 BODY_DRUMS = ["drum_front_body", "drum_rear_body"]
 BODY_SHROUDS = ["shroud_front_body", "shroud_rear_body"]
 BODY_WHEELS = [f"{j}_body" for j in JOINT_WHEELS]
+BODY_AXLE = f"{JOINT_AXLE}_body"
 
 FRAME_RGBA = "0.78 0.62 0.16 1"     # machine yellow
 DECK_RGBA = "0.42 0.45 0.50 1"
@@ -469,12 +478,19 @@ _FRAME_PARTS = [
 
 _FRAME_XML = "\n      ".join(_FRAME_PARTS)
 
+# The rear wheels hang on the swinging axle: a beam across the machine, its
+# inertia about its middle.
+_AXLE_I = AXLE_MASS * TRACK ** 2 / 12.0
 _WHEELS_XML = "\n      ".join(
     [
         _wheel("wheel_fl", AXLE_X, WHEEL_Y, "wheel_fl"),
         _wheel("wheel_fr", AXLE_X, -WHEEL_Y, "wheel_fr"),
-        _wheel("wheel_rl", -AXLE_X, WHEEL_Y, "wheel_rl"),
-        _wheel("wheel_rr", -AXLE_X, -WHEEL_Y, "wheel_rr"),
+        f"""<body name="{BODY_AXLE}" pos="{-AXLE_X:.4f} 0 0">
+        <joint name="{JOINT_AXLE}" type="hinge" axis="1 0 0" range="{-AXLE_SWING:.4f} {AXLE_SWING:.4f}"/>
+        <inertial pos="0 0 0" mass="{AXLE_MASS}" diaginertia="{_AXLE_I:.4f} 0.02 {_AXLE_I:.4f}"/>
+        {_wheel("wheel_rl", 0.0, WHEEL_Y, "wheel_rl")}
+        {_wheel("wheel_rr", 0.0, -WHEEL_Y, "wheel_rr")}
+      </body>""",
     ]
 )
 
@@ -500,10 +516,13 @@ EXCAVATOR_MJCF = f"""
     <joint damping="0.05"/>
   </default>
 
-  <!-- The rotor turns inside the shroud on a running fit: a bearing. -->
+  <!-- The rotor turns inside the shroud on a running fit: a bearing. The rear
+       wheels, on the axle, sit against the frame as the front ones do. -->
   <contact>
     <exclude body1="drum_front_body" body2="shroud_front_body"/>
     <exclude body1="drum_rear_body" body2="shroud_rear_body"/>
+    <exclude body1="{BODY_CHASSIS}" body2="wheel_rl_body"/>
+    <exclude body1="{BODY_CHASSIS}" body2="wheel_rr_body"/>
   </contact>
 
   <worldbody>
@@ -511,7 +530,7 @@ EXCAVATOR_MJCF = f"""
       <freejoint name="{JOINT_ROOT}"/>
       {_FRAME_XML}
 
-      <!-- running gear: four driven wheels, skid steer, no steering joint -->
+      <!-- running gear: four driven wheels, skid steer, no steering joint; the rear pair on a swinging axle -->
       {_WHEELS_XML}
 
       <!-- excavation: arm + drum at each end, rear is the front rotated 180 deg -->

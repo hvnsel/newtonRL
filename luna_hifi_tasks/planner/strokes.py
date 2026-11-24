@@ -27,7 +27,9 @@ the most left to cut goes first, so a hole goes down a layer at a time and a
 trench's deeper steps lead. Strokes carrying on from one another along a
 line (a trench's steps) keep a staircase all the way down: each is cut no
 deeper than the next one stands, nor more than a step below the one before
-it (two least cuts, if a step is less).
+it (two least cuts, if a step is less). Strokes side by side go down
+together: none is cut more than a layer below the one beside it. A stroke's
+height is its highest strip, cfg.strip wide, side by side across it.
 
 Pure Python and numpy; site_env.run_strokes cuts the strokes on the RFT soil.
 """
@@ -116,6 +118,7 @@ class StrokeCfg:
     # --- the cut ------------------------------------------------------
     width: float = 1.6          # m the drum cuts across
     stride: float = 0.8         # m at most between side-by-side strokes' centre lines: each overlaps the next by half
+    strip: float = 0.4          # m: a stroke's height is its highest strip this wide, side by side across it
     layer: float = 0.05         # m a move takes off a stroke at most ...
     least: float = 0.03         # ... and at least, unless that is all it has left: the dig's shallowest cut
     done_tol: float = 0.015     # a stroke this close to its target is done
@@ -160,23 +163,32 @@ class StrokeSite:
         t = self.strokes[i].target
         return self.target if t is None else t
 
-    def halves(self, i: int, a0: float, a1: float, h: Heights | None = None) -> float:
-        """The height of stroke i's lane from a0 to a1 along it, m: the higher of
-        its two halves side by side. Where strokes overlap, a half is shared
-        with the neighbour, so ground a neighbour has cut half of still stands
-        uncut, and is cut in its turn, over the seam."""
-        s, w = self.strokes[i], 0.5 * self.cfg.width
-        return max((h or self.heights).mean(*Stroke(s.axis, s.across + d, s.span).rect(a0, a1, 0.5 * w))
-                   for d in (-0.5 * w, 0.5 * w))
+    def strips(self, i: int, a0: float, a1: float, h: Heights | None = None) -> float:
+        """The height of stroke i's lane from a0 to a1 along it, m: the highest
+        of its strips side by side, cfg.strip wide (or a little less, to fit),
+        each averaged along it in pieces no longer than a work area. A strip
+        standing high shows, however narrow the rest of the lane leaves it;
+        the slope a pass leaves at its start is averaged over its piece. Where
+        strokes overlap, strips are shared with the neighbour, so ground a
+        neighbour has cut part of still stands uncut, and is cut in its turn,
+        over the seam."""
+        s, c, h = self.strokes[i], self.cfg, h or self.heights
+        lo, hi = min(a0, a1), max(a0, a1)
+        across = max(1, round(c.width / c.strip))
+        along = max(1, math.ceil((hi - lo) / (c.ahead + c.behind) - 1e-9))
+        w = c.width / across
+        return max(h.mean(*Stroke(s.axis, s.across + (k + 0.5) * w - 0.5 * c.width, s.span).rect(
+                       lo + (hi - lo) * m / along, lo + (hi - lo) * (m + 1) / along, 0.5 * w))
+                   for k in range(across) for m in range(along))
 
     def level(self, i: int, h: Heights | None = None) -> float:
-        """Stroke i's height, m, by its halves all along it."""
-        return self.halves(i, *self.strokes[i].span, h)
+        """Stroke i's height, m, by its strips all along it."""
+        return self.strips(i, *self.strokes[i].span, h)
 
     def work_level(self, i: int, anchor: float, way: int, h: Heights | None = None) -> float:
-        """The height of a pass's work area, m, by its halves: at its level, the pass is not needed."""
+        """The height of a pass's work area, m, by its strips: at its level, the pass is not needed."""
         c = self.cfg
-        return self.halves(i, anchor - way * c.behind, anchor + way * c.ahead, h)
+        return self.strips(i, anchor - way * c.behind, anchor + way * c.ahead, h)
 
     def beside(self, i: int, j: int | None) -> bool:
         """Whether strokes i and j run the same way and overlap."""
@@ -184,6 +196,12 @@ class StrokeSite:
             return False
         a, b = self.strokes[i], self.strokes[j]
         return a.axis == b.axis and abs(a.across - b.across) < self.cfg.width - 1e-9
+
+    def alongside(self, i: int) -> list[int]:
+        """The strokes side by side with stroke i: beside it, and along it over the same stretch."""
+        s = self.strokes[i]
+        return [j for j, t in enumerate(self.strokes) if self.beside(i, j)
+                and min(s.span[1], t.span[1]) - max(s.span[0], t.span[0]) > 1e-6]
 
     def next_along(self, i: int, way: int) -> int | None:
         """The stroke carrying on from stroke i along its line, running `way`."""
@@ -282,7 +300,7 @@ class StrokeSite:
         return max(apart, step)
 
     def moves(self, h: Heights, why: list | None = None, rise: float | None = None,
-              anyway: bool = False, loose: bool = False) -> list[tuple[Move, float]]:
+              anyway: bool = False, loose: bool = False, apart: bool = True) -> list[tuple[Move, float]]:
         """The open moves on h, each with its strain: every stroke to come a
         layer down, not past the target, its way along it or either, and at
         least `least` unless that is all it has left. In a staircase a step is
@@ -293,9 +311,14 @@ class StrokeSite:
         if a step is less. Else a step standing between one and two least cuts
         below the one before could be cut neither deeper (this rule) nor the
         one before it down to it (least), and the two would wait on each other.
-        Given why, each closed one's reason is appended to it; rise as in
-        strain. With anyway, the rover's footprint (strain) shuts none; with
-        loose, nothing does: every stroke short of its target a layer down."""
+        Side by side, a stroke is cut no more than a layer (or two least cuts)
+        below the one beside it while that one is short, so the lanes go down
+        together, a layer at a time, and the rover straddling them stands
+        level; of any two, the higher can always be cut. Given why, each
+        closed one's reason is appended to it; rise as in strain. With anyway,
+        the rover's footprint (strain) shuts none; without apart, the strokes
+        side by side do not either; with loose, nothing does: every stroke
+        short of its target a layer down."""
         c, out = self.cfg, []
         short = self.short(h)
         for i in short:
@@ -309,6 +332,11 @@ class StrokeSite:
                         lowest = self.level(before, h) - max(self.target_of(before) - t, 2.0 * c.least)
                         if lowest > v:
                             v, held = lowest, f"a step at most below {self.strokes[before].name}"
+                    if apart:
+                        for k in self.alongside(i):
+                            lowest = self.level(k, h) - max(c.layer, 2.0 * c.least)
+                            if k in short and lowest > v:
+                                v, held = lowest, f"a layer at most below {self.strokes[k].name}"
                     j = self.next_along(i, way)
                     if j in short and self.level(j, h) > v:
                         v, held = self.level(j, h), f"waits for {self.strokes[j].name}"
@@ -343,8 +371,9 @@ class StrokeSite:
         then, for the first move, the way in nearest `at`. If none is found
         within budget, the best first move alone. If a bank alone shuts every
         move, the best one cutting into a bank up to cfg.bank; if the rover's
-        footprint shuts every move, the best one all the same; if a staircase's
-        holds do, the best a layer down regardless: a stroke short of its
+        footprint shuts every move, the best one all the same; if strokes side
+        by side do, the best one regardless of them; if a staircase's holds
+        do, the best a layer down regardless: a stroke short of its
         target is always up for another cut. A stroke whose last `retries`
         moves each failed goes after every other move, those fallbacks' too:
         it is cut again only when no other stroke has a move, so a spot the
@@ -354,7 +383,7 @@ class StrokeSite:
         before = self.log[-1][0] if self.log else None
 
         def ranked(h: Heights, first: bool, rise: float | None = None, anyway: bool = False,
-                   loose: bool = False) -> list[Move]:
+                   loose: bool = False, apart: bool = True) -> list[Move]:
             last = order[-1][0] if order else before
 
             def key(ms: tuple[Move, float]):
@@ -363,7 +392,8 @@ class StrokeSite:
                 left = self.level(i, h) - self.target_of(i)
                 return (self.failed_in_a_row(i) >= self.cfg.retries, -round(left / self.cfg.done_tol),
                         not self.beside(i, last), self.target_of(i), round(strain / self.cfg.strain_bin), near)
-            return [m for m, _ in sorted(self.moves(h, rise=rise, anyway=anyway, loose=loose), key=key)]
+            found = self.moves(h, rise=rise, anyway=anyway, loose=loose, apart=apart)
+            return [m for m, _ in sorted(found, key=key)]
 
         def search(h: Heights, first: bool) -> bool:
             nonlocal tried
@@ -391,10 +421,11 @@ class StrokeSite:
                 return order
             return [m for m in top if not stuck(m)][:1]
         # Nothing open but strokes that keep failing, or nothing at all: the fallbacks in turn, a
-        # bank, then the footprint and then the staircase's holds set aside, for a move on another
-        # stroke; failing that, the first move found at all.
+        # bank, then the footprint, the strokes side by side and the staircase's holds set aside,
+        # for a move on another stroke; failing that, the first move found at all.
         first = top[:1]
-        for kw in ({"rise": self.cfg.bank}, {"anyway": True}, {"loose": True}):
+        for kw in ({"rise": self.cfg.bank}, {"anyway": True}, {"anyway": True, "apart": False},
+                   {"loose": True}):
             found = ranked(self.heights, True, **kw)
             other = [m for m in found if not stuck(m)]
             if other:

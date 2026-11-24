@@ -1,6 +1,6 @@
 """The stroke planner's view of a site run's ground, from the heights it saves
 after every move (site_run writes <video>_cut.npz): each stroke's level, its
-two halves, its target, and the move it has or why it has none, tier by tier
+target and its strips across, and the move it has or why it has none, tier by tier
 as plan() tries them; then the move it would make. No simulator: seconds on
 the CPU.
 
@@ -51,17 +51,29 @@ for (x0, x1, y0, y1), t, n in zip(rects, targets, names):
 site = st.StrokeSite(cfg, strokes, float(min(targets)), st.Heights(f["z"], tuple(f["lower"]), float(f["cell"])))
 h = site.heights
 
+
+def pieces(span):
+    """The span in pieces no longer than a work area, as StrokeSite.strips measures it."""
+    lo, hi = span
+    m = max(1, math.ceil((hi - lo) / (cfg.ahead + cfg.behind) - 1e-9))
+    return [(lo + (hi - lo) * k / m, lo + (hi - lo) * (k + 1) / m) for k in range(m)]
+
+
 print(f"{sys.argv[1]}: after {int(f['moves'])} moves")
-print(f"{'stroke':24s} {'level':>7s} {'halves':>15s} {'target':>7s}   (cm)")
+n = max(1, round(cfg.width / cfg.strip))
+print(f"{'stroke':24s} {'level':>7s} {'target':>7s}   strips across, -y to +y, each its highest piece (cm)")
 for i, s in enumerate(strokes):
-    w = 0.5 * cfg.width
-    halves = [h.mean(*st.Stroke(s.axis, s.across + d, s.span).rect(*s.span, 0.5 * w)) for d in (-0.5 * w, 0.5 * w)]
+    w = cfg.width / n
+    strips = [max(
+        h.mean(*st.Stroke(s.axis, s.across + (k + 0.5) * w - 0.5 * cfg.width, s.span).rect(a0, a1, 0.5 * w))
+        for a0, a1 in pieces(s.span)) for k in range(n)]
     mark = "" if i in site.short() else "  done"
-    print(f"{s.name:24s} {100 * site.level(i):+7.1f} {100 * halves[0]:+7.1f} {100 * halves[1]:+7.1f} "
-          f"{100 * site.target_of(i):+7.1f}{mark}")
+    print(f"{s.name:24s} {100 * site.level(i):+7.1f} {100 * site.target_of(i):+7.1f}  "
+          + " ".join(f"{100 * z:+6.1f}" for z in strips) + mark)
 
 for label, kw in (("normal", {}), ("bank up to %g cm" % (100 * cfg.bank), {"rise": cfg.bank}),
-                  ("footprint ignored", {"anyway": True})):
+                  ("footprint ignored", {"anyway": True}),
+                  ("footprint and side by side ignored", {"anyway": True, "apart": False})):
     why = []
     found = site.moves(h, why, **kw)
     print(f"\n{label}: {len(found)} open" + "".join(f"\n  open   {strokes[i].name} to {100 * v:+.1f} cm"

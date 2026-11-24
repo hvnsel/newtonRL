@@ -6,7 +6,8 @@
 # rotor and shroud bodies as world-frame wrenches, then the soil inside the
 # vane-tip circles that the openings face moves from the grid into the drums. Observations, rewards
 # and resets are the excavate env's. With soil_marker the grid is drawn in the
-# viewer: as one smooth mesh in Newton's GL viewer, else one box per cell. With
+# viewer: as one smooth mesh in Newton's GL viewer, else one box per cell; with
+# soil_voxels too, one box per cell, dark brown where a drum cut. With
 # wheel_soil the wheels stand on the same soil:
 # their colliders are off, rft.py carries them, and their tyres press ruts.
 
@@ -53,6 +54,11 @@ DEPTH_SHADES = 20
 DEPTH_DARK = tuple(0.5 * c for c in SOIL_RGB)
 SHADE_BLUR = 0.2                 # m
 PILE_RISE = 0.025                # m
+# soil_voxels, the grid as it was first drawn: a box per cell, the soil's colour,
+# CUT_RGB where a drum has cut it and it lies CUT_SHOWN or more below where the
+# ground started (a tyre's rut stays the soil's), a pile's colour PILE_RISE up.
+CUT_RGB = (0.36, 0.30, 0.24)
+CUT_SHOWN = 0.001                # m
 
 
 def depth_shades() -> list[tuple[float, ...]]:
@@ -122,6 +128,8 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         self._wheel_load = torch.zeros(self.num_envs, len(BODY_WHEELS), device=dev)
         self._frame_load = torch.zeros(self.num_envs, device=dev)
         self._soil_marker = self._make_soil_marker() if c.soil_marker else None
+        # soil_voxels: the cells a drum has cut into, since the soil was laid.
+        self._dug = torch.zeros_like(self._bed_grid, dtype=torch.bool) if c.soil_marker and c.soil_voxels else None
         # The smooth mesh's colours, and its fixed parts, made on its first draw.
         self._soil_rgb = torch.tensor([SOIL_RGB, PILE_RGB, DEPTH_DARK], device=dev)
         self._soil_mesh = None
@@ -197,10 +205,13 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         body = None                                             # where loose soil may not run: drums, the frame
         if drums:
             drum_axis = self._sf.drum_axis(quat[:, 2:4])
+            before = self._bed_grid
             self._bed_grid, self._loose, self._fill_kg = self._sf.excavate(
                 self._bed_grid, self._loose, self._fill_kg, self._cells, centre[:, 2:4], drum_axis,
                 self._sf.drum_inlet(quat[:, 2:4]), self._capacity, self._dig_dt, self._rft,
             )
+            if self._dug is not None:                           # only a drum's circle loses soil here
+                self._dug |= self._bed_grid < before
             if self._rft.repose:
                 body = self._sf.drum_body(self._cells, centre[:, 2:4], drum_axis, self._bed_grid)
         if self._chassis_ids:
@@ -227,6 +238,8 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
     def _relay_soil(self, env_ids: torch.Tensor) -> None:
         self._bed_grid[env_ids] = self._fresh_bed
         self._loose[env_ids] = 0.0
+        if self._dug is not None:
+            self._dug[env_ids] = False
 
     # --- soil in the viewer ---
 
@@ -234,8 +247,13 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         def box(rgb):
             return sim_utils.CuboidCfg(size=(1.0, 1.0, 1.0), visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=rgb))
 
-        markers = {"soil": box(SOIL_RGB), "pile": box(PILE_RGB)}
-        markers.update({f"depth_{k + 1}": box(rgb) for k, rgb in enumerate(depth_shades())})
+        # Newton's viewer draws every box once per colour, the rest at zero size: soil_voxels
+        # keeps to three colours, for a bed of hundreds of thousands of cells.
+        if self.cfg.soil_voxels:
+            markers = {"soil": box(SOIL_RGB), "cut": box(CUT_RGB), "pile": box(PILE_RGB)}
+        else:
+            markers = {"soil": box(SOIL_RGB), "pile": box(PILE_RGB)}
+            markers.update({f"depth_{k + 1}": box(rgb) for k, rgb in enumerate(depth_shades())})
         return VisualizationMarkers(VisualizationMarkersCfg(prim_path="/Visuals/soil", markers=markers))
 
     def _soil_shade(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -252,8 +270,15 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
         return steps, depth <= -PILE_RISE
 
     def _show_soil(self) -> None:
-        """The soil in the viewer: as one smooth mesh per env in Newton's GL
-        viewer, else as a box per cell from the floor to its height."""
+        """The soil in the viewer: with soil_voxels a box per cell, coloured as
+        CUT_RGB says; else one smooth mesh per env in Newton's GL viewer, or a
+        box per cell shaded by depth."""
+        if self.cfg.soil_voxels:
+            # The marker's boxes: the soil's (0), a cut's (1), a pile's (2).
+            top, fresh = self._bed_grid, self._fresh_bed
+            cut = self._dug & (top <= fresh - CUT_SHOWN)
+            self._show_boxes(torch.where(cut, 1, torch.where(top >= fresh + PILE_RISE, 2, 0)))
+            return
         steps, pile = self._soil_shade()
         viewer = self._mesh_viewer()
         if viewer is not None:
@@ -265,7 +290,11 @@ class ExcavatorExcavateRftEnv(ExcavatorExcavateEnv):
                 self._soil_mesh = False
         # The marker's boxes: the soil's (0), a pile's (1), the k-th depth shade (1 + k).
         steps = steps.round()
-        index = torch.where(steps >= 1, 1 + steps, pile.float()).long()
+        self._show_boxes(torch.where(steps >= 1, 1 + steps, pile.float()).long())
+
+    def _show_boxes(self, index: torch.Tensor) -> None:
+        """Each grid cell as a box from the floor to its height, the marker's
+        index (E, ny, nx) its colour."""
         top = self._bed_grid                                              # (E, ny, nx)
         o = self.scene.env_origins[:, None, None]                         # (E, 1, 1, 3)
         centre = torch.cat([self._cells + o[..., :2], (o[..., 2] + 0.5 * (top + BED_FLOOR_Z)).unsqueeze(-1)], -1)

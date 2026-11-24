@@ -114,6 +114,9 @@ def _parse(argv):
     p.add_argument("--flat", action="store_true",
                    help=f"a bed {FLAT_BED_X[1] - FLAT_BED_X[0]:g} x {FLAT_BED_Y[1] - FLAT_BED_Y[0]:g} m, "
                         "its edges out of view: flat ground all round")
+    p.add_argument("--voxels", action="store_true",
+                   help="RFT task: the soil as it was first drawn, a box per cell, dark brown where the drum cut "
+                        "(soil_voxels), not the smooth depth-shaded mesh")
     p.add_argument("--front", action="store_true",
                    help=f"the camera ahead of the machine and to its left, at {FRONT_EYE} looking at {FRONT_LOOKAT}, "
                         f"onto the front drum, its shroud and the soil ahead of it; the sun at {FRONT_SUN}")
@@ -748,6 +751,9 @@ def main(argv=None) -> int:
         # The RFT soil has no particles; its env draws the height grid instead.
         if hasattr(env_cfg, "soil_marker"):
             env_cfg.soil_marker = True
+        if args.voxels and hasattr(env_cfg, "soil_voxels"):
+            env_cfg.soil_voxels = True
+            print("[play] soil drawn as a box per cell, dark brown where the drum cut")
     if args.video:
         from isaaclab.envs.utils.video_recorder_cfg import VideoRecorderCfg
 

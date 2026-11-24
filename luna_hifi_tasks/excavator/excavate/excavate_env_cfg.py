@@ -867,6 +867,9 @@ class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     # Draw the soil grid in the viewer, and hide the ground's grid that would
     # cover the cut. play_dig turns it on for a window or a video.
     soil_marker: bool = False
+    # With soil_marker, the grid as it was first drawn (play_dig --voxels): a box
+    # per cell, dark brown where a drum cut, not the smooth depth-shaded mesh.
+    soil_voxels: bool = False
     # The wheels on the same soil instead of the rigid ground: their colliders
     # off, rft.py carries them and their tyres press ruts, and the ground drops
     # to the bed floor, so the machine can drive down into its own cuts.

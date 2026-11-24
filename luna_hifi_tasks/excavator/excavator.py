@@ -432,16 +432,16 @@ def _arm_assembly(
 # Frame geoms, all fixed to the chassis body.
 # ---------------------------------------------------------------------------
 
-# The boxes of _FRAME_PARTS below as (centre, half size), chassis frame: the
-# rails, crossmembers, deck and masts, for the soil to meet (mdp/rft.py).
+# The frame as the soil meets it (mdp/rft.py), (centre, half size) boxes in
+# the chassis frame: one solid block over the outline of _FRAME_PARTS below,
+# from the deck's underside to the rails' tops, nothing open between the rails,
+# crossmembers and deck; and the masts standing out of it.
 _MAST_X = AXLE_X + 0.5 * MAST_OFFSET_X
 _MAST_HALF = (0.5 * MAST_OFFSET_X + MAST_HALF[0], MAST_HALF[1], MAST_HALF[2])
+_FRAME_LOW, _FRAME_HIGH = DECK_Z - DECK_HALF[2], RAIL_HALF_H
 FRAME_BOXES = (
-    ((0.0, RAIL_Y, 0.0), (AXLE_X + RAIL_HALF_W, RAIL_HALF_W, RAIL_HALF_H)),
-    ((0.0, -RAIL_Y, 0.0), (AXLE_X + RAIL_HALF_W, RAIL_HALF_W, RAIL_HALF_H)),
-    ((AXLE_X, 0.0, 0.0), (RAIL_HALF_W, RAIL_Y, RAIL_HALF_H)),
-    ((-AXLE_X, 0.0, 0.0), (RAIL_HALF_W, RAIL_Y, RAIL_HALF_H)),
-    ((0.0, 0.0, DECK_Z), DECK_HALF),
+    ((0.0, 0.0, 0.5 * (_FRAME_LOW + _FRAME_HIGH)),
+     (AXLE_X + RAIL_HALF_W, RAIL_Y + RAIL_HALF_W, 0.5 * (_FRAME_HIGH - _FRAME_LOW))),
     ((_MAST_X, 0.0, 0.5 * MAST_TOP_Z), _MAST_HALF),
     ((-_MAST_X, 0.0, 0.5 * MAST_TOP_Z), _MAST_HALF),
 )

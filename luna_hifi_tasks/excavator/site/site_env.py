@@ -123,6 +123,10 @@ class ExcavatorSiteEnvCfg(ExcavatorExcavateRftEnvCfg):
     # Dumping: the front inlet dump_tilt off straight down, its load laid out at dump_rate.
     dump_tilt: float = 0.0                     # rad
     dump_rate: float = 30.0                    # kg/s
+    # Rails: through every dig pass the machine is held on the pass's line,
+    # facing along it, with no speed across it and no turning
+    # (ExcavatorSiteEnv.hold_on_line). The run's log says so at its start.
+    dig_rails: bool = True
     # Or a site cut in strokes (an L, a hole, a staircase trench) in a box this
     # long along x and wide across y, m; (0, 0): a pit or trench.
     box: tuple[float, float] = (0.0, 0.0)
@@ -268,6 +272,27 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         self.scene.write_data_to_sim()
         self.sim.forward()
         self._nav_actions.zero_()
+
+    def hold_on_line(self, x: float, y: float, heading: float, face: float) -> None:
+        """Rails (cfg.dig_rails): the machine set back on the line through (x, y),
+        env-local, along heading, turned to face, with no speed across the line
+        and no turning. Along the line, up and down and in its tilt it moves as
+        the physics has it. Called after each step of a pass."""
+        d, dev = self.robot.data, self.device
+        o = self.scene.env_origins[:1]
+        across = torch.tensor([-math.sin(heading), math.cos(heading), 0.0], device=dev)
+        pos = d.root_pos_w.torch[:1] - o
+        pos = pos - ((pos - torch.tensor([x, y, 0.0], device=dev)) * across).sum(-1, keepdim=True) * across
+        q = d.root_quat_w.torch[:1]                                              # (x, y, z, w)
+        yaw = torch.atan2(2.0 * (q[:, 3] * q[:, 2] + q[:, 0] * q[:, 1]), 1.0 - 2.0 * (q[:, 1] ** 2 + q[:, 2] ** 2))
+        q = _quat_mul(_yaw_quat(torch.full_like(yaw, face)), _quat_mul(_yaw_quat(-yaw), q))   # its tilt, turned to face
+        lin = d.root_lin_vel_w.torch[:1]
+        lin = lin - (lin * across).sum(-1, keepdim=True) * across
+        ang = d.root_ang_vel_w.torch[:1] * torch.tensor([1.0, 1.0, 0.0], device=dev)
+        ids = torch.arange(self.num_envs, dtype=torch.int32, device=dev)
+        self.robot.write_root_pose_to_sim(torch.cat([pos + o, q], -1), ids)
+        self.robot.write_root_velocity_to_sim(torch.cat([lin, ang], -1), ids)
+        self.sim.forward()
 
     def ready(self) -> bool:
         """Arms and shrouds within 0.02 rad of the dig's start pose."""
@@ -434,6 +459,24 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         return none, none
 
 
+def _yaw_quat(yaw: torch.Tensor) -> torch.Tensor:
+    """(N, 4) quaternions (x, y, z, w) turning by yaw (N,) about z."""
+    zero = torch.zeros_like(yaw)
+    return torch.stack([zero, zero, torch.sin(0.5 * yaw), torch.cos(0.5 * yaw)], -1)
+
+
+def _quat_mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """The product a b of (N, 4) quaternions (x, y, z, w): b, then a."""
+    ax, ay, az, aw = a.unbind(-1)
+    bx, by, bz, bw = b.unbind(-1)
+    return torch.stack([
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ], -1)
+
+
 class Machine:
     """The runner's hold on the site env: it steps the env with the policies,
     keeps the clock, and drives, turns, digs and dumps. dig and nav map their
@@ -565,6 +608,8 @@ class Machine:
         t0 = self.now()
         for _ in range(int(PASS_SECONDS / u.step_dt)):
             self.step(self.dig(self.obs["policy"]).clamp(-1.0, 1.0))
+            if u.cfg.dig_rails:
+                u.hold_on_line(anchor[0], anchor[1], heading, heading + math.pi * drum)
             if bool(u._pass_done[0]):
                 break
         return {
@@ -758,6 +803,9 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
     u, c = env.unwrapped, site.cfg
     full = u.cfg.fill_success_fraction * u.cfg.target_load_kg
     m = Machine(env, dig, nav, record, max_minutes)
+    if u.cfg.dig_rails:
+        print("[site] dig_rails on: every dig pass is held straight on its line (ExcavatorSiteEnv.hold_on_line)",
+              flush=True)
     lanes = [s.rect(*s.span, 0.5 * c.width) for s in site.strokes]
     ring = Ring((min(r[0] for r in lanes), max(r[1] for r in lanes), min(r[2] for r in lanes), max(r[3] for r in lanes)))
     # Piles on the ring's sides no stroke is entered from (a trench: all but its near end); else +y and +x.

@@ -42,8 +42,8 @@
 # soil's load on it, in the sideways share of its contact's slip, so a wheel
 # spinning in a skid-steer turn grips less sideways than one drifting.
 #
-# The chassis frame (its rails, crossmembers, deck and masts) is patches over
-# the bottom and sides of its boxes, loaded the same way where they face their
+# The chassis frame (a solid block over its outline, and its masts) is patches
+# over the bottom and sides of its boxes, loaded the same way where they face their
 # motion, each in the vertical plane it moves in. It meets the soil's whole
 # height, loose soil and all, as a blade meets a pile: firm soil holds it up
 # and stops it, and the loose soil its leading end runs into, moving along its

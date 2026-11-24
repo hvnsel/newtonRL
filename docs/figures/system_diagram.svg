@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1110" width="1600" height="1110"
+     font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif">
+  <title>Planner, site runner and the trained dig and navigate policies</title>
+  <defs>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#374151"/>
+    </marker>
+    <marker id="headGrey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1600" height="1110" fill="#ffffff"/>
+
+  <!-- tier bands -->
+  <g fill="#f5f5f2">
+    <rect x="20" y="20" width="1560" height="246" rx="14"/>
+    <rect x="20" y="296" width="1560" height="240" rx="14"/>
+    <rect x="20" y="566" width="1560" height="270" rx="14"/>
+    <rect x="20" y="866" width="1560" height="170" rx="14"/>
+  </g>
+  <g font-size="15" font-weight="700" fill="#8a8a85" letter-spacing="2">
+    <text x="40" y="52">PLAN</text>
+    <text x="40" y="328">SEQUENCE</text>
+    <text x="40" y="598">SKILLS</text>
+    <text x="40" y="898">WORLD</text>
+  </g>
+  <g font-size="14" fill="#9a9a95">
+    <text x="40" y="72">per move</text>
+    <text x="40" y="348">per pass, per trip</text>
+    <text x="40" y="618">25 Hz</text>
+    <text x="40" y="918">100 Hz</text>
+  </g>
+
+  <!-- site plan (input) -->
+  <rect x="170" y="48" width="350" height="196" rx="12" fill="#fbfbfa" stroke="#9ca3af" stroke-width="2"/>
+  <text x="192" y="86" font-size="26" font-weight="700" fill="#374151">Site plan</text>
+  <g font-size="19" fill="#1f2937">
+    <text x="192" y="120">Drum-wide lanes (strokes),</text>
+    <text x="192" y="146">each with a target depth.</text>
+    <text x="192" y="172">E.g. a 50 cm trench: nine</text>
+    <text x="192" y="198">5 cm steps down, then</text>
+    <text x="192" y="224">3 m at full depth</text>
+  </g>
+  <line x1="520" y1="146" x2="596" y2="146" stroke="#374151" stroke-width="2.5" marker-end="url(#head)"/>
+
+  <!-- stroke planner -->
+  <rect x="600" y="44" width="830" height="200" rx="12" fill="#eef3f8" stroke="#3b5b7a" stroke-width="2.5"/>
+  <text x="622" y="82" font-size="26" font-weight="700" fill="#1f3a56">Stroke planner</text>
+  <text x="1408" y="80" font-size="16" fill="#3b5b7a" text-anchor="end">rule-based search</text>
+  <g font-size="19" fill="#1f2937">
+    <text x="622" y="118">• Before every move, from the measured ground: which stroke,</text>
+    <text x="640" y="144">which way along it and how deep (at most one 5 cm layer)</text>
+    <text x="622" y="170">• Keeps a staircase down the trench and the wheel tracks level</text>
+    <text x="622" y="196">• Looks ahead over the order of moves; falls back rather than deadlock</text>
+    <text x="622" y="222">• A stroke that keeps failing goes to the back of the queue</text>
+  </g>
+
+  <!-- planner <-> runner -->
+  <line x1="1150" y1="246" x2="1150" y2="320" stroke="#374151" stroke-width="2.5" marker-end="url(#head)"/>
+  <text x="1164" y="290" font-size="17" font-style="italic" fill="#374151">move: stroke, way, depth</text>
+  <line x1="830" y1="322" x2="830" y2="248" stroke="#6b7280" stroke-width="2.5" stroke-dasharray="7 6" marker-end="url(#headGrey)"/>
+  <text x="816" y="290" font-size="17" font-style="italic" fill="#4b5563" text-anchor="end">measured ground</text>
+
+  <!-- site runner -->
+  <rect x="170" y="324" width="1260" height="184" rx="12" fill="#eef3f8" stroke="#3b5b7a" stroke-width="2.5"/>
+  <text x="192" y="362" font-size="26" font-weight="700" fill="#1f3a56">Site runner</text>
+  <text x="1408" y="358" font-size="16" fill="#3b5b7a" text-anchor="end">scripted</text>
+  <g font-size="19" fill="#1f2937">
+    <text x="192" y="398">• Splits each move into overlapping passes along the stroke</text>
+    <text x="192" y="424">• Routes round a ring road and turns only there</text>
+    <text x="192" y="450">• One drum per trip: when full or no longer filling,</text>
+    <text x="210" y="476">back out to a pile and pour</text>
+    <text x="812" y="398">• Skips passes whose ground is already at depth</text>
+    <text x="812" y="424">• A stalled drive near its goal carries on from there;</text>
+    <text x="830" y="450">far off, it is reset at the goal and logged</text>
+    <text x="812" y="476">• After every move, reads the ground back to the planner</text>
+  </g>
+
+  <!-- runner -> skills -->
+  <line x1="370" y1="510" x2="370" y2="586" stroke="#374151" stroke-width="2.5" marker-end="url(#head)"/>
+  <text x="384" y="555" font-size="17" font-style="italic" fill="#374151">route: waypoints, heading</text>
+  <line x1="870" y1="510" x2="870" y2="586" stroke="#374151" stroke-width="2.5" marker-end="url(#head)"/>
+  <text x="884" y="555" font-size="17" font-style="italic" fill="#374151">work area, cut plane</text>
+  <line x1="1300" y1="510" x2="1300" y2="586" stroke="#374151" stroke-width="2.5" marker-end="url(#head)"/>
+  <text x="1314" y="555" font-size="17" font-style="italic" fill="#374151">which drum</text>
+
+  <!-- navigate policy -->
+  <rect x="170" y="590" width="400" height="222" rx="12" fill="#fff4ea" stroke="#c2410c" stroke-width="2.5"/>
+  <text x="192" y="628" font-size="26" font-weight="700" fill="#9a3412">Navigate policy</text>
+  <text x="192" y="654" font-size="16" fill="#c2410c">learned · PPO</text>
+  <g font-size="19" fill="#1f2937">
+    <text x="192" y="690">Sees: the next waypoint and the</text>
+    <text x="192" y="716">path ahead, heading error, motion</text>
+    <text x="192" y="742">Does: forward speed, turn rate</text>
+    <text x="192" y="768">Drives the runner's routes,</text>
+    <text x="192" y="794">waypoint by waypoint</text>
+  </g>
+
+  <!-- dig policy -->
+  <rect x="610" y="590" width="520" height="222" rx="12" fill="#fff4ea" stroke="#c2410c" stroke-width="2.5"/>
+  <text x="632" y="628" font-size="26" font-weight="700" fill="#9a3412">Dig policy</text>
+  <text x="632" y="654" font-size="16" fill="#c2410c">learned · PPO, trained on the RFT soil</text>
+  <g font-size="19" fill="#1f2937">
+    <text x="632" y="690">Sees: a 2.0 × 1.6 m height scan round the drum,</text>
+    <text x="632" y="716">the cut plane, depth error, drum load,</text>
+    <text x="632" y="742">arm, shroud and drum states</text>
+    <text x="632" y="768">Does: drive speed, arm rate, shroud rate</text>
+    <text x="632" y="794">Cuts one 0.6 m pass down to the plane</text>
+  </g>
+
+  <!-- dump -->
+  <rect x="1170" y="590" width="260" height="222" rx="12" fill="#eef3f8" stroke="#3b5b7a" stroke-width="2.5"/>
+  <text x="1192" y="628" font-size="26" font-weight="700" fill="#1f3a56">Dump</text>
+  <text x="1192" y="654" font-size="16" fill="#3b5b7a">scripted</text>
+  <g font-size="19" fill="#1f2937">
+    <text x="1192" y="690">Wheels held, inlet</text>
+    <text x="1192" y="716">turned down, drum</text>
+    <text x="1192" y="742">reversed: the load</text>
+    <text x="1192" y="768">poured on a pile</text>
+  </g>
+
+  <!-- skills <-> simulation -->
+  <line x1="330" y1="814" x2="330" y2="886" stroke="#374151" stroke-width="2.5" marker-end="url(#head)"/>
+  <text x="318" y="856" font-size="17" font-style="italic" fill="#374151" text-anchor="end">wheel speeds</text>
+  <line x1="430" y1="886" x2="430" y2="816" stroke="#6b7280" stroke-width="2.5" stroke-dasharray="7 6" marker-end="url(#headGrey)"/>
+  <text x="444" y="856" font-size="17" font-style="italic" fill="#4b5563">observations</text>
+  <line x1="800" y1="814" x2="800" y2="886" stroke="#374151" stroke-width="2.5" marker-end="url(#head)"/>
+  <text x="788" y="856" font-size="17" font-style="italic" fill="#374151" text-anchor="end">drive, arm, shroud</text>
+  <line x1="920" y1="886" x2="920" y2="816" stroke="#6b7280" stroke-width="2.5" stroke-dasharray="7 6" marker-end="url(#headGrey)"/>
+  <text x="934" y="856" font-size="17" font-style="italic" fill="#4b5563">observations</text>
+  <line x1="1300" y1="814" x2="1300" y2="886" stroke="#374151" stroke-width="2.5" marker-end="url(#head)"/>
+  <text x="1314" y="856" font-size="17" font-style="italic" fill="#374151">inlet, drum</text>
+
+  <!-- simulation -->
+  <rect x="170" y="890" width="1260" height="130" rx="12" fill="#f2f7ea" stroke="#4d7c0f" stroke-width="2.5"/>
+  <text x="192" y="928" font-size="26" font-weight="700" fill="#3f6212">Simulation</text>
+  <text x="1408" y="924" font-size="16" fill="#4d7c0f" text-anchor="end">Isaac Lab 3 · Newton (MuJoCo Warp) · own RFT soil model</text>
+  <g font-size="19" fill="#1f2937">
+    <text x="192" y="964">Rigid-body rover on soil from resistive force theory (RFT), on a 4 cm height grid:</text>
+    <text x="192" y="990">soil forces on drums, wheels and frame · drum intake · slumping · tyre ruts</text>
+  </g>
+
+  <!-- ground heights back up to the runner -->
+  <path d="M1432,955 H1492 V416 H1436" fill="none" stroke="#6b7280" stroke-width="2.5" stroke-dasharray="7 6" marker-end="url(#headGrey)"/>
+  <text transform="translate(1522,686) rotate(-90)" font-size="17" font-style="italic" fill="#4b5563" text-anchor="middle">ground heights, after every move</text>
+
+  <!-- legend -->
+  <g font-size="16" fill="#374151">
+    <rect x="170" y="1056" width="22" height="22" rx="5" fill="#fff4ea" stroke="#c2410c" stroke-width="2"/>
+    <text x="202" y="1073">learned (PPO)</text>
+    <rect x="352" y="1056" width="22" height="22" rx="5" fill="#eef3f8" stroke="#3b5b7a" stroke-width="2"/>
+    <text x="384" y="1073">rule-based / scripted</text>
+    <rect x="590" y="1056" width="22" height="22" rx="5" fill="#f2f7ea" stroke="#4d7c0f" stroke-width="2"/>
+    <text x="622" y="1073">physics and soil</text>
+    <line x1="800" y1="1067" x2="850" y2="1067" stroke="#374151" stroke-width="2.5" marker-end="url(#head)"/>
+    <text x="860" y="1073">command</text>
+    <line x1="960" y1="1067" x2="1010" y2="1067" stroke="#6b7280" stroke-width="2.5" stroke-dasharray="7 6" marker-end="url(#headGrey)"/>
+    <text x="1020" y="1073">measurement</text>
+  </g>
+</svg>

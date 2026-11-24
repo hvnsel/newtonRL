@@ -637,6 +637,9 @@ def main(argv=None) -> int:
         env_cfg.bed_depth = args.bed_depth
         print(f"[play] bed_depth set to {args.bed_depth} m")
     if args.flat:
+        if not hasattr(env_cfg, "soil_marker"):
+            print("[play] --flat is for the RFT soil: an MPM bed that size would be millions of particles")
+            return 2
         env_cfg.bed_x, env_cfg.bed_y = FLAT_BED_X, FLAT_BED_Y
         print(f"[play] bed x {FLAT_BED_X}, y {FLAT_BED_Y} m: flat ground all round")
 

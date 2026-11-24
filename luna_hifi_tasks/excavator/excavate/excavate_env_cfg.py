@@ -794,6 +794,30 @@ class ExcavatorExcavateMicroEnvCfg(ExcavatorExcavateSmallEnvCfg):
     bed_depth: float = 0.21
 
 
+@configclass
+class ExcavatorExcavateMpmCheckEnvCfg(ExcavatorExcavateEnvCfg):
+    """MPM soil to check a dig policy trained on the RFT soil, one env: the
+    machine on a bed just big enough for one pass, its wheels on the soil as in
+    training, 4.0 x 1.92 x 0.25 m and wider than the 1.6 m drums, on a solver
+    grid twice as fine, 4 cm: 8 particles a cell, 2 cm apart, some 240
+    thousand. play_dig --policy_task Luna-Excavator-Excavate-RFT runs the RFT
+    policy on it with that task's cut command."""
+
+    # From behind the rear tyres to past the soil a pass pushes ahead to its end.
+    bed_x: tuple[float, float] = (-1.20, 2.80)
+    # The drums and their end plates, 0.81 m either side, 15 cm clear of the plates.
+    bed_y: tuple[float, float] = (-0.96, 0.96)
+    # The chassis origin may run from 0.2 m behind where it starts to 1.8 m ahead.
+    bed_margin_x: float = 1.0
+    mpm_voxel_size: float = 0.04
+
+    max_num_envs = 1
+
+    def __post_init__(self) -> None:
+        self.scene.num_envs = min(self.scene.num_envs, self.max_num_envs)
+        super().__post_init__()
+
+
 # ---------------------------------------------------------------------------
 # Analytical soil (mdp/rft.py) in place of MPM
 # ---------------------------------------------------------------------------

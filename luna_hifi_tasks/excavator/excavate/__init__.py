@@ -43,6 +43,17 @@ gym.register(
     },
 )
 
+# MPM soil to check the RFT-trained dig policy on: play_dig --policy_task Luna-Excavator-Excavate-RFT.
+gym.register(
+    id="Luna-Excavator-Excavate-MPM-Check",
+    entry_point=f"{__name__}.excavate_env:ExcavatorExcavateEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.excavate_env_cfg:ExcavatorExcavateMpmCheckEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:ExcavatorExcavatePPORunnerCfg",
+    },
+)
+
 gym.register(
     id="Luna-Excavator-Excavate-RFT",
     entry_point=f"{__name__}.excavate_rft_env:ExcavatorExcavateRftEnv",

@@ -122,6 +122,7 @@ workstation/train.sh -p scripts/play_dig.py --no_window --trace dig.csv     # ne
 workstation/train.sh -p scripts/play_dig.py --dig --no_window               # scripted pass, no policy
 workstation/train.sh -p scripts/play_dig.py --task Luna-Excavator-Excavate-RFT --dig --no_window --video dig_rft_video   # mp4, soil drawn from the grid
 workstation/train.sh -p scripts/play_dig.py --task Luna-Excavator-Excavate-RFT --no_window --slope -0.1 --depth 0.05   # policy on a set slope
+workstation/train.sh -p scripts/play_dig.py --task Luna-Excavator-Excavate-MPM-Check --policy_task Luna-Excavator-Excavate-RFT --no_window --straight --depth 0.05 --slope 0 --trace mpm_check.csv   # the RFT-trained policy on MPM soil
 workstation/train.sh -p scripts/site_run.py --video site_video     # the trench, newest dig and navigate checkpoints
 workstation/train.sh -p scripts/site_run.py --deep --depth 0.5 --video deep_video     # a trench 1.5 drums wide down 5 cm steps
 ~/IsaacLab/.venv/bin/python scripts/join_clips.py deep_video     # its video so far, mid-run: deep_video_so_far.mp4

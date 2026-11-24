@@ -61,16 +61,17 @@ SUN_AZIMUTH, SUN_ELEVATION, EXPOSURE, SHADOWS_M = 150.0, 50.0, 1.0, 20.0
 # onto the drum and the cut opening behind it, the whole machine in view.
 VIDEO_EYE, VIDEO_LOOKAT = (0.9, 3.0, 3.4), (1.5, 0.0, 0.4)
 # --front: the camera 3.6 m from a point just ahead of the front drum, 30 degrees
-# round from straight ahead to the left, 40 degrees up, onto the drum's front, its
-# shroud and the soil ahead of it, the machine behind. The top of the frame meets
-# the ground 3 m inside a --flat bed's edges; below about 34 degrees up it would
-# reach past them. The sun on that side, 70 degrees round and 45 up, so the
-# front is lit and the machine's shadow falls behind it.
-FRONT_EYE, FRONT_LOOKAT, FRONT_SUN = (4.4, 1.4, 2.8), (2.0, 0.0, 0.45), (70.0, 45.0)
+# round from straight ahead to the left and 30 degrees up, onto the drum's front,
+# its shroud and the soil ahead of it, the whole machine behind. The sun on that
+# side, 70 degrees round and 45 up, so the front is lit and the machine's shadow
+# falls behind it.
+FRONT_EYE, FRONT_LOOKAT, FRONT_SUN = (4.7, 1.6, 2.3), (2.0, 0.0, 0.45), (70.0, 45.0)
 # The RFT soil shades dark with depth down to this, m: a 5 cm cut reads half way.
 VIDEO_SHADE_DEPTH = 0.10
-# --flat: the bed this wide, m, its edges (a 0.4 m drop to the floor) out of the video.
-FLAT_BED_X, FLAT_BED_Y = (-8.0, 12.0), (-10.0, 10.0)
+# --flat: the bed this big, m, its edges (a 0.4 m drop to the floor) out of the
+# video. Both cameras look toward -y, --front low and toward -x too: the top
+# corners of its frame meet the ground at x -11.5 and y -13.1, 3 m inside.
+FLAT_BED_X, FLAT_BED_Y = (-15.0, 10.0), (-16.0, 6.0)
 # What a policy is commanded and how its drum-load reading is scaled; --policy_task
 # copies these from the policy's task onto the task it runs in.
 POLICY_FIELDS = (

@@ -81,7 +81,7 @@ PILE_CLEAR = 0.7            # m from the pit's edge to a pile poured between it 
 PILES, PILE_STEP = 12, 0.6  # dump stops along the way round, this far apart, from the pit's west end
 WAYPOINT_RADIUS = 0.5       # m: a route waypoint counts as passed this close
 LOOSE_M, LOOSE_DEG = 0.25, 10.0     # a loose drive is done this close
-DUMP_MIN_KG = 5.0           # less soil than this in a drum: not poured
+DUMP_MIN_KG = 5.0           # kg: less in a drum is not poured; a pass adding less has stopped filling it
 TURN_TRIES = 4              # turns on the spot to face the other way before the run gives up
 DRIVE_SECONDS, PASS_SECONDS, DUMP_SECONDS, READY_SECONDS = 90.0, 40.0, 15.0, 3.0
 # A drive that moves less than STALL_M and turns less than STALL_DEG in STALL_SECONDS has stalled.
@@ -468,7 +468,8 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         body = self._shroud_body_ids[k]
         centre = d.body_link_pos_w.torch[:, body] - self.scene.env_origins
         axis = self._sf.drum_axis(d.body_link_quat_w.torch[:, body])
-        self._bed_grid, self._loose = self._sf.deposit(self._bed_grid, self._loose, self._cells, centre, axis, kg, self._rft)
+        self._bed_grid, self._loose = self._sf.deposit(
+            self._bed_grid, self._loose, self._cells, centre, axis, kg, self._rft)
         self._fill_kg[:, k] -= kg
 
     def _get_rewards(self) -> torch.Tensor:
@@ -584,7 +585,8 @@ class StepClock:
                 continue
             parts = sorted(((k, v) for k, v in row.items() if not k.startswith(" ")), key=lambda kv: -kv[1])
             parts.append(("other", wall - sum(v for _, v in parts)))
-            lines.append(f"[profile] {mode}{' in all' if total else ''}, {n:.0f} steps: {1e3 * wall / n:.1f} ms a step, "
+            lines.append(f"[profile] {mode}{' in all' if total else ''}, {n:.0f} steps: "
+                         f"{1e3 * wall / n:.1f} ms a step, "
                          f"{wall / (n * self.step_dt):.2f} s real per simulated s; "
                          + ", ".join(f"{k} {1e3 * v / n:.1f}" for k, v in parts) + " ms")
         if not total:
@@ -917,11 +919,12 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
     goes round the ring road to where the stroke is entered and drives in to
     each pass's start in turn, digging from the dig's start pose with one drum
     a trip: the one leading as the trip's first pass begins, front or rear
-    alike. Once it is as full as the dig's training counts full, the machine
-    backs out, goes round to the piles, pours it and comes back. It turns only
-    on the ring road, never in the pit: at the gate if it faces the wrong way
-    for its drum, and at the piles; if navigation swings it round in the pit,
-    it backs out to the gate to turn there. A drive that stalls is reported
+    alike. Once it is as full as the dig's training counts full, or a pass
+    adds under DUMP_MIN_KG to it (it has stopped filling: the move ends
+    there), the machine backs out, goes round to the piles, pours it and
+    comes back. It turns only on the ring road, never in the pit: at the gate
+    if it faces the wrong way for its drum, and at the piles; if navigation
+    swings it round in the pit, it backs out to the gate to turn there. A drive that stalls is reported
     and the machine put at its goal (Machine.drive). Given save, the bed's
     heights go to that .npz after every move and where the run stops
     (StrokeSite.save). Returns a row per move and how the run ended: done, out
@@ -951,15 +954,15 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
         loads = [m.load(0), m.load(1)]
         return max((0, 1), key=loads.__getitem__) if max(loads) >= DUMP_MIN_KG else None
 
-    def dig(i: int, way: int, a: float, level: float, gate: tuple[float, float]) -> tuple[int, bool]:
+    def dig(i: int, way: int, a: float, level: float, gate: tuple[float, float]) -> tuple[int, bool, float]:
         """A pass on stroke i running `way`, anchored at a, down to level, with
         this trip's drum leading, or between trips whichever leads. With that
         drum full, out to pour it first. In to the pass's start, turned first
         at the gate if the machine faces the wrong way for its drum; within
         15 cm past it, as after the pass before, from where it is: the passes
         overlap by more. Swung round in the pit, it backs out to the gate,
-        turns there and goes in again. The drum that dug, and whether it went
-        to the piles."""
+        turns there and goes in again. The drum that dug, whether it went to
+        the piles, and the kg the pass added to it."""
         s, trip, d = site.strokes[i], False, carrying()
         yaw, start = s.yaw(way), s.point(a - way * u.dig_reach)
         if d is not None and m.load(d) >= full:
@@ -980,8 +983,9 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
                 break
             m.drive([gate], yaw, loose=True)        # swung round in the pit: out to turn on the ring road
             m.turn_round()
+        held = m.load(d)
         m.dig_pass(s.point(a), u.cfg.bed_top + level, yaw, d)
-        return d, trip
+        return d, trip, m.load(d) - held
 
     def empty(back_to=None, yaw: float = 0.0) -> None:
         """Round the ring to the nearest stop whose pile stands under PILE_MAX
@@ -1021,14 +1025,22 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
             before, t0, skipped, trips, dug = site.level(i), m.now(), 0, 0, [0, 0]
             spent0 = {mode: list(t) for mode, t in m.spent.items()}
             m.drive(ring.route(m.here(), gate), yaw, loose=True)
+            stopped = None                                  # kg in a drum that stopped filling
             for a in anchors:
                 look()
                 if site.work_level(i, a, way) <= v + c.done_tol:
                     skipped += 1
                     continue
-                d, trip = dig(i, way, a, v, gate)
+                d, trip, added = dig(i, way, a, v, gate)
                 dug[d] += 1
                 trips += trip
+                if added < DUMP_MIN_KG and m.load(d) >= DUMP_MIN_KG:
+                    # The drum stopped filling: its trip ends, and this move with it.
+                    stopped = m.load(d)
+                    m.drive([gate], yaw, loose=True)
+                    empty(gate, yaw)
+                    trips += 1
+                    break
             m.drive([gate], yaw, loose=True)
             d = carrying()
             if d is not None and m.load(d) >= full:     # out at the gate already: pour it now
@@ -1041,10 +1053,11 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
             row = {"move": len(rows) + 1, "stroke": s.name, "way": f"{'+' if way > 0 else '-'}{'xy'[s.axis]}",
                    "to_cm": round(100 * v, 1), "front": dug[0], "rear": dug[1], "skipped": skipped, "trips": trips,
                    "from_cm": round(100 * before, 1), "level_cm": round(100 * site.level(i), 1),
-                   "s": round(m.now() - t0, 1)}
+                   "s": round(m.now() - t0, 1), "stopped_filling_kg": None if stopped is None else round(stopped, 1)}
             rows.append(row)
             print(f"[site] stroke {row['move']:2d}, {s.name} {row['way']}: to {row['to_cm']:+.1f} cm in {sum(dug)} passes "
-                  f"({dug[0]} front, {dug[1]} rear, {skipped} skipped), {trips} to the piles: "
+                  f"({dug[0]} front, {dug[1]} rear, {skipped} skipped), {trips} to the piles"
+                  + ("" if stopped is None else f" (the drum stopped filling at {stopped:.0f} kg)") + ": "
                   f"{row['from_cm']:+.1f} -> {row['level_cm']:+.1f} cm; drums {m.load(0):.0f} + {m.load(1):.0f} kg; "
                   f"t = {m.now():.0f} s, {m.wall():.0f} s real", flush=True)
             took = {mode: [t[0] - spent0.get(mode, [0.0, 0.0])[0], t[1] - spent0.get(mode, [0.0, 0.0])[1]]

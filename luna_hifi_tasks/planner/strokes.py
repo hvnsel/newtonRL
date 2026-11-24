@@ -21,11 +21,13 @@ a bank alone shuts every move, as where the soil a pass pushes on ahead
 piles up at the next stroke's start, the rover cuts into one up to bank
 high, and when they shut every move it takes the best one all the same. A
 stroke short of its target is always up for another cut; one whose last
-moves each failed goes after the others. The stroke with the most left to
-cut goes first, so a hole goes down a layer at a time and a trench's deeper
-steps lead. Strokes carrying on from one another along a line (a trench's
-steps) keep a staircase all the way down: each is cut no deeper than the
-next one stands, nor more than its own last step below the one before it.
+moves each failed goes after every other move, even one only those fallbacks
+open, so a spot the dig cannot cut never holds up the rest. The stroke with
+the most left to cut goes first, so a hole goes down a layer at a time and a
+trench's deeper steps lead. Strokes carrying on from one another along a
+line (a trench's steps) keep a staircase all the way down: each is cut no
+deeper than the next one stands, nor more than a step below the one before
+it (two least cuts, if a step is less).
 
 Pure Python and numpy; site_env.run_strokes cuts the strokes on the RFT soil.
 """
@@ -118,7 +120,7 @@ class StrokeCfg:
     least: float = 0.03         # ... and at least, unless that is all it has left: the dig's shallowest cut
     done_tol: float = 0.015     # a stroke this close to its target is done
     progress: float = 0.005     # a move that lowers its stroke less than this failed
-    retries: int = 3            # failed moves in a row before a stroke goes after the others
+    retries: int = 3            # failed moves in a row before a stroke goes after every other move
     # --- the dig's passes, set from the env -----------------------------
     ahead: float = 0.6          # m the work area runs ahead of a pass's anchor
     behind: float = 0.2         # and behind it
@@ -338,13 +340,15 @@ class StrokeSite:
         so a layer sweeps across the strokes side by side, each cut over half
         of the one before; then the one with the deepest target; then the way
         along it gentlest on the rover (its strain to the nearest strain_bin);
-        then, for the first move, the way in nearest `at`. A stroke whose last
-        `retries` moves each failed goes after the others. If none is found
+        then, for the first move, the way in nearest `at`. If none is found
         within budget, the best first move alone. If a bank alone shuts every
         move, the best one cutting into a bank up to cfg.bank; if the rover's
         footprint shuts every move, the best one all the same; if a staircase's
         holds do, the best a layer down regardless: a stroke short of its
-        target is always up for another cut. None once every one is done."""
+        target is always up for another cut. A stroke whose last `retries`
+        moves each failed goes after every other move, those fallbacks' too:
+        it is cut again only when no other stroke has a move, so a spot the
+        dig cannot cut never holds up the rest. None once every one is done."""
         order: list[Move] = []
         tried = 0
         before = self.log[-1][0] if self.log else None
@@ -377,11 +381,26 @@ class StrokeSite:
                 order.pop()
             return False
 
+        def stuck(m: Move) -> bool:
+            """Whether m's stroke failed its last `retries` moves in a row."""
+            return self.failed_in_a_row(m[0]) >= self.cfg.retries
+
         top = ranked(self.heights, True)
-        if not top:
-            return (ranked(self.heights, True, self.cfg.bank) or ranked(self.heights, True, anyway=True)
-                    or ranked(self.heights, True, loose=True))[:1] or None
-        return order if search(self.heights, True) else top[:1]
+        if any(not stuck(m) for m in top):
+            if search(self.heights, True) and order and not stuck(order[0]):
+                return order
+            return [m for m in top if not stuck(m)][:1]
+        # Nothing open but strokes that keep failing, or nothing at all: the fallbacks in turn, a
+        # bank, then the footprint and then the staircase's holds set aside, for a move on another
+        # stroke; failing that, the first move found at all.
+        first = top[:1]
+        for kw in ({"rise": self.cfg.bank}, {"anyway": True}, {"loose": True}):
+            found = ranked(self.heights, True, **kw)
+            other = [m for m in found if not stuck(m)]
+            if other:
+                return other[:1]
+            first = first or found[:1]
+        return first or None
 
     def next_move(self, at: tuple[float, float] | None = None) -> Move | None:
         order = self.plan(at)

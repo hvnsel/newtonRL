@@ -51,12 +51,32 @@ from luna_hifi_tasks.excavator.excavator_cfg import MAX_DRUM_SPEED, MAX_WHEEL_SP
 from luna_hifi_tasks.excavator.mdp.rewards import body_to_world_xy, world_to_body_xy
 
 TASK = "Luna-Excavator-Excavate"
+# The video's light, as site_run's: the sun 35 degrees up at plain exposure, so a
+# cut's walls catch light and shadow; Newton's default sun is high and behind the
+# camera, its exposure 1.6, flat and washed out.
+SUN_AZIMUTH, SUN_ELEVATION, EXPOSURE, SHADOWS_M = -20.0, 35.0, 1.0, 20.0
+# The video's camera, high to the side of the pass, looking down about 45 degrees
+# onto the drum and the cut opening behind it, the whole machine in view.
+VIDEO_EYE, VIDEO_LOOKAT = (0.9, 3.0, 3.4), (1.5, 0.0, 0.4)
+# The RFT soil shades dark with depth down to this, m: a 5 cm cut reads half way.
+VIDEO_SHADE_DEPTH = 0.10
 # What a policy is commanded and how its drum-load reading is scaled; --policy_task
 # copies these from the policy's task onto the task it runs in.
 POLICY_FIELDS = (
     "episode_length_s", "cut_depth_range", "cut_gradient_max", "cut_ramp_fraction", "dig_cut",
     "target_load_bore_fraction",
 )
+
+
+def light(u) -> None:
+    """The viewer's light, as site_run's: SUN_*, EXPOSURE and SHADOWS_M."""
+    a, e = math.radians(SUN_AZIMUTH), math.radians(SUN_ELEVATION)
+    for v in getattr(u.sim, "visualizers", None) or []:
+        renderer = getattr(getattr(v, "_viewer", None), "renderer", None)
+        if renderer is not None:
+            renderer.exposure = EXPOSURE
+            renderer.shadow_extents = SHADOWS_M
+            renderer._sun_direction = np.array([math.cos(e) * math.cos(a), math.cos(e) * math.sin(a), math.sin(e)])
 
 
 def _parse(argv):
@@ -77,7 +97,9 @@ def _parse(argv):
     p.add_argument("--trace", default="dig_trace.csv", help="per-step CSV")
     p.add_argument("--video", default=None,
                    help="record the run as an mp4 into this directory, from the Newton viewer "
-                        "(headless is fine), with the camera on the front drum")
+                        "(headless is fine), the camera high to the side of the pass")
+    p.add_argument("--eye", type=float, nargs=3, default=None, help=f"video camera position; default {VIDEO_EYE}")
+    p.add_argument("--lookat", type=float, nargs=3, default=None, help=f"video camera target; default {VIDEO_LOOKAT}")
     p.add_argument("--bed_depth", type=float, default=None, help="override bed depth [m]")
     p.add_argument("--mpm_voxel", type=float, default=None,
                    help="override the MPM solver grid cell [m]")
@@ -682,13 +704,13 @@ def main(argv=None) -> int:
     if not args.no_window or args.video:
         from isaaclab_visualizers.newton import NewtonGLVisualizerCfg
 
-        # A video looks at the front drum; the window takes in the machine.
+        # A video looks down on the pass from high to its side; the window takes in the machine.
         env_cfg.sim.visualizer_cfgs = [
             NewtonGLVisualizerCfg(
                 show_particles=True,
                 particle_color=(0.62, 0.55, 0.45),
-                eye=(3.6, 2.8, 1.5) if args.video else (5.0, 5.0, 3.0),
-                lookat=(1.6, 0.0, 0.3) if args.video else (0.5, 0.0, 0.3),
+                eye=tuple(args.eye) if args.eye else VIDEO_EYE if args.video else (5.0, 5.0, 3.0),
+                lookat=tuple(args.lookat) if args.lookat else VIDEO_LOOKAT if args.video else (0.5, 0.0, 0.3),
             )
         ]
         # The RFT soil has no particles; its env draws the height grid instead.
@@ -712,6 +734,10 @@ def main(argv=None) -> int:
     with launch_simulation(env_cfg, args):
         env = gym.make(args.task, cfg=env_cfg)
         u = env.unwrapped
+        if args.video or not args.no_window:
+            light(u)
+            if args.video and hasattr(u, "shade_depth"):
+                u.shade_depth = VIDEO_SHADE_DEPTH
         if args.park or args.dig:
             # [drive, steer, front arm rate, front shroud rate]: the drive is
             # dig_forward * a0, and zeros hold the wheels and leave the arm and

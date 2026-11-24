@@ -46,9 +46,9 @@
 # begins. Once that drum is about full it backs out and pours it outside the
 # ring, on the sides no stroke is entered from. It turns only on the ring road,
 # never in the pit. It runs until every stroke is at its target, out of time or
-# the machine fails. A drive that stalls is reported and the machine set down
-# at its goal, a reset the log counts with its time. It spawns on the ring west
-# of the box.
+# the machine fails. A drive that stalls close to its goal is done there;
+# farther off, it is reported and the machine set down at its goal, a reset the
+# log counts with its time. It spawns on the ring west of the box.
 
 from __future__ import annotations
 
@@ -661,8 +661,11 @@ class Machine:
         """To the route's end, along yaw either way; a loose stop is done within
         LOOSE_M and LOOSE_DEG. A drive that stalls (moving under STALL_M and
         turning under STALL_DEG for STALL_SECONDS) or is not there after
-        DRIVE_SECONDS is reported, and the machine is put at the route's end,
-        facing whichever end of yaw is nearer its heading: a reset, counted."""
+        DRIVE_SECONDS is done where it is if that is within LOOSE_M and
+        LOOSE_DEG of the end: set down there, level, the machine would drop
+        onto a slope and slide off it again. Farther off, it is reported and
+        the machine put at the route's end, facing whichever end of yaw is
+        nearer its heading: a reset, counted."""
         u, t0 = self.u, self.now()
         tol = (LOOSE_M, math.radians(LOOSE_DEG)) if loose else (None, None)
         u.begin_drive(route, yaw)
@@ -681,8 +684,13 @@ class Machine:
                     and abs(math.remainder(last[2] - first[2], 2.0 * math.pi)) < math.radians(STALL_DEG)):
                 why = f"stalled {STALL_SECONDS:g} s"
                 break
-        self.resets += 1
         x, y = route[-1]
+        dist, herr = u.goal_error()
+        if dist <= LOOSE_M and abs(herr) <= math.radians(LOOSE_DEG):
+            print(f"[site] {why} {dist:.2f} m, {math.degrees(herr):+.1f} deg from ({x:.2f}, {y:.2f}): "
+                  f"close enough, on from there", flush=True)
+            return {"s": round(self.now() - t0, 1), "miss_m": round(dist, 3), "miss_deg": round(math.degrees(herr), 1)}
+        self.resets += 1
         face = yaw if math.cos(float(u._base_yaw()[0]) - yaw) > 0.0 else yaw + math.pi
         print(f"[site] reset {self.resets} at t = {self.now():.0f} s: {why} going to ({x:.2f}, {y:.2f}); "
               f"{self._report(seen)}; put there", flush=True)
@@ -924,8 +932,10 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
     there), the machine backs out, goes round to the piles, pours it and
     comes back. It turns only on the ring road, never in the pit: at the gate
     if it faces the wrong way for its drum, and at the piles; if navigation
-    swings it round in the pit, it backs out to the gate to turn there. A drive that stalls is reported
-    and the machine put at its goal (Machine.drive). Given save, the bed's
+    swings it round in the pit, the trip ends there: it backs out, pours, and
+    comes in again with whichever drum leads. A drive that stalls close to its
+    goal is done there; one farther off is reported and the machine put at
+    its goal (Machine.drive). Given save, the bed's
     heights go to that .npz after every move and where the run stops
     (StrokeSite.save). Returns a row per move and how the run ended: done, out
     of time or the machine failed, with the resets."""
@@ -960,9 +970,11 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
         drum full, out to pour it first. In to the pass's start, turned first
         at the gate if the machine faces the wrong way for its drum; within
         15 cm past it, as after the pass before, from where it is: the passes
-        overlap by more. Swung round in the pit, it backs out to the gate,
-        turns there and goes in again. The drum that dug, whether it went to
-        the piles, and the kg the pass added to it."""
+        overlap by more. Swung round in the pit, its drum no longer leading,
+        the trip ends there: it backs out, pours, and goes in again with
+        whichever drum then leads (out to turn and in again, it can be swung
+        round again, for good). The drum that dug, whether it went to the
+        piles, and the kg the pass added to it."""
         s, trip, d = site.strokes[i], False, carrying()
         yaw, start = s.yaw(way), s.point(a - way * u.dig_reach)
         if d is not None and m.load(d) >= full:
@@ -981,8 +993,9 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
             d = leading(yaw) if d is None else d
             if leading(yaw) == d:
                 break
-            m.drive([gate], yaw, loose=True)        # swung round in the pit: out to turn on the ring road
-            m.turn_round()
+            m.drive([gate], yaw, loose=True)        # swung round in the pit: the trip ends, out to pour
+            empty(gate, yaw)
+            trip, d = True, None
         held = m.load(d)
         m.dig_pass(s.point(a), u.cfg.bed_top + level, yaw, d)
         return d, trip, m.load(d) - held

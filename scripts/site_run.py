@@ -14,7 +14,7 @@
 #   bash workstation/train.sh -p scripts/site_run.py --pit --step 0.075 --video pit_video
 #   bash workstation/train.sh -p scripts/site_run.py --l --video l_video
 #   bash workstation/train.sh -p scripts/site_run.py --hole --video hole_video
-#   bash workstation/train.sh -p scripts/site_run.py --deep --depth 0.6 --video deep_video
+#   bash workstation/train.sh -p scripts/site_run.py --deep --depth 0.5 --video deep_video
 #
 # The dig checkpoint defaults to the newest intact one of Luna-Excavator-Excavate-RFT,
 # the navigate one to Luna-Excavator-Navigate-RFT's (fine-tuned on the soil), else
@@ -42,8 +42,8 @@ from luna_hifi_tasks.excavator.excavator import ROTOR_HALF_LEN
 from luna_hifi_tasks.excavator.site.site_env import RING, box_corner, run_site, run_strokes
 from luna_hifi_tasks.planner.site import SiteCfg, pit, trench
 from luna_hifi_tasks.planner.strokes import (
-    STEP_RISE, Heights, StrokeCfg, StrokeSite, hole_rects, hole_strokes, l_rects, l_strokes, trench_length, trench_rects,
-    trench_strokes,
+    STEP_RISE, STEP_RUN, Heights, StrokeCfg, StrokeSite, hole_rects, hole_strokes, l_rects, l_strokes, trench_length,
+    trench_rects, trench_strokes,
 )
 from play_dig import _load_policy, _resolve_checkpoint
 
@@ -78,14 +78,14 @@ def _parse():
     p.add_argument("--l", action="store_true", help="an L cut in strokes along x and y, not a trench")
     p.add_argument("--hole", action="store_true", help="a square hole cut in strokes along x and y, not a trench")
     p.add_argument("--deep", action="store_true",
-                   help=f"a trench down a staircase, a step {STEP_RISE:g} m lower each wheelbase, to --depth")
+                   help=f"a trench down a staircase, a step {STEP_RISE:g} m lower every {STEP_RUN:g} m, to --depth")
     p.add_argument("--width", type=float, default=1.5 * DRUM,
                    help=f"staircase trench: its width [m]; {1.5 * DRUM:g}, 1.5 drum widths, cut in two lanes side by side")
     p.add_argument("--size", type=float, default=None,
                    help=f"L or hole: its side [m]; default an L {3.5 * DRUM:g}, a hole {2.0 * DRUM:g} (3.5 and 2 drum widths)")
     p.add_argument("--thickness", type=float, default=1.5 * DRUM, help="L: its arms across [m]; 1.5 drum widths")
     p.add_argument("--length", type=float, default=None, help="length [m]; default 2.4, a pit 4.0")
-    p.add_argument("--depth", type=float, default=None, help="depth [m]; default 0.15, a pit 0.30, a staircase trench 0.6")
+    p.add_argument("--depth", type=float, default=None, help="depth [m]; default 0.15, a pit 0.30, a staircase trench 0.5")
     p.add_argument("--step", type=float, default=0.075, help="pit: how much deeper each patch down the ramp [m]")
     p.add_argument("--lanes", type=int, default=5, help="pit: lanes across, the side ones shelves")
     p.add_argument("--dig_checkpoint", default=None, help="excavate model file; default the newest intact RFT one")
@@ -99,6 +99,11 @@ def _parse():
     p.add_argument("--frame_stride", type=int, default=None,
                    help="video: every n-th step, so n times real time; default 3, a pit and an L 9, a hole 6, "
                         "a staircase trench 12")
+    p.add_argument("--profile", action="store_true",
+                   help="print where the real time of a step goes, by mode and section, after every stroke and at the end")
+    p.add_argument("--compile", action="store_true",
+                   help="the soil model through torch.compile, fused into a few GPU kernels a function; "
+                        "its first calls compile it")
     add_launcher_args(p)
     p.set_defaults(device=None, visualizer=["newton_gl"])
     # As play_dig: this script's flags off the command line, the rest left for Hydra.
@@ -106,7 +111,7 @@ def _parse():
     sys.argv = [sys.argv[0]] + hydra_args
     # Defaults for a trench, a pit, an L, a hole and a staircase trench.
     mode = 4 if args.deep else 2 if args.l else 3 if args.hole else 1 if args.pit else 0
-    for key, values in (("length", (2.4, 4.0, 0.0, 0.0, 0.0)), ("depth", (0.15, 0.30, 0.15, 0.15, 0.6)),
+    for key, values in (("length", (2.4, 4.0, 0.0, 0.0, 0.0)), ("depth", (0.15, 0.30, 0.15, 0.15, 0.5)),
                         ("minutes", (30.0, 300.0, 120.0, 60.0, 300.0)), ("frame_stride", (3, 9, 9, 6, 12)),
                         ("size", (0.0, 0.0, 3.5 * DRUM, 2.0 * DRUM, 0.0))):
         if getattr(args, key) is None:
@@ -133,6 +138,8 @@ def main() -> int:
     env_cfg, _ = resolve_task_config(TASK, "")
     env_cfg.pit_length = args.length
     env_cfg.pit_lanes = args.lanes if args.pit else 1
+    env_cfg.profile = args.profile
+    env_cfg.compile_soil = args.compile
     env_cfg.box = (((trench_length(args.depth), args.width) if args.deep else (args.size, args.size)) if args.strokes
                    else (0.0, 0.0))
     # Soil 0.4 m deeper than the cut: the dig trained on a 0.4 m bed.
@@ -188,7 +195,6 @@ def main() -> int:
                 strokes, area = hole_strokes(cfg, corner, args.size), hole_rects(corner, args.size)
                 what = f"hole {args.size:g} m square, strokes along x and y"
             else:
-                cfg.layer = 0.5 * STEP_RISE         # two layers a step
                 strokes = trench_strokes(cfg, corner, args.depth, args.width)
                 area = trench_rects(corner, args.depth, args.width)
                 steps = math.ceil(args.depth / STEP_RISE - 1e-9) - 1
@@ -227,6 +233,9 @@ def main() -> int:
             print(f"[site] {ending}: {site.summary()}")
             for iy, lane in enumerate(site.height):
                 print(f"[site] lane {iy} heights, cm: {[round(100 * h * site.cfg.voxel, 1) for h in lane]}")
+        report = u.clock.report(total=True)
+        if report:
+            print(report, flush=True)
         env.close()
 
     if args.video:

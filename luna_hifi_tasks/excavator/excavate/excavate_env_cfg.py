@@ -876,6 +876,10 @@ class ExcavatorExcavateRftEnvCfg(ExcavatorExcavateEnvCfg):
     # way (rft.frame_loads, frame_shove). Off in training: the policies trained
     # without it. The site turns it on.
     chassis_soil: bool = False
+    # The soil model's step functions through torch.compile (rft.compiled_soil):
+    # each fused into a few GPU kernels where eager torch launches tens to
+    # hundreds. Their first calls compile them, a minute or two.
+    compile_soil: bool = False
 
     # Soil pushed out of the work area costs w_unheld - w_removal = 1.75 per kg.
     w_unheld = 3.0

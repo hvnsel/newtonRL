@@ -438,11 +438,15 @@ def hole_rects(corner: tuple[float, float], size: float) -> list[tuple[float, fl
 
 
 # A trench down a staircase: each step STEP_RISE below the one before it over
-# STEP_RUN, the wheelbase, so the wheels stand at most one step apart; then a
-# flat bottom BOTTOM long at the full depth. From one step the drum reaches the
-# next with room to spare (StrokeCfg.reach). Wider than the drum, it is cut in
-# lanes side by side, each overlapping the next, each its own staircase.
-STEP_RISE, STEP_RUN, BOTTOM = 0.12, 1.4, 2.0
+# STEP_RUN, then a flat bottom BOTTOM long at the full depth. Wider than the
+# drum, it is cut in lanes side by side, each overlapping the next, each its own
+# staircase. The steps are low: a wheel rolling off one mid-pass dips the drum,
+# far ahead of the rear axle, about 1.7 times the step, so a 5 cm step dips it
+# under 9 cm. A step's run is one pass's work area (StrokeCfg.behind + ahead),
+# so one pass cuts it whole. The bottom is long enough for the machine to stand
+# on it while it digs its far end: a 50 cm trench is 9 steps and the bottom,
+# 10.2 m long, a 1 in 16 slope.
+STEP_RISE, STEP_RUN, BOTTOM = 0.05, 0.8, 3.0
 
 
 def trench_length(depth: float) -> float:

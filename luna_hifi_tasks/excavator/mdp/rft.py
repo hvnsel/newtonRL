@@ -70,11 +70,15 @@
 #               force, torque = frame_loads(frame, <chassis state>, height, soil)
 #               height, loose, body = frame_shove(height, loose, <chassis state>, soil)
 #   dumping     height, loose = deposit(height, loose, cells, centre, drum_axis(shroud_quat), kg, soil)
+#   faster      soil_fns = compiled_soil(): the step's functions by name, through torch.compile
 
 from __future__ import annotations
 
+import functools
 import math
+import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import NamedTuple
 
 import torch
@@ -563,7 +567,8 @@ def frame_shove(height, loose, centre, quat, lin, soil: Soil, boxes=FRAME_BOXES)
     c = torch.tensor([b[0] for b in boxes], device=dev)                       # (B, 3)
     h = torch.tensor([b[1] for b in boxes], device=dev)
     # The square of cells round the chassis that the frame can reach over.
-    k = int(math.ceil(2.0 * float((c[:, :2].abs() + h[:, :2]).norm(dim=-1).max()) / soil.cell)) + 4
+    reach = max([math.hypot(abs(bc[0]) + bh[0], abs(bc[1]) + bh[1]) for bc, bh in boxes])
+    k = int(math.ceil(2.0 * reach / soil.cell)) + 4
     off = torch.arange(k, device=dev) - k // 2
     ix = torch.floor((centre[:, 0] - soil.lower[0]) / soil.cell).long()[:, None, None] + off
     iy = torch.floor((centre[:, 1] - soil.lower[1]) / soil.cell).long()[:, None, None] + off[:, None]
@@ -604,3 +609,59 @@ def frame_shove(height, loose, centre, quat, lin, soil: Soil, boxes=FRAME_BOXES)
     stands = (under & (z < here)).reshape(E, -1).float()
     body = torch.zeros(E, ny * nx, device=dev).scatter_reduce_(1, index, stands, "amax") > 0.5
     return height + shift, loose + shift, body.reshape(E, ny, nx)
+
+
+# The functions an env calls each step, by name: compiled_soil() compiles them.
+STEP_FUNCTIONS = (
+    "drum_loads", "excavate", "drum_body", "slump", "wheel_loads", "press", "frame_loads", "frame_shove",
+    "deposit", "drum_axis", "drum_inlet",
+)
+
+
+def compiled_soil() -> SimpleNamespace:
+    """STEP_FUNCTIONS by name, each through torch.compile, for an env to call
+    in place of this module's: each fused into a few GPU kernels where eager
+    torch launches tens to hundreds, every one costing Python and the launch
+    more than the GPU's work. A function compiles on its first call, and again
+    should its inputs change shape or kind, and says so when that takes over a
+    second. Should compiling or a compiled call fail, it says why and runs
+    uncompiled from then on: the functions change none of their inputs, so the
+    failed call is simply made again."""
+    try:                    # room for the few shapes each is called with, driving and digging
+        import torch._dynamo
+
+        config = torch._dynamo.config
+        limit = "recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit"
+        setattr(config, limit, max(getattr(config, limit), 32))
+    except Exception as err:
+        print(f"[soil] torch.compile's recompile limit left as it is: {err!r}", flush=True)
+    return SimpleNamespace(**{name: _compiled(globals()[name]) for name in STEP_FUNCTIONS})
+
+
+def _compiled(fn):
+    """fn through torch.compile, falling back to fn itself (compiled_soil)."""
+    try:
+        fast = torch.compile(fn, dynamic=False)
+    except Exception as err:                    # no torch.compile here
+        print(f"[soil] {fn.__name__} not compiled: {err!r}", flush=True)
+        return fn
+    failed = False
+
+    @functools.wraps(fn)
+    def call(*args, **kwargs):
+        nonlocal failed
+        if not failed:
+            start = time.perf_counter()
+            try:
+                out = fast(*args, **kwargs)
+            except Exception as err:
+                failed = True
+                print(f"[soil] compiled {fn.__name__} failed, uncompiled from now on: {err!r}", flush=True)
+            else:
+                took = time.perf_counter() - start
+                if took > 1.0:
+                    print(f"[soil] compiled {fn.__name__} in {took:.0f} s", flush=True)
+                return out
+        return fn(*args, **kwargs)
+
+    return call

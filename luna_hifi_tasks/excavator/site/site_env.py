@@ -53,6 +53,8 @@
 from __future__ import annotations
 
 import collections
+import contextlib
+import functools
 import math
 import time
 
@@ -127,6 +129,9 @@ class ExcavatorSiteEnvCfg(ExcavatorExcavateRftEnvCfg):
     # facing along it, with no speed across it and no turning
     # (ExcavatorSiteEnv.hold_on_line). The run's log says so at its start.
     dig_rails: bool = True
+    # Where the real time of a step goes, by mode and section, printed after
+    # every stroke and at the end of the run (StepClock); off, it costs nothing.
+    profile: bool = False
     # Or a site cut in strokes (an L, a hole, a staircase trench) in a box this
     # long along x and wide across y, m; (0, 0): a pit or trench.
     box: tuple[float, float] = (0.0, 0.0)
@@ -166,6 +171,7 @@ def along(points: torch.Tensor, distances) -> torch.Tensor:
 
 class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
     cfg: ExcavatorSiteEnvCfg
+    clock: StepClock            # with profile on, its own; else the shared one that is off
 
     def __init__(self, cfg: ExcavatorSiteEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
@@ -191,6 +197,30 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         self._dumps = 0
         self._pouring = 0           # the drum a dump empties: 0 the front, 1 the rear
         self._axle_ids = self.robot.find_joints([JOINT_AXLE])[0]
+        if cfg.profile:
+            self._profile()
+
+    def _profile(self) -> None:
+        """Time every part of a step (StepClock): the physics, the soil, the
+        env's own steps, the viewer and the recorder; the runner times its own."""
+        self.clock = StepClock(lambda: self.mode, self.step_dt)
+        sections = {
+            "physics": [(self.sim, "step"), (self.scene, "update")],
+            "render": [(self.sim, "render"), (self, "_show_soil")],
+            "video": [(r, "step") for r in self.video_recorders],
+            "soil": [(self, "_step_soil")],
+            "actions": [(self, "_pre_physics_step"), (self, "_apply_action")],
+            "observations": [(self, "_get_observations"), (self, "nav_obs")],
+            "rewards": [(self, "_get_rewards")],
+            "dones": [(self, "_get_dones")],
+            "rails": [(self, "hold_on_line")],
+            "checks": [(self, "arrived"), (self, "ready"), (self, "dumped")],
+        }
+        for name, methods in sections.items():
+            for owner, attr in methods:
+                setattr(owner, attr, self.clock.wrap(name, getattr(owner, attr)))
+        print(f"[site] profile on: each section waits for the GPU at its start and end; the first "
+              f"{StepClock.WARMUP} steps of each mode are left out", flush=True)
 
     # --- the runner's commands ---
 
@@ -437,8 +467,8 @@ class ExcavatorSiteEnv(ExcavatorExcavateRftEnv):
         kg = self._fill_kg[:, k].clamp(max=c.dump_rate * self._dig_dt)
         body = self._shroud_body_ids[k]
         centre = d.body_link_pos_w.torch[:, body] - self.scene.env_origins
-        axis = rft.drum_axis(d.body_link_quat_w.torch[:, body])
-        self._bed_grid, self._loose = rft.deposit(self._bed_grid, self._loose, self._cells, centre, axis, kg, self._rft)
+        axis = self._sf.drum_axis(d.body_link_quat_w.torch[:, body])
+        self._bed_grid, self._loose = self._sf.deposit(self._bed_grid, self._loose, self._cells, centre, axis, kg, self._rft)
         self._fill_kg[:, k] -= kg
 
     def _get_rewards(self) -> torch.Tensor:
@@ -477,6 +507,94 @@ def _quat_mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     ], -1)
 
 
+class StepClock:
+    """Where the real time of the site's steps goes, by mode and section
+    (--profile). A section is timed from the GPU having finished the work
+    before it to its having finished the section's own (torch.cuda.synchronize
+    at both ends), less the sections inside it; "other" is what no section
+    holds. The first WARMUP steps of each mode are left out: with --compile,
+    compiling. Made with no mode, the clock is off and a section costs nothing."""
+
+    WARMUP = 50
+    MODES = ("dig", "drive", "ready", "dump")
+
+    def __init__(self, mode=None, step_dt: float = 0.04):
+        self.on, self.mode, self.step_dt = mode is not None, mode, step_dt
+        self.sync = torch.cuda.synchronize if self.on and torch.cuda.is_available() else (lambda: None)
+        self.inner: list[float] = []                        # per open section: s of the sections inside it
+        self.steps: dict[str, int] = {}                     # mode: steps taken, warm-up and all
+        self.last = time.perf_counter()
+        self.books: tuple[dict, dict] = ({}, {})            # since the last report, since the start: mode: {key: s}
+
+    def __call__(self, name: str):
+        return self._timed(name) if self.on else contextlib.nullcontext()
+
+    @contextlib.contextmanager
+    def _timed(self, name: str):
+        mode = self.mode()
+        self.sync()
+        start = time.perf_counter()
+        self.inner.append(0.0)
+        try:
+            yield
+        finally:
+            self.sync()
+            took = time.perf_counter() - start
+            own = took - self.inner.pop()
+            if self.inner:
+                self.inner[-1] += took
+            self._add(mode, name, own)
+
+    def wrap(self, name: str, fn):
+        """fn, timed as the section name."""
+        @functools.wraps(fn)
+        def timed(*args, **kwargs):
+            with self(name):
+                return fn(*args, **kwargs)
+        return timed
+
+    def tick(self, mode: str) -> None:
+        """A step taken in mode: the real time since the last."""
+        if not self.on:
+            return
+        now = time.perf_counter()
+        self._add(mode, " steps", 1.0)
+        self._add(mode, " wall", now - self.last)
+        self.steps[mode] = self.steps.get(mode, 0) + 1
+        self.last = now
+
+    def _add(self, mode: str, key: str, value: float) -> None:
+        """value to key in mode's books, past its warm-up: a step's sections
+        count from the same step its count and time do."""
+        if self.steps.get(mode, 0) < self.WARMUP:
+            return
+        for book in self.books:
+            row = book.setdefault(mode, {})
+            row[key] = row.get(key, 0.0) + value
+
+    def report(self, total: bool = False) -> str:
+        """A line per mode: the real time a step took, in all and by section,
+        largest first, since the last report or (total) the start."""
+        book = self.books[1 if total else 0]
+        lines = []
+        for mode in sorted(book, key=lambda m: self.MODES.index(m) if m in self.MODES else len(self.MODES)):
+            row = book[mode]
+            n, wall = row.get(" steps", 0.0), row.get(" wall", 0.0)
+            if n < 1:
+                continue
+            parts = sorted(((k, v) for k, v in row.items() if not k.startswith(" ")), key=lambda kv: -kv[1])
+            parts.append(("other", wall - sum(v for _, v in parts)))
+            lines.append(f"[profile] {mode}{' in all' if total else ''}, {n:.0f} steps: {1e3 * wall / n:.1f} ms a step, "
+                         f"{wall / (n * self.step_dt):.2f} s real per simulated s; "
+                         + ", ".join(f"{k} {1e3 * v / n:.1f}" for k, v in parts) + " ms")
+        if not total:
+            self.books[0].clear()
+        return "\n".join(lines)
+
+
+ExcavatorSiteEnv.clock = StepClock()
+
+
 class Machine:
     """The runner's hold on the site env: it steps the env with the policies,
     keeps the clock, and drives, turns, digs and dumps. dig and nav map their
@@ -491,6 +609,10 @@ class Machine:
         self.started = self.last = time.time()
         self.spent: dict[str, list[float]] = {}     # mode: [simulated s, real s]
         self.resets = 0                             # drives that stalled, the machine put at their goals
+        clock = self.u.clock
+        if clock.on:                                # the policies and the stall watch timed too
+            self.dig, self.nav = clock.wrap("policies", dig), clock.wrap("policies", nav)
+            self._sample = clock.wrap("checks", self._sample)
 
     def now(self) -> float:
         """Simulated seconds since the start."""
@@ -503,7 +625,9 @@ class Machine:
     def step(self, action: torch.Tensor) -> None:
         u = self.u
         mode = u.mode
-        self.obs = self.env.step(action)[0]
+        with u.clock("env loop"):
+            self.obs = self.env.step(action)[0]
+        u.clock.tick(mode)
         self.steps += 1
         now = time.time()
         spent = self.spent.setdefault(mode, [0.0, 0.0])
@@ -512,7 +636,9 @@ class Machine:
         self.last = now
         if self.record is not None:
             self.record(u)
-        if bool(u._failed_now[0] | u._nonfinite_now[0]):
+        with u.clock("checks"):
+            failed = bool(u._failed_now[0] | u._nonfinite_now[0])
+        if failed:
             raise RuntimeError(f"the machine failed at t = {self.now():.1f} s: tipped, off the bed or non-finite")
         if self.now() >= 60.0 * self.max_minutes:
             raise RuntimeError(f"out of time after {self.max_minutes:g} min")
@@ -923,6 +1049,9 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
                     for mode, t in m.spent.items()}
             print("[site]           s simulated / real: " + ", ".join(
                 f"{mode} {sim:.0f} / {real:.0f}" for mode, (sim, real) in took.items() if sim > 0), flush=True)
+            report = u.clock.report()
+            if report:
+                print(report, flush=True)
     except RuntimeError as err:
         if save:
             look()

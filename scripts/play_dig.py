@@ -51,15 +51,19 @@ from luna_hifi_tasks.excavator.excavator_cfg import MAX_DRUM_SPEED, MAX_WHEEL_SP
 from luna_hifi_tasks.excavator.mdp.rewards import body_to_world_xy, world_to_body_xy
 
 TASK = "Luna-Excavator-Excavate"
-# The video's light, as site_run's: the sun 35 degrees up at plain exposure, so a
-# cut's walls catch light and shadow; Newton's default sun is high and behind the
-# camera, its exposure 1.6, flat and washed out.
-SUN_AZIMUTH, SUN_ELEVATION, EXPOSURE, SHADOWS_M = -20.0, 35.0, 1.0, 20.0
+# The viewer's light: the sun 50 degrees up, behind the machine and on the
+# video camera's side (its direction points at the sun), so the machine's
+# shadow falls ahead of it and away from the camera and the cut opening behind
+# the drum is lit, its far wall facing the camera; plain exposure. Newton's
+# default sun is high and behind the camera, its exposure 1.6: flat, washed out.
+SUN_AZIMUTH, SUN_ELEVATION, EXPOSURE, SHADOWS_M = 150.0, 50.0, 1.0, 20.0
 # The video's camera, high to the side of the pass, looking down about 45 degrees
 # onto the drum and the cut opening behind it, the whole machine in view.
 VIDEO_EYE, VIDEO_LOOKAT = (0.9, 3.0, 3.4), (1.5, 0.0, 0.4)
 # The RFT soil shades dark with depth down to this, m: a 5 cm cut reads half way.
 VIDEO_SHADE_DEPTH = 0.10
+# --flat: the bed this wide, m, its edges (a 0.4 m drop to the floor) out of the video.
+FLAT_BED_X, FLAT_BED_Y = (-8.0, 12.0), (-10.0, 10.0)
 # What a policy is commanded and how its drum-load reading is scaled; --policy_task
 # copies these from the policy's task onto the task it runs in.
 POLICY_FIELDS = (
@@ -98,6 +102,9 @@ def _parse(argv):
     p.add_argument("--video", default=None,
                    help="record the run as an mp4 into this directory, from the Newton viewer "
                         "(headless is fine), the camera high to the side of the pass")
+    p.add_argument("--flat", action="store_true",
+                   help=f"a bed {FLAT_BED_X[1] - FLAT_BED_X[0]:g} x {FLAT_BED_Y[1] - FLAT_BED_Y[0]:g} m, "
+                        "its edges out of view: flat ground all round")
     p.add_argument("--eye", type=float, nargs=3, default=None, help=f"video camera position; default {VIDEO_EYE}")
     p.add_argument("--lookat", type=float, nargs=3, default=None, help=f"video camera target; default {VIDEO_LOOKAT}")
     p.add_argument("--bed_depth", type=float, default=None, help="override bed depth [m]")
@@ -611,6 +618,9 @@ def main(argv=None) -> int:
     if args.bed_depth is not None:
         env_cfg.bed_depth = args.bed_depth
         print(f"[play] bed_depth set to {args.bed_depth} m")
+    if args.flat:
+        env_cfg.bed_x, env_cfg.bed_y = FLAT_BED_X, FLAT_BED_Y
+        print(f"[play] bed x {FLAT_BED_X}, y {FLAT_BED_Y} m: flat ground all round")
 
     if args.mpm_voxel is not None:
         env_cfg.mpm_voxel_size = args.mpm_voxel

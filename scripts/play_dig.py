@@ -92,6 +92,43 @@ def light(u, azimuth: float = SUN_AZIMUTH, elevation: float = SUN_ELEVATION) -> 
             renderer._sun_direction = np.array([math.cos(e) * math.cos(a), math.cos(e) * math.sin(a), math.sin(e)])
 
 
+def strata(u, depth: float = VIDEO_SHADE_DEPTH) -> bool:
+    """MPM particles coloured in Newton's viewer by how deep under the bed
+    surface each started, as the RFT soil is shaded by depth: the soil's
+    colour at the surface darkening to DEPTH_DARK `depth` down. A cut shows
+    its floor darker the deeper it goes, and the soil it moves keeps the colour
+    it started with. The colours come from the positions the viewer is first
+    given. Wraps the viewer's log_points for its particle batch, which it
+    otherwise paints one colour. False if no viewer is up."""
+    import warp as wp
+
+    from luna_hifi_tasks.excavator.excavate.excavate_rft_env import DEPTH_DARK, SOIL_RGB
+
+    top = float(u.cfg.bed_top) + float(u.scene.env_origins[0, 2])
+    wrapped = False
+    for v in getattr(u.sim, "visualizers", None) or []:
+        viewer = getattr(v, "_viewer", None)
+        if viewer is None or not hasattr(viewer, "log_points"):
+            continue
+        viewer.particle_color = None
+        cache: dict = {}
+
+        def log_points(name, points, radii=None, colors=None, hidden=False, _base=viewer.log_points, _cache=cache):
+            if points is not None and str(name).endswith("/model/particles"):
+                if _cache.get("n") != len(points):
+                    z = wp.to_torch(points)[:, 2]
+                    soil = torch.tensor(SOIL_RGB, device=z.device)
+                    dark = torch.tensor(DEPTH_DARK, device=z.device)
+                    rgb = (soil + ((top - z) / depth).clamp(0.0, 1.0).unsqueeze(-1) * (dark - soil)).contiguous()
+                    _cache.update(n=len(points), rgb=rgb, colors=wp.from_torch(rgb, dtype=wp.vec3))
+                colors = _cache["colors"]
+            return _base(name, points, radii, colors, hidden)
+
+        viewer.log_points = log_points
+        wrapped = True
+    return wrapped
+
+
 def _parse(argv):
     p = argparse.ArgumentParser(description="Play a trained excavate policy.")
     p.add_argument("--task", default=TASK, help=f"default {TASK}")
@@ -777,6 +814,10 @@ def main(argv=None) -> int:
         u = env.unwrapped
         if args.video or not args.no_window:
             light(u, *(args.sun or (FRONT_SUN if args.front else (SUN_AZIMUTH, SUN_ELEVATION))))
+            # MPM soil (the RFT task draws its own grid): each particle by how deep it started.
+            if not hasattr(u.cfg, "soil_marker") and strata(u):
+                print(f"[play] particles coloured by how deep they started, darkest {100 * VIDEO_SHADE_DEPTH:.0f} cm "
+                      f"down: a cut's floor shows darker")
             if args.video and hasattr(u, "shade_depth"):
                 u.shade_depth = VIDEO_SHADE_DEPTH
         if args.park or args.dig:

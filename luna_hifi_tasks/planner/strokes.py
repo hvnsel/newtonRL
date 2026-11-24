@@ -213,9 +213,9 @@ class StrokeSite:
         c, (lo, hi) = self.cfg, self.strokes[i].span
         first = lo + c.behind if way > 0 else hi - c.behind
         last = hi - c.ahead if way > 0 else lo + c.ahead
-        if way * (last - first) <= 0:
+        if way * (last - first) <= 1e-6:        # a work area long or shorter, rounding and all: one pass
             return [first]
-        n = math.ceil(abs(last - first) / c.ahead - 1e-9) + 1
+        n = max(2, math.ceil(abs(last - first) / c.ahead - 1e-9) + 1)
         return [first + (last - first) * k / (n - 1) for k in range(n)]
 
     def work_rect(self, i: int, anchor: float, way: int) -> tuple[float, float, float, float]:

@@ -60,6 +60,13 @@ SUN_AZIMUTH, SUN_ELEVATION, EXPOSURE, SHADOWS_M = 150.0, 50.0, 1.0, 20.0
 # The video's camera, high to the side of the pass, looking down about 45 degrees
 # onto the drum and the cut opening behind it, the whole machine in view.
 VIDEO_EYE, VIDEO_LOOKAT = (0.9, 3.0, 3.4), (1.5, 0.0, 0.4)
+# --front: the camera 3.6 m from a point just ahead of the front drum, 30 degrees
+# round from straight ahead to the left, 40 degrees up, onto the drum's front, its
+# shroud and the soil ahead of it, the machine behind. The top of the frame meets
+# the ground 3 m inside a --flat bed's edges; below about 34 degrees up it would
+# reach past them. The sun on that side, 70 degrees round and 45 up, so the
+# front is lit and the machine's shadow falls behind it.
+FRONT_EYE, FRONT_LOOKAT, FRONT_SUN = (4.4, 1.4, 2.8), (2.0, 0.0, 0.45), (70.0, 45.0)
 # The RFT soil shades dark with depth down to this, m: a 5 cm cut reads half way.
 VIDEO_SHADE_DEPTH = 0.10
 # --flat: the bed this wide, m, its edges (a 0.4 m drop to the floor) out of the video.
@@ -72,9 +79,10 @@ POLICY_FIELDS = (
 )
 
 
-def light(u) -> None:
-    """The viewer's light, as site_run's: SUN_*, EXPOSURE and SHADOWS_M."""
-    a, e = math.radians(SUN_AZIMUTH), math.radians(SUN_ELEVATION)
+def light(u, azimuth: float = SUN_AZIMUTH, elevation: float = SUN_ELEVATION) -> None:
+    """The viewer's light, as site_run's: the sun at azimuth (from +x toward +y)
+    and elevation, degrees, its direction pointing at it; EXPOSURE and SHADOWS_M."""
+    a, e = math.radians(azimuth), math.radians(elevation)
     for v in getattr(u.sim, "visualizers", None) or []:
         renderer = getattr(getattr(v, "_viewer", None), "renderer", None)
         if renderer is not None:
@@ -105,8 +113,14 @@ def _parse(argv):
     p.add_argument("--flat", action="store_true",
                    help=f"a bed {FLAT_BED_X[1] - FLAT_BED_X[0]:g} x {FLAT_BED_Y[1] - FLAT_BED_Y[0]:g} m, "
                         "its edges out of view: flat ground all round")
+    p.add_argument("--front", action="store_true",
+                   help=f"the camera ahead of the machine and to its left, at {FRONT_EYE} looking at {FRONT_LOOKAT}, "
+                        f"onto the front drum, its shroud and the soil ahead of it; the sun at {FRONT_SUN}")
     p.add_argument("--eye", type=float, nargs=3, default=None, help=f"video camera position; default {VIDEO_EYE}")
     p.add_argument("--lookat", type=float, nargs=3, default=None, help=f"video camera target; default {VIDEO_LOOKAT}")
+    p.add_argument("--sun", type=float, nargs=2, default=None, metavar=("AZIMUTH", "ELEVATION"),
+                   help=f"the viewer's sun, degrees, azimuth from +x toward +y; "
+                        f"default {SUN_AZIMUTH:g} {SUN_ELEVATION:g}, behind the machine on the side camera's side")
     p.add_argument("--bed_depth", type=float, default=None, help="override bed depth [m]")
     p.add_argument("--mpm_voxel", type=float, default=None,
                    help="override the MPM solver grid cell [m]")
@@ -714,13 +728,20 @@ def main(argv=None) -> int:
     if not args.no_window or args.video:
         from isaaclab_visualizers.newton import NewtonGLVisualizerCfg
 
-        # A video looks down on the pass from high to its side; the window takes in the machine.
+        # A video looks down on the pass from high to its side, or with --front onto
+        # the front drum from ahead; the window takes in the machine.
+        if args.front:
+            eye, lookat = FRONT_EYE, FRONT_LOOKAT
+        elif args.video:
+            eye, lookat = VIDEO_EYE, VIDEO_LOOKAT
+        else:
+            eye, lookat = (5.0, 5.0, 3.0), (0.5, 0.0, 0.3)
         env_cfg.sim.visualizer_cfgs = [
             NewtonGLVisualizerCfg(
                 show_particles=True,
                 particle_color=(0.62, 0.55, 0.45),
-                eye=tuple(args.eye) if args.eye else VIDEO_EYE if args.video else (5.0, 5.0, 3.0),
-                lookat=tuple(args.lookat) if args.lookat else VIDEO_LOOKAT if args.video else (0.5, 0.0, 0.3),
+                eye=tuple(args.eye) if args.eye else eye,
+                lookat=tuple(args.lookat) if args.lookat else lookat,
             )
         ]
         # The RFT soil has no particles; its env draws the height grid instead.
@@ -745,7 +766,7 @@ def main(argv=None) -> int:
         env = gym.make(args.task, cfg=env_cfg)
         u = env.unwrapped
         if args.video or not args.no_window:
-            light(u)
+            light(u, *(args.sun or (FRONT_SUN if args.front else (SUN_AZIMUTH, SUN_ELEVATION))))
             if args.video and hasattr(u, "shade_depth"):
                 u.shade_depth = VIDEO_SHADE_DEPTH
         if args.park or args.dig:

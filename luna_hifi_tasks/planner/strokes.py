@@ -280,16 +280,20 @@ class StrokeSite:
         return max(apart, step)
 
     def moves(self, h: Heights, why: list | None = None, rise: float | None = None,
-              anyway: bool = False) -> list[tuple[Move, float]]:
+              anyway: bool = False, loose: bool = False) -> list[tuple[Move, float]]:
         """The open moves on h, each with its strain: every stroke to come a
         layer down, not past the target, its way along it or either, and at
         least `least` unless that is all it has left. In a staircase a step is
         cut no deeper than the next one stands while that one is short, so no
         step stands above the one before it, not even with the soil a pass
-        pushes on ahead; and no more than its own last step below the one
-        before it, so the way down stays one step at a time. Given why, each
-        closed one's reason is appended to it; rise as in strain. With anyway,
-        the rover's footprint (strain) shuts none."""
+        pushes on ahead; and no more than its own step below the one before
+        it, so the way down stays one step at a time: or two least cuts below,
+        if a step is less. Else a step standing between one and two least cuts
+        below the one before could be cut neither deeper (this rule) nor the
+        one before it down to it (least), and the two would wait on each other.
+        Given why, each closed one's reason is appended to it; rise as in
+        strain. With anyway, the rover's footprint (strain) shuts none; with
+        loose, nothing does: every stroke short of its target a layer down."""
         c, out = self.cfg, []
         short = self.short(h)
         for i in short:
@@ -297,20 +301,21 @@ class StrokeSite:
             for way in (s.way,) if s.way else (1, -1):
                 label = f"{s.name} {'+' if way > 0 else '-'}{'xy'[s.axis]}"
                 v, held = max(t, lv - c.layer), ""
-                before = self.next_along(i, -way)
-                if before in short:
-                    lowest = self.level(before, h) - (self.target_of(before) - t)
-                    if lowest > v:
-                        v, held = lowest, f"a step at most below {self.strokes[before].name}"
-                j = self.next_along(i, way)
-                if j in short and self.level(j, h) > v:
-                    v, held = self.level(j, h), f"waits for {self.strokes[j].name}"
-                if v > lv - min(c.least, lv - t) + 1e-9:
-                    if why is not None:
-                        why.append(f"{label}: {held}")
-                    continue
+                if not loose:
+                    before = self.next_along(i, -way)
+                    if before in short:
+                        lowest = self.level(before, h) - max(self.target_of(before) - t, 2.0 * c.least)
+                        if lowest > v:
+                            v, held = lowest, f"a step at most below {self.strokes[before].name}"
+                    j = self.next_along(i, way)
+                    if j in short and self.level(j, h) > v:
+                        v, held = self.level(j, h), f"waits for {self.strokes[j].name}"
+                    if v > lv - min(c.least, lv - t) + 1e-9:
+                        if why is not None:
+                            why.append(f"{label}: {held}")
+                        continue
                 reasons = [] if why is not None else None
-                strain = 0.0 if anyway else self.strain(i, way, v, h, reasons, rise)
+                strain = 0.0 if anyway or loose else self.strain(i, way, v, h, reasons, rise)
                 if strain is not None:
                     out.append(((i, way, v), strain))
                 elif why is not None:
@@ -337,13 +342,15 @@ class StrokeSite:
         `retries` moves each failed goes after the others. If none is found
         within budget, the best first move alone. If a bank alone shuts every
         move, the best one cutting into a bank up to cfg.bank; if the rover's
-        footprint shuts every move, the best one all the same: a stroke short
-        of its target is always up for another cut. None once every one is done."""
+        footprint shuts every move, the best one all the same; if a staircase's
+        holds do, the best a layer down regardless: a stroke short of its
+        target is always up for another cut. None once every one is done."""
         order: list[Move] = []
         tried = 0
         before = self.log[-1][0] if self.log else None
 
-        def ranked(h: Heights, first: bool, rise: float | None = None, anyway: bool = False) -> list[Move]:
+        def ranked(h: Heights, first: bool, rise: float | None = None, anyway: bool = False,
+                   loose: bool = False) -> list[Move]:
             last = order[-1][0] if order else before
 
             def key(ms: tuple[Move, float]):
@@ -352,7 +359,7 @@ class StrokeSite:
                 left = self.level(i, h) - self.target_of(i)
                 return (self.failed_in_a_row(i) >= self.cfg.retries, -round(left / self.cfg.done_tol),
                         not self.beside(i, last), self.target_of(i), round(strain / self.cfg.strain_bin), near)
-            return [m for m, _ in sorted(self.moves(h, rise=rise, anyway=anyway), key=key)]
+            return [m for m, _ in sorted(self.moves(h, rise=rise, anyway=anyway, loose=loose), key=key)]
 
         def search(h: Heights, first: bool) -> bool:
             nonlocal tried
@@ -372,7 +379,8 @@ class StrokeSite:
 
         top = ranked(self.heights, True)
         if not top:
-            return (ranked(self.heights, True, self.cfg.bank) or ranked(self.heights, True, anyway=True))[:1] or None
+            return (ranked(self.heights, True, self.cfg.bank) or ranked(self.heights, True, anyway=True)
+                    or ranked(self.heights, True, loose=True))[:1] or None
         return order if search(self.heights, True) else top[:1]
 
     def next_move(self, at: tuple[float, float] | None = None) -> Move | None:

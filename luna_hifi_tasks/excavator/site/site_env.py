@@ -1012,7 +1012,9 @@ def run_strokes(env, dig, nav, site, record=None, max_minutes: float = 120.0,
             look()
             move = site.next_move(m.here())
             if move is None:
-                return rows, f"done, {m.resets} resets"
+                short = len(site.short())
+                return rows, (f"done, {m.resets} resets" if not short else
+                              f"stopped: the planner has no move, {short} strokes short ({m.resets} resets)")
             i, way, v = move
             s = site.strokes[i]
             yaw, gate, anchors = s.yaw(way), ring.entry(s, way), site.anchors(i, way)

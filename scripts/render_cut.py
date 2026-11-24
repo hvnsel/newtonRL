@@ -3,23 +3,42 @@
 # The cut a stroke site run left, from the bed's heights site_run.py saves
 # after every stroke (<video>_cut.npz, StrokeSite.save): the ground in 3D
 # through Newton's GL viewer, coloured and lit as the run's video, true to
-# scale; and cross sections against the targets, along the strokes' line and
-# across each step's middle, its lanes side by side together. Writes
-# <name>_3d.png and <name>_sections.png beside it.
+# scale; and sections against the targets: along the strokes' line, averaged
+# across the cut's width, once with depth stretched and once true to scale
+# with the rover drawn in it, digging; and across each step, its lanes side
+# by side together, averaged along it. Writes <name>_3d.png and
+# <name>_sections.png beside it.
 #
 #   ~/IsaacLab/.venv/bin/python scripts/render_cut.py deep60_video_cut.npz
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import math
 import os
+import sys
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Circle, Polygon
+
+
+def _robot():
+    """The robot model's dimensions (luna_hifi_tasks/excavator/excavator.py),
+    loaded by its file: the package around it would start Isaac Lab."""
+    path = Path(__file__).resolve().parent.parent / "luna_hifi_tasks" / "excavator" / "excavator.py"
+    spec = importlib.util.spec_from_file_location("excavator_dims", path)
+    m = importlib.util.module_from_spec(spec)
+    sys.modules["excavator_dims"] = m
+    spec.loader.exec_module(m)
+    return m
+
+
+EX = _robot()
 
 MARGIN = 0.8                    # m of ground drawn round the strokes
 # The soil's colours, its depth shading and the light, as the run's video has them
@@ -30,6 +49,9 @@ SUN_AZIMUTH, SUN_ELEVATION, EXPOSURE, SHADOWS_M = -20.0, 35.0, 1.0, 20.0
 SIZE, FOCAL = (2400, 1350), 20.0          # the 3D view's pixels, and its lens, mm
 SURFACE, INK, INK2, MUTED, GRID, AXIS = "#fcfcfb", "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
 LINE, TARGET = "#2a78d6", "#898781"
+# The rover in the true-to-scale section: its wheels, its frame and arms, its drums.
+WHEEL, BODY, DRUM = "#3b3a37", "#6f6e69", "#a8a6a0"
+ARM_DIG_START = -0.20           # rad, the arm's angle as a pass starts (excavate_env_cfg.arm_start_angle)
 
 
 def load(path: str) -> dict:
@@ -149,46 +171,134 @@ def staircase(c: dict) -> tuple[list[float], list[float]]:
     return xs + [st[-1][1], c["x"][-1]], zs + [0.0, 0.0]
 
 
-def render_sections(c: dict, out: str) -> None:
-    """Along the strokes' line: the ground at its middle and the range across
-    the cut's width; across each step's middle: the ground from side to side.
-    Both against the targets."""
-    z, x, y, rects = c["z"], c["x"], c["y"], c["rects"]
-    mid_y = 0.5 * (rects[:, 2].min() + rects[:, 3].max())
-    inside = (y >= rects[:, 2].min()) & (y <= rects[:, 3].max())
-    st = steps(c)
-    fig = plt.figure(figsize=(14, 9), dpi=200, facecolor=SURFACE)
-    grid = fig.add_gridspec(2, len(st), height_ratios=[1.0, 1.0], hspace=0.55, wspace=0.12,
-                            left=0.06, right=0.98, top=0.8, bottom=0.08)
-    fig.text(0.06, 0.95, f"Cross sections after {c['moves']} strokes", fontsize=16, fontweight="semibold", color=INK)
-    fig.text(0.06, 0.915, "the ground as the run left it (blue) against the target floor (grey); depth not to scale "
-             "with length", fontsize=11, color=INK2)
+def rover(ax, g: np.ndarray, x: np.ndarray, dig_x: float) -> None:
+    """The rover side on, to scale (excavator.py): digging with its front
+    drum's axis over dig_x, at the arm's reach a pass starts from; its wheels
+    resting on the ground g along x, its front drum lowered onto the ground
+    there, as deep as its arm goes, its rear drum at the pass's start pose."""
+    def ground(at):
+        return np.interp(at, x, g)
 
-    along = fig.add_subplot(grid[0, :])
-    j = np.argmin(np.abs(y - mid_y))
-    band = z[inside]
-    along.fill_between(x, 100 * band.min(axis=0), 100 * band.max(axis=0), color=LINE, alpha=0.12, lw=0,
-                       label="range across the cut's width")
-    along.plot(x, 100 * z[j], color=LINE, lw=2, label="middle of the cut")
+    def rest(at: float, r: float) -> float:
+        """The height a circle of radius r centred over `at` rests at on the ground."""
+        dx = np.linspace(-0.98 * r, 0.98 * r, 41)
+        return float(np.max(ground(at + dx) + np.sqrt(r * r - dx * dx)))
+
+    reach = EX.PIVOT_X + EX.ARM_LEN * math.cos(ARM_DIG_START)
+    cx = dig_x - reach                                      # the chassis origin, between the axles
+    zr, zf = (rest(cx + s * EX.AXLE_X, EX.WHEEL_RADIUS) for s in (-1.0, 1.0))
+    pitch = math.atan2(zf - zr, 2.0 * EX.AXLE_X)
+    cz = 0.5 * (zr + zf)
+    c, s = math.cos(pitch), math.sin(pitch)
+
+    def world(px, pz):
+        """Chassis-frame points (x forward, z up from the axle line) in the section."""
+        px, pz = np.asarray(px, float), np.asarray(pz, float)
+        return cx + c * px - s * pz, cz + s * px + c * pz
+
+    def box(x0, x1, z0, z1, colour):
+        xs, zs = world([x0, x1, x1, x0], [z0, z0, z1, z1])
+        ax.add_patch(Polygon(np.stack([xs, zs], -1), closed=True, fc=colour, ec="none", zorder=4))
+
+    def drum_centre(sign: float, angle: float):
+        """The drum's axis for an arm angle, front (sign 1) or rear (-1); positive pitches the boom down."""
+        return (sign * (EX.PIVOT_X + EX.ARM_LEN * math.cos(angle)), EX.MAST_TOP_Z - EX.ARM_LEN * math.sin(angle))
+
+    # The front arm as deep as it goes with the drum not into the ground below it.
+    front = EX.ARM_RANGE[0]
+    for angle in np.linspace(EX.ARM_RANGE[0], EX.ARM_RANGE[1], 300):
+        px, pz = world(*drum_centre(1.0, angle))
+        if pz >= rest(float(px), EX.SHROUD_OUT_R) - 1e-3:
+            front = angle
+    frame = EX.FRAME_BOXES[0]
+    box(-frame[1][0], frame[1][0], frame[0][2] - frame[1][2], frame[0][2] + frame[1][2], BODY)
+    for (mx, _, mz), (hx, _, hz) in EX.FRAME_BOXES[1:]:
+        box(mx - hx, mx + hx, mz - hz, mz + hz, BODY)
+    for sign, angle in ((1.0, front), (-1.0, ARM_DIG_START)):
+        dx, dz = drum_centre(sign, angle)
+        xs, zs = world([sign * EX.PIVOT_X, dx], [EX.MAST_TOP_Z, dz])
+        ax.plot(xs, zs, color=BODY, lw=3, solid_capstyle="round", zorder=5)
+        ax.add_patch(Circle((xs[1], zs[1]), EX.SHROUD_OUT_R, fc=DRUM, ec=BODY, lw=1, zorder=6))
+    for sign in (-1.0, 1.0):
+        wx, wz = world(sign * EX.AXLE_X, 0.0)
+        ax.add_patch(Circle((float(wx), float(wz)), EX.WHEEL_RADIUS, fc=WHEEL, ec="none", zorder=6))
+        ax.add_patch(Circle((float(wx), float(wz)), 0.35 * EX.WHEEL_RADIUS, fc=BODY, ec="none", zorder=7))
+    top = max(float(np.max(world(*drum_centre(-1.0, ARM_DIG_START))[1])) + EX.SHROUD_OUT_R, cz + EX.WHEEL_RADIUS)
+    ax.text(cx, top + 0.12, "the rover, digging", ha="center", va="bottom", fontsize=9.5, color=INK2)
+
+
+def render_sections(c: dict, out: str) -> None:
+    """Along the strokes' line: the ground averaged across the cut's width,
+    depth stretched, and the same true to scale with the rover drawn in it;
+    across each step: the ground from side to side, averaged along the step.
+    All against the targets."""
+    z, x, y, rects = c["z"], c["x"], c["y"], c["rects"]
+    inside = (y >= rects[:, 2].min()) & (y <= rects[:, 3].max())
+    g = z[inside].mean(axis=0)                              # the ground along x, averaged across the width
+    st = steps(c)
     tx, tz = staircase(c)
+    deepest = int(np.argmin(c["targets"]))
+    dig_x = float(rects[deepest][0]) + 0.2                  # a pass's anchor at the deepest stroke's start
+
+    # The true-to-scale section as wide as the others, its height from its extent.
+    left, right, width_in = 0.06, 0.98, 14.0
+    z_lo = min(float(g.min()), float(c["targets"].min())) - 0.15
+    z_hi = 1.15
+    scale_h = (right - left) * width_in * (z_hi - z_lo) / (x[-1] - x[0])
+    rows = [1.7, 2.4, 0.95, scale_h, 1.1, 2.4, 0.7]        # in: titles, along, gap, to scale, gap, steps, foot
+    height = sum(rows)
+    fig = plt.figure(figsize=(width_in, height), dpi=200, facecolor=SURFACE)
+
+    def band(k: int) -> tuple[float, float]:
+        """Row k's bottom and height as fractions of the figure."""
+        return 1.0 - sum(rows[:k + 1]) / height, rows[k] / height
+
+    fig.text(left, 1.0 - 0.45 / height, f"Cross sections after {c['moves']} strokes", fontsize=16,
+             fontweight="semibold", color=INK)
+    fig.text(left, 1.0 - 0.8 / height, "the ground as the run left it (blue), averaged across the cut's width or along "
+             "each step, against the target floor (grey)", fontsize=11, color=INK2)
+
+    b, h = band(1)
+    along = fig.add_axes([left, b, right - left, h])
+    along.plot(x, 100 * g, color=LINE, lw=2, label="the ground, averaged across the cut's width")
     along.plot(tx, 100 * np.asarray(tz), color=TARGET, lw=1.5, label="target floor")
     for x0, x1, _, _, _, name in st:
         along.text(0.5 * (x0 + x1), 4, name, ha="center", fontsize=10, color=INK2)
-    along.set_title("Along the trench", loc="left", fontsize=12, fontweight="semibold", color=INK, pad=22)
+    along.set_title("Along the trench, depth stretched", loc="left", fontsize=12, fontweight="semibold", color=INK,
+                    pad=22)
+    along.set_xlim(x[0], x[-1])
     along.set_xlabel("along x (m)")
-    along.legend(loc="lower left", frameon=False, fontsize=9.5, labelcolor=INK2, ncol=3)
+    along.set_ylabel("height (cm)")
+    along.legend(loc="lower left", frameon=False, fontsize=9.5, labelcolor=INK2, ncol=2)
 
+    b, h = band(3)
+    true = fig.add_axes([left, b, right - left, h])
+    true.fill_between(x, z_lo, g, color=SOIL, lw=0, zorder=1)
+    true.plot(x, g, color=LINE, lw=1.5, zorder=2)
+    true.plot(tx, tz, color=TARGET, lw=1, ls="--", zorder=3)
+    rover(true, g, x, dig_x)
+    true.set_xlim(x[0], x[-1])
+    true.set_ylim(z_lo, z_hi)
+    true.set_aspect("equal", adjustable="box")
+    true.set_title("Along the trench, true to scale", loc="left", fontsize=12, fontweight="semibold", color=INK, pad=10)
+    true.set_xlabel("along x (m)")
+    true.set_ylabel("height (m)")
+
+    b, h = band(5)
+    grid = fig.add_gridspec(1, len(st), wspace=0.12, left=left, right=right, bottom=b, top=b + h)
     lo = 100 * min(z[inside].min(), c["targets"].min()) - 5
     for col, (x0, x1, y0, y1, t, name) in enumerate(st):
-        ax = fig.add_subplot(grid[1, col])
-        i = np.argmin(np.abs(x - 0.5 * (x0 + x1)))
-        ax.plot(y, 100 * z[:, i], color=LINE, lw=2)
+        ax = fig.add_subplot(grid[0, col])
+        on = (x >= x0) & (x <= x1)
+        ax.plot(y, 100 * z[:, on].mean(axis=1), color=LINE, lw=2)
         ax.plot([y[0], y0, y0, y1, y1, y[-1]], [0, 0, 100 * t, 100 * t, 0, 0], color=TARGET, lw=1.5)
-        ax.set_title(f"{name}, at x = {x[i]:.1f} m", fontsize=10.5, color=INK, loc="left")
+        ax.set_title(f"{name}\nx = {x0:.1f} to {x1:.1f} m", fontsize=9.5, color=INK, loc="left")
         ax.set_ylim(lo, 12)
         ax.set_xlabel("across y (m)")
         if col:
             ax.tick_params(labelleft=False)
+        else:
+            ax.set_ylabel("height (cm)")
     for ax in fig.axes:
         ax.set_facecolor(SURFACE)
         ax.grid(axis="y", color=GRID, lw=1)
@@ -198,8 +308,7 @@ def render_sections(c: dict, out: str) -> None:
         ax.spines["bottom"].set_color(AXIS)
         ax.tick_params(colors=MUTED, labelsize=9, length=0)
         ax.xaxis.label.set_color(INK2)
-    fig.axes[0].set_ylabel("height (cm)", color=INK2)
-    fig.axes[1].set_ylabel("height (cm)", color=INK2)
+        ax.yaxis.label.set_color(INK2)
     fig.savefig(out, facecolor=SURFACE)
     plt.close(fig)
 

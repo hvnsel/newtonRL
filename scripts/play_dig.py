@@ -98,35 +98,39 @@ def strata(u, depth: float = VIDEO_SHADE_DEPTH) -> bool:
     colour at the surface darkening to DEPTH_DARK `depth` down. A cut shows
     its floor darker the deeper it goes, and the soil it moves keeps the colour
     it started with. The colours come from the positions the viewer is first
-    given. Wraps the viewer's log_points for its particle batch, which it
-    otherwise paints one colour. False if no viewer is up."""
+    given. Wraps the log_points of the viewer's class, for its particle batch,
+    which it otherwise paints one colour (its particle_color, kept off here, as
+    play_dig's viewer cfg leaves it for MPM): a viewer made again keeps it.
+    False if no viewer is up."""
     import warp as wp
 
     from luna_hifi_tasks.excavator.excavate.excavate_rft_env import DEPTH_DARK, SOIL_RGB
 
     top = float(u.cfg.bed_top) + float(u.scene.env_origins[0, 2])
-    wrapped = False
-    for v in getattr(u.sim, "visualizers", None) or []:
-        viewer = getattr(v, "_viewer", None)
-        if viewer is None or not hasattr(viewer, "log_points"):
+    viewers = [getattr(v, "_viewer", None) for v in getattr(u.sim, "visualizers", None) or []]
+    viewers = [w for w in viewers if w is not None and hasattr(w, "log_points")]
+    cache: dict = {}
+    for cls in {type(w) for w in viewers}:
+        if getattr(cls.log_points, "strata", False):
             continue
-        viewer.particle_color = None
-        cache: dict = {}
 
-        def log_points(name, points, radii=None, colors=None, hidden=False, _base=viewer.log_points, _cache=cache):
+        def log_points(self, name, points, radii=None, colors=None, hidden=False, _base=cls.log_points):
             if points is not None and str(name).endswith("/model/particles"):
-                if _cache.get("n") != len(points):
+                self.particle_color = None
+                if cache.get("n") != len(points):
                     z = wp.to_torch(points)[:, 2]
                     soil = torch.tensor(SOIL_RGB, device=z.device)
                     dark = torch.tensor(DEPTH_DARK, device=z.device)
                     rgb = (soil + ((top - z) / depth).clamp(0.0, 1.0).unsqueeze(-1) * (dark - soil)).contiguous()
-                    _cache.update(n=len(points), rgb=rgb, colors=wp.from_torch(rgb, dtype=wp.vec3))
-                colors = _cache["colors"]
-            return _base(name, points, radii, colors, hidden)
+                    cache.update(n=len(points), rgb=rgb, colors=wp.from_torch(rgb, dtype=wp.vec3))
+                colors = cache["colors"]
+            return _base(self, name, points, radii, colors, hidden)
 
-        viewer.log_points = log_points
-        wrapped = True
-    return wrapped
+        log_points.strata = True
+        cls.log_points = log_points
+    for w in viewers:
+        w.particle_color = None
+    return bool(viewers)
 
 
 def _parse(argv):
@@ -783,7 +787,8 @@ def main(argv=None) -> int:
         env_cfg.sim.visualizer_cfgs = [
             NewtonGLVisualizerCfg(
                 show_particles=True,
-                particle_color=(0.62, 0.55, 0.45),
+                # MPM: none, so strata() colours each particle by how deep it started.
+                particle_color=(0.62, 0.55, 0.45) if hasattr(env_cfg, "soil_marker") else None,
                 eye=tuple(args.eye) if args.eye else eye,
                 lookat=tuple(args.lookat) if args.lookat else lookat,
             )

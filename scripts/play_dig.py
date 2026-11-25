@@ -66,6 +66,14 @@ VIDEO_EYE, VIDEO_LOOKAT = (0.9, 3.0, 3.4), (1.5, 0.0, 0.4)
 # side, 70 degrees round and 45 up, so the front is lit and the machine's shadow
 # falls behind it.
 FRONT_EYE, FRONT_LOOKAT, FRONT_SUN = (4.7, 1.6, 2.3), (2.0, 0.0, 0.45), (70.0, 45.0)
+# --rear: onto the cut the front drum leaves, which lies under the machine's
+# front between the drum and the front wheels: 3.4 m from its middle, behind it
+# and to the left, 125 degrees round from straight ahead and 50 up. Along a 5 cm
+# pass the wheels, the boom and the mast still hide about half of it, as from
+# the high side view; from the front the drum hides it all. The sun
+# high on that side, 100 degrees round and 60 up, so neither the drum's shadow
+# nor the machine's falls along the cut.
+REAR_EYE, REAR_LOOKAT, REAR_SUN = (0.6, 1.79, 3.0), (1.85, 0.0, 0.40), (100.0, 60.0)
 # The RFT soil shades dark with depth down to this, m: a 5 cm cut reads half way.
 VIDEO_SHADE_DEPTH = 0.10
 # --flat: the bed this big, m, its edges (a 0.4 m drop to the floor) out of the
@@ -158,9 +166,13 @@ def _parse(argv):
     p.add_argument("--voxels", action="store_true",
                    help="RFT task: the soil as it was first drawn, a box per cell, dark brown where the drum cut "
                         "(soil_voxels), not the smooth depth-shaded mesh")
-    p.add_argument("--front", action="store_true",
-                   help=f"the camera ahead of the machine and to its left, at {FRONT_EYE} looking at {FRONT_LOOKAT}, "
-                        f"onto the front drum, its shroud and the soil ahead of it; the sun at {FRONT_SUN}")
+    view = p.add_mutually_exclusive_group()
+    view.add_argument("--front", action="store_true",
+                      help=f"the camera ahead of the machine and to its left, at {FRONT_EYE} looking at {FRONT_LOOKAT}, "
+                           f"onto the front drum, its shroud and the soil ahead of it; the sun at {FRONT_SUN}")
+    view.add_argument("--rear", action="store_true",
+                      help=f"the camera behind the front drum and to the left, at {REAR_EYE} looking at {REAR_LOOKAT}, "
+                           f"down onto the cut the drum leaves; the sun at {REAR_SUN}")
     p.add_argument("--eye", type=float, nargs=3, default=None, help=f"video camera position; default {VIDEO_EYE}")
     p.add_argument("--lookat", type=float, nargs=3, default=None, help=f"video camera target; default {VIDEO_LOOKAT}")
     p.add_argument("--sun", type=float, nargs=2, default=None, metavar=("AZIMUTH", "ELEVATION"),
@@ -780,6 +792,8 @@ def main(argv=None) -> int:
         # the front drum from ahead; the window takes in the machine.
         if args.front:
             eye, lookat = FRONT_EYE, FRONT_LOOKAT
+        elif args.rear:
+            eye, lookat = REAR_EYE, REAR_LOOKAT
         elif args.video:
             eye, lookat = VIDEO_EYE, VIDEO_LOOKAT
         else:
@@ -818,7 +832,7 @@ def main(argv=None) -> int:
         env = gym.make(args.task, cfg=env_cfg)
         u = env.unwrapped
         if args.video or not args.no_window:
-            light(u, *(args.sun or (FRONT_SUN if args.front else (SUN_AZIMUTH, SUN_ELEVATION))))
+            light(u, *(args.sun or (FRONT_SUN if args.front else REAR_SUN if args.rear else (SUN_AZIMUTH, SUN_ELEVATION))))
             # MPM soil (the RFT task draws its own grid): each particle by how deep it started.
             if not hasattr(u.cfg, "soil_marker") and strata(u):
                 print(f"[play] particles coloured by how deep they started, darkest {100 * VIDEO_SHADE_DEPTH:.0f} cm "
